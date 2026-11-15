@@ -1,7 +1,7 @@
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen, Compass, GitPullRequest, LayoutDashboard, MessageSquareCode, Moon, Package,
-  PenTool, Play, Settings as SettingsIcon, Sun, X,
+  PenTool, Play, Radio, Settings as SettingsIcon, Sun, X,
 } from "lucide-react";
 import { api, ReviewPayload, WorkspaceInfo } from "./api";
 import { CodeView, Spinner, timeAgo, useToast } from "./ui";
@@ -110,6 +110,37 @@ export default function App() {
     return () => { if (poll.current != null) { clearInterval(poll.current); poll.current = null; } };
   }, [wid, reload]);
 
+  // Live: the server re-reviews on every save; poll a tiny revision counter and reload only on change.
+  const [watching, setWatching] = useState(false);
+  const seenRevision = useRef<number | null>(null);
+  useEffect(() => { setWatching(!!workspaces.find((x) => x.id === wid)?.watching); }, [wid, workspaces]);
+  useEffect(() => {
+    if (!wid || !watching) return;
+    seenRevision.current = null;
+    const timer = window.setInterval(async () => {
+      try {
+        const r = await api.revision(wid);
+        if (seenRevision.current !== null && r.revision !== seenRevision.current && !r.running) {
+          setData(await api.review(wid));
+          refreshWorkspaces();
+          const c = r.last_change;
+          if (c && (c.new.length || c.resolved.length)) {
+            toast([c.new.length && `${c.new.length} new`, c.resolved.length && `${c.resolved.length} resolved`].filter(Boolean).join(", ")
+              + ` after saving ${c.files.slice(0, 2).join(", ")}${c.files.length > 2 ? "…" : ""}`);
+          }
+        }
+        if (!r.running) seenRevision.current = r.revision;
+      } catch { /* server restarting: try again next tick */ }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [wid, watching, toast, refreshWorkspaces]);
+  const toggleWatch = useCallback(async () => {
+    if (!wid) return;
+    const info = await api.watch(wid, !watching);
+    setWatching(!!info.watching);
+    toast(info.watching ? "Live: re-reviewing on every save" : "Live review off");
+  }, [wid, watching, toast]);
+
   const runReview = useCallback(async (proof: boolean, base = "") => {
     if (!wid) return;
     await api.runReview(wid, proof, base);
@@ -190,6 +221,12 @@ export default function App() {
               <span className="status">
                 {data.running ? <span className="row"><Spinner size={13} /> Reviewing…</span> : `Last review ${timeAgo(data.last_run)}`}
               </span>
+            )}
+            {wid && route.page !== "design" && (
+              <button className={`btn ${watching ? "accent" : ""}`} onClick={toggleWatch} aria-pressed={watching}
+                title="Re-review automatically whenever a Python file is saved (tests not run)">
+                <Radio size={14} className={watching ? "pulse" : ""} />{watching ? "Live" : "Go live"}
+              </button>
             )}
             {wid && route.page !== "design" && (
               <button className="btn primary" disabled={!!data?.running} onClick={() => runReview(true)}>

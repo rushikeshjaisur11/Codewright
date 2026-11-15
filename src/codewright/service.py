@@ -24,6 +24,26 @@ from .llm import status as llm_status
 from .models import Finding
 
 
+def snapshot(root: Path) -> dict[str, tuple[int, int]]:
+    """(mtime, size) of every Python file a review scans; a change means re-review."""
+    from .graph import iter_python_files
+
+    out = {}
+    for p in iter_python_files(Path(root).resolve()):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        out[str(p)] = (st.st_mtime_ns, st.st_size)
+    return out
+
+
+def diff_findings(before: dict, findings: list) -> tuple[dict, list, list]:
+    """(findings by id, new since `before`, resolved since `before`)."""
+    now = {f.id: f for f in findings}
+    return now, [f for fid, f in now.items() if fid not in before], [f for fid, f in before.items() if fid not in now]
+
+
 @dataclass
 class Workspace:
     root: Path
@@ -34,6 +54,10 @@ class Workspace:
     error: str | None = None
     last_run: float | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+    revision: int = 0  # bumps whenever `result` changes, so clients poll something tiny
+    watching: bool = False
+    last_change: dict | None = None  # what the latest watched re-review found new or resolved
+    _watch_stop: threading.Event | None = None
 
     # --------------------------------------------------------------- review
     def run_review(self, *, proof: bool = True, base: str | None = None) -> ReviewResult:
@@ -41,6 +65,7 @@ class Workspace:
             self.running, self.error, self.progress = True, None, "scanning"
             try:
                 self.result = review(self.root, run_proof=proof, top=None, base=base)
+                self.revision += 1
                 self.index = CodeIndex(self.result.graph)
                 self.last_run = time.time()
                 with contextlib.suppress(OSError):
@@ -51,6 +76,46 @@ class Workspace:
                 raise
             finally:
                 self.running, self.progress = False, ""
+
+    # --------------------------------------------------------------- live watch
+    def start_watch(self, interval: float = 1.0) -> None:
+        """Re-review in the background whenever a Python file is saved, added or removed (proof off)."""
+        if self.watching:
+            return
+        stop = threading.Event()
+        self._watch_stop, self.watching = stop, True
+
+        def loop() -> None:
+            snap = snapshot(self.root)
+            while not stop.wait(interval):
+                current = snapshot(self.root)
+                if current == snap or self.running:
+                    continue
+                before = {f.id: f for f in self.result.findings} if self.result else {}
+                changed = sorted(
+                    Path(p).relative_to(self.root).as_posix()
+                    for p in (current.keys() ^ snap.keys())
+                    | {p for p in current if snap.get(p) not in (None, current[p])}
+                )
+                snap = current
+                try:
+                    result = self.run_review(proof=False)
+                except Exception:
+                    continue  # recorded on self.error; keep watching
+                _, new, gone = diff_findings(before, result.findings)
+                self.last_change = {
+                    "at": time.time(),
+                    "files": changed[:20],
+                    "new": [{"id": f.id, "title": f.title, "file": f.file, "line": f.line} for f in new],
+                    "resolved": [{"id": f.id, "title": f.title, "file": f.file, "line": f.line} for f in gone],
+                }
+
+        threading.Thread(target=loop, daemon=True, name=f"codewright-watch-{self.root.name}").start()
+
+    def stop_watch(self) -> None:
+        if self._watch_stop is not None:
+            self._watch_stop.set()
+        self.watching, self._watch_stop = False, None
 
     def ensure(self) -> ReviewResult:
         if self.result is None:

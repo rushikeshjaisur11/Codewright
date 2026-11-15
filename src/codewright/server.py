@@ -74,6 +74,8 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
             "findings": len(w.result.findings) if w.result else None,
             "verified": sum(1 for f in w.result.findings if f.proof.value == "verified") if w.result else None,
             "files": len(w.result.graph.files) if w.result else None,
+            "watching": w.watching,
+            "revision": w.revision,
         }
 
     # ------------------------------------------------------------------ meta
@@ -185,6 +187,19 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         w.running = True
         threading.Thread(target=run, daemon=True).start()
         return ws_summary(wid, w)
+
+    @app.post("/api/w/{wid}/watch")
+    def watch(wid: str, on: bool = Body(..., embed=True)):
+        """Turn live re-review on save on or off for this workspace."""
+        w = ws(wid)
+        w.start_watch() if on else w.stop_watch()
+        return ws_summary(wid, w)
+
+    @app.get("/api/w/{wid}/revision")
+    def revision(wid: str):
+        """Tiny status for polling: has the result changed, and what did the last re-review change?"""
+        w = ws(wid)
+        return {"revision": w.revision, "running": w.running, "watching": w.watching, "last_change": w.last_change}
 
     @app.get("/api/w/{wid}/review")
     def get_review(wid: str):

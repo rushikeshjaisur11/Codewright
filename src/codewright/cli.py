@@ -101,29 +101,12 @@ def review(
         print(text)
 
 
-def _snapshot(root: Path) -> dict[str, tuple[int, int]]:
-    """(mtime, size) of every Python file Codewright would scan."""
-    out = {}
-    for p in graph_mod.iter_python_files(root.resolve()):
-        try:
-            st = p.stat()
-        except OSError:
-            continue
-        out[str(p)] = (st.st_mtime_ns, st.st_size)
-    return out
-
-
-def diff_findings(before: dict, findings: list) -> tuple[dict, list, list]:
-    """(findings by id, new since `before`, resolved since `before`)."""
-    now = {f.id: f for f in findings}
-    return now, [f for fid, f in now.items() if fid not in before], [f for fid, f in before.items() if fid not in now]
-
-
 def _watch(path: Path, interval: float, **opts) -> None:
     """`review --watch`: a review on every save. Proof is off unless --proof is given explicitly."""
     import time
 
     from .engine import review as run_review
+    from .service import diff_findings, snapshot
 
     def run():
         return run_review(
@@ -140,7 +123,7 @@ def _watch(path: Path, interval: float, **opts) -> None:
     console.print(f"Watching [bold]{path.resolve()}[/] for saves (Ctrl+C to stop)")
     try:
         while True:
-            current = _snapshot(path)
+            current = snapshot(path)
             if current != snap:
                 changed = sorted(
                     {p for p in current.keys() ^ snap.keys()}

@@ -55,6 +55,12 @@ export interface ReviewData {
 export interface WorkspaceInfo {
   id: string; root: string; name: string; running: boolean; last_run: number | null; error: string | null;
   has_result: boolean; branch: string | null; findings: number | null; verified: number | null; files: number | null;
+  watching?: boolean; revision?: number;
+}
+export interface ChangeItem { id: string; title: string; file: string; line: number }
+export interface Revision {
+  revision: number; running: boolean; watching: boolean;
+  last_change: { at: number; files: string[]; new: ChangeItem[]; resolved: ChangeItem[] } | null;
 }
 
 export interface RecentRepo { path: string; name: string; opened: number }
@@ -181,6 +187,8 @@ export const api = {
   folders: (path = "") => req<FolderListing>("GET", `/api/fs?path=${q(path)}`),
   review: (id: string) => req<ReviewPayload>("GET", `${w(id)}/review`),
   runReview: (id: string, proof: boolean, base: string) => req<WorkspaceInfo>("POST", `${w(id)}/review`, { proof, base }),
+  watch: (id: string, on: boolean) => req<WorkspaceInfo>("POST", `${w(id)}/watch`, { on }),
+  revision: (id: string) => req<Revision>("GET", `${w(id)}/revision`),
   feedback: (id: string, fid: string, status: string, reason = "") =>
     req<Metrics>("POST", `${w(id)}/findings/${fid}/feedback`, { status, reason }),
   mute: (id: string, intent: string, path = "", undo = false) => req<Metrics>("POST", `${w(id)}/mute`, { intent, path, undo }),

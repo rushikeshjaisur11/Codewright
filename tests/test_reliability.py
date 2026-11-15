@@ -312,9 +312,40 @@ def test_action_passes_inputs_through_the_environment():
 def test_watch_reports_new_and_resolved_findings():
     from types import SimpleNamespace as F
 
-    from codewright.cli import diff_findings
+    from codewright.service import diff_findings
 
     seen, new, gone = diff_findings({}, [F(id="a"), F(id="b")])
     assert set(seen) == {"a", "b"} and [f.id for f in new] == ["a", "b"] and gone == []
     seen, new, gone = diff_findings(seen, [F(id="b"), F(id="c")])
     assert [f.id for f in new] == ["c"] and [f.id for f in gone] == ["a"]
+
+
+def test_web_watch_rereviews_on_save(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from codewright.server import create_app
+
+    (tmp_path / "a.py").write_text("def f():\n    return 1\n")
+    c = TestClient(create_app([str(tmp_path)]), base_url="http://localhost")
+    wid = c.get("/api/workspaces").json()[0]["id"]
+    c.post(f"/api/w/{wid}/review", json={"proof": False})
+
+    def wait(pred, timeout=20):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            r = c.get(f"/api/w/{wid}/revision").json()
+            if pred(r):
+                return r
+            time.sleep(0.2)
+        raise AssertionError(f"timed out: {r}")
+
+    first = wait(lambda r: r["revision"] >= 1 and not r["running"])
+    assert c.post(f"/api/w/{wid}/watch", json={"on": True}).json()["watching"] is True
+    time.sleep(1.2)
+    (tmp_path / "b.py").write_text("import os\n\ndef build():\n    os.system('git status')\n")
+    r = wait(lambda r: r["revision"] > first["revision"] and r["last_change"])
+    assert [n["file"] for n in r["last_change"]["new"]] == ["b.py"] and r["last_change"]["files"] == ["b.py"]
+    (tmp_path / "b.py").unlink()
+    r = wait(lambda r: r["last_change"] and r["last_change"]["resolved"])
+    assert [n["file"] for n in r["last_change"]["resolved"]] == ["b.py"]
+    assert c.post(f"/api/w/{wid}/watch", json={"on": False}).json()["watching"] is False
