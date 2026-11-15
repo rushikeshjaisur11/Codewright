@@ -6,6 +6,7 @@ memory, so the UI can switch between modes without re-scanning.
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
 import uuid
@@ -16,8 +17,8 @@ from . import archmap, design, watcher
 from .chat import CodeIndex, answer
 from .engine import ReviewResult, review
 from .feedback import Feedback
-from .graph import build
-from .llm import LLMConfig, status as llm_status
+from .llm import LLMConfig
+from .llm import status as llm_status
 from .models import Finding
 
 
@@ -40,10 +41,8 @@ class Workspace:
                 self.result = review(self.root, run_proof=proof, top=None, base=base)
                 self.index = CodeIndex(self.result.graph)
                 self.last_run = time.time()
-                try:
+                with contextlib.suppress(OSError):
                     archmap.snapshot(self.root, archmap.ArchMap(self.result.graph, self.result.findings).system())
-                except OSError:
-                    pass
                 return self.result
             except Exception as exc:
                 self.error = f"{type(exc).__name__}: {exc}"

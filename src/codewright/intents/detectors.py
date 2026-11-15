@@ -76,7 +76,7 @@ def line(node: Node) -> int:
 def snippet(pf: ParsedFile, start: int, end: int, limit: int = 12) -> str:
     lines = pf.lines[start - 1 : end]
     if len(lines) > limit:
-        lines = lines[:limit] + ["    ...\n"]
+        lines = [*lines[:limit], "    ...\n"]
     return "".join(lines).rstrip("\n")
 
 
@@ -108,7 +108,9 @@ def detect_retry(pf, fn, node, graph):
         if has_try and sleeps:
             return [
                 IntentMatch(
-                    "retry", fn, line(loop),
+                    "retry",
+                    fn,
+                    line(loop),
                     f"loop with try/except and {sleeps[0]}() re-runs a failing call",
                     {"sleep": sleeps[0], "async": fn.is_async},
                 )
@@ -151,7 +153,9 @@ def detect_memo_cache(pf, fn, node, graph):
             continue
         return [
             IntentMatch(
-                "memo-cache", fn, line(stmt),
+                "memo-cache",
+                fn,
+                line(stmt),
                 f"module-level dict `{cache}` used as an unbounded memo cache keyed on `{key}`",
                 {
                     "cache": cache,
@@ -187,7 +191,9 @@ def detect_poll_queue(pf, fn, node, graph):
         if sleeps and queries and "SELECT" in sql:
             return [
                 IntentMatch(
-                    "poll-queue", fn, line(loop),
+                    "poll-queue",
+                    fn,
+                    line(loop),
                     f"`while {cond}` loop polls the database with SELECT and {sleeps[0]}()",
                     {"skip_locked": "SKIP LOCKED" in sql},
                 )
@@ -210,7 +216,9 @@ def detect_connection_per_request(pf, fn, node, graph):
         if name in CONNECT_CALLS:
             return [
                 IntentMatch(
-                    "connection-per-request", fn, line(call),
+                    "connection-per-request",
+                    fn,
+                    line(call),
                     f"request handler opens a new client/connection with {name}() on every request",
                     {"call": name, "library": CONNECT_CALLS[name]},
                 )
@@ -234,17 +242,16 @@ def detect_hand_orchestrator(pf, fn, node, graph):
     if body is None:
         return []
     runs = [c for c, name in calls_in(body, pf) if name.endswith(".run_async") or name.endswith(".run")]
-    in_loop = any(
-        p.type in ("for_statement", "while_statement")
-        for c in runs
-        for p in _ancestors(c, stop=body)
-    )
+    in_loop = any(p.type in ("for_statement", "while_statement") for c in runs for p in _ancestors(c, stop=body))
     if len(runs) >= 2 or (runs and in_loop):
         return [
             IntentMatch(
-                "agent-orchestrator", fn, line(runs[0]),
+                "agent-orchestrator",
+                fn,
+                line(runs[0]),
                 "hand-written loop drives agents one after another"
-                if in_loop else f"{len(runs)} agent runs chained by hand",
+                if in_loop
+                else f"{len(runs)} agent runs chained by hand",
                 {"runs": len(runs), "loop": in_loop},
             )
         ]
@@ -262,7 +269,8 @@ def detect_module_level(pf: ParsedFile) -> list[IntentMatch]:
     """Module-scope intents (e.g. a deprecated ADK agent class assigned to root_agent)."""
     out: list[IntentMatch] = []
     deprecated = {
-        alias: target for alias, target in pf.module.imports.items()
+        alias: target
+        for alias, target in pf.module.imports.items()
         if target.startswith("google.adk") and target.rsplit(".", 1)[-1] in ADK_DEPRECATED
     }
     if not deprecated:
@@ -276,7 +284,9 @@ def detect_module_level(pf: ParsedFile) -> list[IntentMatch]:
             fn = Function("<module>", "<module>", pf.path, ln, call.end_point[0] + 1, ln)
             out.append(
                 IntentMatch(
-                    "agent-orchestrator", fn, ln,
+                    "agent-orchestrator",
+                    fn,
+                    ln,
                     f"uses {cls}, a fixed workflow agent class",
                     {"deprecated_class": cls},
                 )
@@ -287,8 +297,12 @@ def detect_module_level(pf: ParsedFile) -> list[IntentMatch]:
 def is_test_file(path: str) -> bool:
     parts = path.split("/")
     name = parts[-1]
-    return name.startswith("test_") or name.endswith("_test.py") or name == "conftest.py" or \
-        any(p in ("tests", "test") for p in parts[:-1])
+    return (
+        name.startswith("test_")
+        or name.endswith("_test.py")
+        or name == "conftest.py"
+        or any(p in ("tests", "test") for p in parts[:-1])
+    )
 
 
 def detect(graph: CodeGraph, only: set[str] | None = None) -> list[IntentMatch]:

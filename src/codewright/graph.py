@@ -21,8 +21,17 @@ PY = Language(tree_sitter_python.language())
 _PARSER = Parser(PY)
 
 ROUTE_DECORATOR_SUFFIXES = (
-    ".get", ".post", ".put", ".patch", ".delete", ".route", ".websocket", ".api_route",
-    ".command", ".callback", ".task",
+    ".get",
+    ".post",
+    ".put",
+    ".patch",
+    ".delete",
+    ".route",
+    ".websocket",
+    ".api_route",
+    ".command",
+    ".callback",
+    ".task",
 )
 
 
@@ -134,8 +143,10 @@ def _definition(defn: Node | None, pf: ParsedFile, prefix: str, decorators: list
         return
     params = []
     for p in (defn.child_by_field_name("parameters") or defn).named_children:
-        ident = p if p.type == "identifier" else p.child_by_field_name("name") or (
-            p.named_children[0] if p.named_children else None
+        ident = (
+            p
+            if p.type == "identifier"
+            else p.child_by_field_name("name") or (p.named_children[0] if p.named_children else None)
         )
         if ident is not None and ident.type == "identifier":
             params.append(text(ident))
@@ -214,7 +225,7 @@ def build(root: str | Path) -> CodeGraph:
         graph.files[pf.path] = pf
 
     by_name: dict[str, list[str]] = defaultdict(list)
-    for pf, fn in graph.functions():
+    for _, fn in graph.functions():
         by_name[fn.name].append(graph.key(fn))
 
     for pf, fn in graph.functions():

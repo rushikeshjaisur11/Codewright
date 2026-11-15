@@ -82,7 +82,10 @@ def test_pydantic_card_needs_v2(tmp_path):
 
 
 def test_stdlib_reinventions(tmp_path):
-    write_repo(tmp_path, {"m.py": """
+    write_repo(
+        tmp_path,
+        {
+            "m.py": """
         import os
         import threading
 
@@ -125,14 +128,19 @@ def test_stdlib_reinventions(tmp_path):
             for x in xs:
                 out += str(x)
             return out
-    """})
-    assert {"manual-counter", "manual-defaultdict", "manual-thread-fanout", "os-system",
-            "string-concat-loop"} <= set(findings_for(tmp_path))
+    """
+        },
+    )
+    assert {"manual-counter", "manual-defaultdict", "manual-thread-fanout", "os-system", "string-concat-loop"} <= set(
+        findings_for(tmp_path)
+    )
 
 
 def test_proof_requires_a_test_that_reaches_the_function(tmp_path):
-    write_repo(tmp_path, {
-        "m.py": """
+    write_repo(
+        tmp_path,
+        {
+            "m.py": """
             import time
 
             async def untested():
@@ -144,13 +152,14 @@ def test_proof_requires_a_test_that_reaches_the_function(tmp_path):
                 fn()
                 return time.time() - start
         """,
-        "tests/test_m.py": """
+            "tests/test_m.py": """
             import m
 
             def test_timed():
                 assert m.timed(lambda: None) >= 0
         """,
-    })
+        },
+    )
     r = review(tmp_path, python=sys.executable, top=None)
     by = {f.intent: f for f in r.findings}
     assert by["wall-clock-timing"].proof.value == "verified"
@@ -183,28 +192,39 @@ def test_feedback_tunes_ranking_and_mutes(tmp_path):
 
 
 def _git(cwd, *args):
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=cwd, check=True,
-                   capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args], cwd=cwd, check=True, capture_output=True
+    )
 
 
 def test_pr_mode_reviews_only_changed_code(tmp_path):
-    write_repo(tmp_path, {"a.py": """
+    write_repo(
+        tmp_path,
+        {
+            "a.py": """
         import time
 
         def old(fn):
             start = time.time()
             fn()
             return time.time() - start
-    """})
+    """
+        },
+    )
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-qm", "base")
-    write_repo(tmp_path, {"b.py": """
+    write_repo(
+        tmp_path,
+        {
+            "b.py": """
         import os
 
         def run(cmd):
             os.system(cmd)
-    """})
+    """
+        },
+    )
     assert changed_lines(tmp_path, "HEAD") == {"b.py": {-1}}
     r = review(tmp_path, run_proof=False, top=None, base="HEAD")
     assert [f.intent for f in r.findings] == ["os-system"]
@@ -242,10 +262,19 @@ def test_chat_cites_code():
 
 def answered_session() -> design.Session:
     s = design.Session("t")
-    for qid, value in [("idea", "NL2SQL service"), ("name", "nl2sql"), ("users", "20k"), ("peak_rps", "skip"),
-                       ("data_gb", "50 GB"), ("latency_ms", "800"), ("availability", "99.9"),
-                       ("workload", ["background jobs", "LLM / agents"]), ("cloud", "GCP"), ("team", "4"),
-                       ("compliance", "PII")]:
+    for qid, value in [
+        ("idea", "NL2SQL service"),
+        ("name", "nl2sql"),
+        ("users", "20k"),
+        ("peak_rps", "skip"),
+        ("data_gb", "50 GB"),
+        ("latency_ms", "800"),
+        ("availability", "99.9"),
+        ("workload", ["background jobs", "LLM / agents"]),
+        ("cloud", "GCP"),
+        ("team", "4"),
+        ("compliance", "PII"),
+    ]:
         s.answer(qid, value)
     return s
 
@@ -282,13 +311,18 @@ def test_design_proposal_and_starter_repo(tmp_path):
 def test_drift_against_live_map(tmp_path):
     s = answered_session()
     p = design.propose(s, live_versions=False)
-    write_repo(tmp_path, {"svc/api.py": """
+    write_repo(
+        tmp_path,
+        {
+            "svc/api.py": """
         import redis
         import requests
 
         def get(k):
             return redis.Redis().get(k), requests.get("https://x")
-    """})
+    """
+        },
+    )
     design.save_intended(tmp_path, design.intended(s, p, "monolith"))
     g = graph.build(tmp_path)
     d = design.drift(design.load_intended(tmp_path), ArchMap(g).system(), g)

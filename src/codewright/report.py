@@ -25,21 +25,26 @@ def to_json(result: ReviewResult) -> str:
             "files_scanned": len(result.graph.files),
             "intent_matches": result.total_matches,
             "findings": [f.to_dict() for f in result.findings],
-            "rejected": [{"id": f.id, "title": f.title, "file": f.file, "reason": f.rejected_reason}
-                         for f in result.rejected],
+            "rejected": [
+                {"id": f.id, "title": f.title, "file": f.file, "reason": f.rejected_reason} for f in result.rejected
+            ],
         },
         indent=2,
     )
 
 
 def to_markdown(result: ReviewResult) -> str:
-    out = [f"# Codewright review\n",
-           f"{len(result.findings)} findings from {len(result.graph.files)} files "
-           f"({result.total_matches} intent matches, {len(result.rejected)} dropped by the critic).\n"]
+    out = [
+        "# Codewright review\n",
+        f"{len(result.findings)} findings from {len(result.graph.files)} files "
+        f"({result.total_matches} intent matches, {len(result.rejected)} dropped by the critic).\n",
+    ]
     for i, f in enumerate(result.findings, 1):
         out.append(f"## {i}. {f.title}\n")
-        out.append(f"`{f.file}:{f.line}` in `{f.function}` · score {f.score} · proof: **{f.proof.value}**"
-                   f"{' · hot path' if f.hot_path else ''}\n")
+        out.append(
+            f"`{f.file}:{f.line}` in `{f.function}` · score {f.score} · proof: **{f.proof.value}**"
+            f"{' · hot path' if f.hot_path else ''}\n"
+        )
         out.append(f"- **Found:** {f.evidence}")
         out.append(f"- **Instead, use:** {f.suggestion}")
         out.append(f"- **API:** {f.api} (symbol check: {f.symbol_check})")
@@ -58,16 +63,19 @@ def to_markdown(result: ReviewResult) -> str:
 
 def print_terminal(result: ReviewResult, console: Console | None = None) -> None:
     console = console or Console()
-    deps = ", ".join(f"{k} {d.version or d.specifier or ''}".strip()
-                     for k, d in sorted(result.stack.dependencies.items())[:12])
-    console.print(Panel.fit(
-        f"[bold]{result.stack.root}[/]\n"
-        f"Python {result.stack.python or 'unknown'} · {len(result.stack.dependencies)} dependencies"
-        f"{' · ' + deps if deps else ''}\n"
-        f"{len(result.graph.files)} files · {result.total_matches} intent matches · "
-        f"{len(result.findings)} shown · {len(result.rejected)} dropped by the critic",
-        title="Codewright review",
-    ))
+    deps = ", ".join(
+        f"{k} {d.version or d.specifier or ''}".strip() for k, d in sorted(result.stack.dependencies.items())[:12]
+    )
+    console.print(
+        Panel.fit(
+            f"[bold]{result.stack.root}[/]\n"
+            f"Python {result.stack.python or 'unknown'} · {len(result.stack.dependencies)} dependencies"
+            f"{' · ' + deps if deps else ''}\n"
+            f"{len(result.graph.files)} files · {result.total_matches} intent matches · "
+            f"{len(result.findings)} shown · {len(result.rejected)} dropped by the critic",
+            title="Codewright review",
+        )
+    )
     if not result.findings:
         console.print("[green]No findings.[/] Nothing in this repo matched a capability card with proof-ready advice.")
         return
@@ -76,8 +84,9 @@ def print_terminal(result: ReviewResult, console: Console | None = None) -> None
     for col in ("#", "Finding", "Where", "Proof", "Score"):
         table.add_column(col)
     for i, f in enumerate(result.findings, 1):
-        table.add_row(str(i), f.title, f"{f.file}:{f.line}",
-                      f"[{PROOF_STYLE[f.proof]}]{f.proof.value}[/]", f"{f.score}")
+        table.add_row(
+            str(i), f.title, f"{f.file}:{f.line}", f"[{PROOF_STYLE[f.proof]}]{f.proof.value}[/]", f"{f.score}"
+        )
     console.print(table)
     for i, f in enumerate(result.findings, 1):
         console.print(_panel(i, f))
@@ -107,17 +116,23 @@ def to_pr_comment(result: ReviewResult) -> str:
     """Compact GitHub PR comment: one collapsible block per finding, changed code only."""
     scope = f" on lines changed since `{result.base}`" if result.base else ""
     if not result.findings:
-        return f"### Codewright\n\nNo findings{scope}. "\
-               f"{len(result.rejected)} candidate(s) were dropped by the critic.\n"
-    out = [f"### Codewright: {len(result.findings)} suggestion(s){scope}\n",
-           "| # | Suggestion | Where | Proof |", "| --- | --- | --- | --- |"]
+        return (
+            f"### Codewright\n\nNo findings{scope}. {len(result.rejected)} candidate(s) were dropped by the critic.\n"
+        )
+    out = [
+        f"### Codewright: {len(result.findings)} suggestion(s){scope}\n",
+        "| # | Suggestion | Where | Proof |",
+        "| --- | --- | --- | --- |",
+    ]
     for i, f in enumerate(result.findings, 1):
         out.append(f"| {i} | {f.title} | `{f.file}:{f.line}` | {f.proof.value} |")
     out.append("")
     for i, f in enumerate(result.findings, 1):
         out.append(f"<details><summary><b>{i}. {f.title}</b> — <code>{f.file}:{f.line}</code></summary>\n")
-        out.append(f"**Found:** {f.evidence}  \n**Instead:** {f.suggestion}  \n**API:** {f.api}  \n"
-                   f"**Gain:** {f.gain}  \n**When not to:** {f.when_not}  \n**Proof:** {f.proof_detail}\n")
+        out.append(
+            f"**Found:** {f.evidence}  \n**Instead:** {f.suggestion}  \n**API:** {f.api}  \n"
+            f"**Gain:** {f.gain}  \n**When not to:** {f.when_not}  \n**Proof:** {f.proof_detail}\n"
+        )
         if f.patch:
             out.append(f"```diff\n{f.patch.rstrip()}\n```")
         out.append("Sources: " + " · ".join(f"[{j + 1}]({s})" for j, s in enumerate(f.sources)))

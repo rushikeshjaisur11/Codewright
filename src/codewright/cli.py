@@ -40,8 +40,7 @@ def review(
     from .report import print_terminal, to_json, to_markdown, to_pr_comment
 
     with console.status("Scanning..."):
-        result = run_review(path, run_proof=proof, top=top or None, python=python, extra_cards=cards or None,
-                            base=base)
+        result = run_review(path, run_proof=proof, top=top or None, python=python, extra_cards=cards or None, base=base)
     if fmt is Format.terminal and output is None:
         print_terminal(result, console)
         return
@@ -73,15 +72,22 @@ def graph(
     g = graph_mod.build(path)
     hot = g.hot_functions()
     if as_json:
-        print(json.dumps({
-            "files": sorted(g.files),
-            "functions": [g.key(fn) for _, fn in g.functions()],
-            "edges": {k: sorted(v) for k, v in sorted(g.edges.items())},
-            "entry_points": sorted(g.entry_points),
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "files": sorted(g.files),
+                    "functions": [g.key(fn) for _, fn in g.functions()],
+                    "edges": {k: sorted(v) for k, v in sorted(g.edges.items())},
+                    "entry_points": sorted(g.entry_points),
+                },
+                indent=2,
+            )
+        )
         return
-    console.print(f"{len(g.files)} files, {sum(1 for _ in g.functions())} functions, "
-                  f"{sum(len(v) for v in g.edges.values())} call edges, {len(g.entry_points)} entry points")
+    console.print(
+        f"{len(g.files)} files, {sum(1 for _ in g.functions())} functions, "
+        f"{sum(len(v) for v in g.edges.values())} call edges, {len(g.entry_points)} entry points"
+    )
     for _, fn in g.functions():
         key = g.key(fn)
         tag = " [green]entry[/]" if key in g.entry_points else (" [yellow]hot[/]" if key in hot else "")
@@ -135,8 +141,10 @@ def check(path: Path = typer.Argument(Path("."), exists=True, file_okay=False)) 
 
 
 @app.command()
-def watch(path: Path = typer.Argument(Path("."), exists=True, file_okay=False),
-          rescan: bool = typer.Option(False, help="Re-run the review when a dependency has a new release.")) -> None:
+def watch(
+    path: Path = typer.Argument(Path("."), exists=True, file_okay=False),
+    rescan: bool = typer.Option(False, help="Re-run the review when a dependency has a new release."),
+) -> None:
     """Release watcher: newer dependency versions and the cards an upgrade unlocks."""
     from . import watcher
 
@@ -147,7 +155,9 @@ def watch(path: Path = typer.Argument(Path("."), exists=True, file_okay=False),
             continue
         new = " [yellow]NEW[/]" if r["new_since_last_check"] else ""
         unlock = ("  unlocks: " + "; ".join(u["title"] for u in r["unlocks"])) if r["unlocks"] else ""
-        console.print(f"  {r['name']:28} {r['installed'] or '-':12} -> {r['latest'] or 'offline':12} {r['bump']}{new}{unlock}")
+        console.print(
+            f"  {r['name']:28} {r['installed'] or '-':12} -> {r['latest'] or 'offline':12} {r['bump']}{new}{unlock}"
+        )
     if rescan and any(r["new_since_last_check"] for r in rows):
         from .engine import review as run_review
         from .report import print_terminal
@@ -193,7 +203,7 @@ def feedback(
         stats = ws.feedback(finding_id, status, reason)
     except KeyError:
         console.print(f"No finding {finding_id}. Run `codewright review` to see ids.")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
     rate = stats["acceptance_rate"]
     console.print(f"Recorded. Acceptance rate: {'-' if rate is None else f'{rate:.0%}'}")
 

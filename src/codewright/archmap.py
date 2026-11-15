@@ -23,23 +23,43 @@ from .models import Finding
 
 # import prefix -> (external system label, kind)
 EXTERNAL = [
-    ("sqlalchemy", "SQL database", "database"), ("psycopg", "PostgreSQL", "database"),
-    ("psycopg2", "PostgreSQL", "database"), ("asyncpg", "PostgreSQL", "database"),
-    ("sqlite3", "SQLite", "database"), ("pymysql", "MySQL", "database"), ("pymongo", "MongoDB", "database"),
-    ("motor", "MongoDB", "database"), ("google.cloud.bigquery", "BigQuery", "database"),
-    ("google.cloud.spanner", "Spanner", "database"), ("google.cloud.firestore", "Firestore", "database"),
-    ("redis", "Redis", "cache"), ("pymemcache", "Memcached", "cache"),
-    ("celery", "Celery broker", "queue"), ("kafka", "Kafka", "queue"), ("confluent_kafka", "Kafka", "queue"),
-    ("pika", "RabbitMQ", "queue"), ("google.cloud.pubsub", "Pub/Sub", "queue"),
-    ("google.cloud.tasks", "Cloud Tasks", "queue"), ("boto3", "AWS", "cloud"),
+    ("sqlalchemy", "SQL database", "database"),
+    ("psycopg", "PostgreSQL", "database"),
+    ("psycopg2", "PostgreSQL", "database"),
+    ("asyncpg", "PostgreSQL", "database"),
+    ("sqlite3", "SQLite", "database"),
+    ("pymysql", "MySQL", "database"),
+    ("pymongo", "MongoDB", "database"),
+    ("motor", "MongoDB", "database"),
+    ("google.cloud.bigquery", "BigQuery", "database"),
+    ("google.cloud.spanner", "Spanner", "database"),
+    ("google.cloud.firestore", "Firestore", "database"),
+    ("redis", "Redis", "cache"),
+    ("pymemcache", "Memcached", "cache"),
+    ("celery", "Celery broker", "queue"),
+    ("kafka", "Kafka", "queue"),
+    ("confluent_kafka", "Kafka", "queue"),
+    ("pika", "RabbitMQ", "queue"),
+    ("google.cloud.pubsub", "Pub/Sub", "queue"),
+    ("google.cloud.tasks", "Cloud Tasks", "queue"),
+    ("boto3", "AWS", "cloud"),
     ("google.cloud.storage", "Cloud Storage", "storage"),
-    ("httpx", "External HTTP APIs", "http"), ("requests", "External HTTP APIs", "http"),
-    ("aiohttp", "External HTTP APIs", "http"), ("urllib.request", "External HTTP APIs", "http"),
-    ("google.adk", "Google ADK agents", "llm"), ("google.genai", "Gemini API", "llm"),
-    ("vertexai", "Vertex AI", "llm"), ("openai", "OpenAI API", "llm"), ("anthropic", "Claude API", "llm"),
-    ("litellm", "LLM providers", "llm"), ("langchain", "LangChain", "llm"), ("langgraph", "LangGraph", "llm"),
-    ("fastapi", "HTTP clients (FastAPI)", "ingress"), ("flask", "HTTP clients (Flask)", "ingress"),
-    ("django", "HTTP clients (Django)", "ingress"), ("typer", "CLI users", "ingress"),
+    ("httpx", "External HTTP APIs", "http"),
+    ("requests", "External HTTP APIs", "http"),
+    ("aiohttp", "External HTTP APIs", "http"),
+    ("urllib.request", "External HTTP APIs", "http"),
+    ("google.adk", "Google ADK agents", "llm"),
+    ("google.genai", "Gemini API", "llm"),
+    ("vertexai", "Vertex AI", "llm"),
+    ("openai", "OpenAI API", "llm"),
+    ("anthropic", "Claude API", "llm"),
+    ("litellm", "LLM providers", "llm"),
+    ("langchain", "LangChain", "llm"),
+    ("langgraph", "LangGraph", "llm"),
+    ("fastapi", "HTTP clients (FastAPI)", "ingress"),
+    ("flask", "HTTP clients (Flask)", "ingress"),
+    ("django", "HTTP clients (Django)", "ingress"),
+    ("typer", "CLI users", "ingress"),
     ("click", "CLI users", "ingress"),
 ]
 
@@ -72,12 +92,21 @@ class View:
     edges: list[Edge]
 
     def to_dict(self) -> dict:
-        return {"level": self.level, "title": self.title,
-                "nodes": [asdict(n) for n in self.nodes], "edges": [asdict(e) for e in self.edges]}
+        return {
+            "level": self.level,
+            "title": self.title,
+            "nodes": [asdict(n) for n in self.nodes],
+            "edges": [asdict(e) for e in self.edges],
+        }
 
     def mermaid(self) -> str:
-        shapes = {"database": ("[(", ")]"), "cache": ("[(", ")]"), "queue": ("[[", "]]"),
-                  "ingress": ("([", "])"), "llm": ("{{", "}}")}
+        shapes = {
+            "database": ("[(", ")]"),
+            "cache": ("[(", ")]"),
+            "queue": ("[[", "]]"),
+            "ingress": ("([", "])"),
+            "llm": ("{{", "}}"),
+        }
         ids = {n.id: f"n{i}" for i, n in enumerate(self.nodes)}
         lines = ["flowchart LR"]
         for n in self.nodes:
@@ -179,29 +208,33 @@ class ArchMap:
     def _fn_stats(self, path: str) -> tuple[int, int]:
         pf = self.g.files[path]
         hot = max((self._fan_in.get(f"{path}::{fn.qualname}", 0) for fn in pf.module.functions), default=0)
-        untested = sum(1 for fn in pf.module.functions
-                       if not fn.name.startswith("_") and fn.name not in self._tested)
+        untested = sum(1 for fn in pf.module.functions if not fn.name.startswith("_") and fn.name not in self._tested)
         return hot, untested
 
     # ----------------------------------------------------------------- views
     def system(self) -> View:
         comps: dict[str, list[str]] = defaultdict(list)
-        for mod, path in self.modules.items():
+        for path in self.modules.values():
             comps[self._comp(path)].append(path)
         nodes: dict[str, Node] = {}
         edges: Counter = Counter()
         ext_edges: Counter = Counter()
         for comp, paths in sorted(comps.items()):
-            if all(p.endswith("__init__.py") and not self.g.files[p].module.functions for p in paths) \
-                    and len(comps) > 1:
+            if (
+                all(p.endswith("__init__.py") and not self.g.files[p].module.functions for p in paths)
+                and len(comps) > 1
+            ):
                 continue  # empty package marker
             fn_count = sum(len(self.g.files[p].module.functions) for p in paths)
             hot = max((self._fn_stats(p)[0] for p in paths), default=0)
             nodes[f"c:{comp}"] = Node(
-                f"c:{comp}", comp, "component",
+                f"c:{comp}",
+                comp,
+                "component",
                 files=[{"file": p, "line": 1} for p in sorted(paths)],
                 findings=sum(self._findings_by_file[p] for p in paths),
-                hotspot=hot, untested=sum(self._fn_stats(p)[1] for p in paths),
+                hotspot=hot,
+                untested=sum(self._fn_stats(p)[1] for p in paths),
                 detail=f"{len(paths)} modules · {fn_count} functions",
             )
             for p in paths:
@@ -213,21 +246,39 @@ class ArchMap:
                 for t in external:
                     if ext := self._external_for(t):
                         ext_edges[(comp, ext)] += 1
-        for (comp, (label, kind)), n in ext_edges.items():
+        for comp, (label, kind) in ext_edges:
             nid = f"x:{label}"
             if nid not in nodes:
                 nodes[nid] = Node(nid, label, kind, detail=kind)
-            nodes[nid].files.extend({"file": p, "line": 1} for p in comps[comp]
-                                    if any(self._external_for(t) == (label, kind)
-                                           for t in self._module_imports(p)[1]))
-        out_edges = [Edge(f"c:{a}", f"c:{b}", "imports", w) for (a, b), w in edges.items()
-                     if f"c:{a}" in nodes and f"c:{b}" in nodes]
+            nodes[nid].files.extend(
+                {"file": p, "line": 1}
+                for p in comps[comp]
+                if any(self._external_for(t) == (label, kind) for t in self._module_imports(p)[1])
+            )
+        out_edges = [
+            Edge(f"c:{a}", f"c:{b}", "imports", w)
+            for (a, b), w in edges.items()
+            if f"c:{a}" in nodes and f"c:{b}" in nodes
+        ]
         for (comp, (label, kind)), w in ext_edges.items():
             if f"c:{comp}" not in nodes:
                 continue
             src, dst = (f"x:{label}", f"c:{comp}") if kind == "ingress" else (f"c:{comp}", f"x:{label}")
-            out_edges.append(Edge(src, dst, {"database": "queries", "cache": "reads/writes", "queue": "publishes",
-                                             "http": "calls", "llm": "prompts", "ingress": "requests"}.get(kind, "uses"), w))
+            out_edges.append(
+                Edge(
+                    src,
+                    dst,
+                    {
+                        "database": "queries",
+                        "cache": "reads/writes",
+                        "queue": "publishes",
+                        "http": "calls",
+                        "llm": "prompts",
+                        "ingress": "requests",
+                    }.get(kind, "uses"),
+                    w,
+                )
+            )
         return View("system", "System", list(nodes.values()), out_edges)
 
     def module(self, component: str) -> View:
@@ -236,13 +287,19 @@ class ArchMap:
         for p in paths:
             pf = self.g.files[p]
             hot, untested = self._fn_stats(p)
-            nodes.append(Node(
-                f"m:{module_name(p)}", module_name(p).split(".", 1)[-1] if "." in module_name(p) else module_name(p),
-                "module", files=[{"file": p, "line": fn.def_line, "name": fn.qualname} for fn in pf.module.functions]
-                or [{"file": p, "line": 1}],
-                findings=self._findings_by_file[p], hotspot=hot, untested=untested,
-                detail=f"{len(pf.module.functions)} functions",
-            ))
+            nodes.append(
+                Node(
+                    f"m:{module_name(p)}",
+                    module_name(p).split(".", 1)[-1] if "." in module_name(p) else module_name(p),
+                    "module",
+                    files=[{"file": p, "line": fn.def_line, "name": fn.qualname} for fn in pf.module.functions]
+                    or [{"file": p, "line": 1}],
+                    findings=self._findings_by_file[p],
+                    hotspot=hot,
+                    untested=untested,
+                    detail=f"{len(pf.module.functions)} functions",
+                )
+            )
             internal, external = self._module_imports(p)
             for mod in internal:
                 if self._comp(self.modules[mod]) == component:
@@ -268,9 +325,12 @@ class ArchMap:
             if fn is None:
                 continue
             nodes[key] = Node(
-                key, qual, "entry" if key == entry else "function",
+                key,
+                qual,
+                "entry" if key == entry else "function",
                 files=[{"file": path, "line": fn.def_line}],
-                findings=self._findings_by_fn[key], hotspot=self._fan_in.get(key, 0),
+                findings=self._findings_by_fn[key],
+                hotspot=self._fan_in.get(key, 0),
                 untested=0 if fn.name in self._tested or fn.name.startswith("_") else 1,
                 detail=f"{path}:{fn.def_line}",
             )
@@ -281,9 +341,14 @@ class ArchMap:
                     edges.append(Edge(key, callee, "calls"))
                     frontier.append((callee, d + 1))
             _, external = self._module_imports(path)
-            used = {self._external_for(t) for t in external if any(
-                c.split(".")[0] in {a for a, v in pf.module.imports.items() if v == t or v.startswith(t)}
-                for c in fn.calls)} - {None}
+            used = {
+                self._external_for(t)
+                for t in external
+                if any(
+                    c.split(".")[0] in {a for a, v in pf.module.imports.items() if v == t or v.startswith(t)}
+                    for c in fn.calls
+                )
+            } - {None}
             for label, kind in used:
                 nid = f"x:{label}"
                 nodes.setdefault(nid, Node(nid, label, kind, detail=kind))
@@ -306,18 +371,34 @@ class ArchMap:
         imported_by = sorted(m for m, p in self.modules.items() if mod in self._module_imports(p)[0])
         doc = ""
         first = pf.root.named_children[0] if pf.root.named_children else None
-        if first is not None and first.type == "expression_statement" and first.named_children \
-                and first.named_children[0].type == "string":
+        if (
+            first is not None
+            and first.type == "expression_statement"
+            and first.named_children
+            and first.named_children[0].type == "string"
+        ):
             doc = first.text.decode(errors="replace").strip("\"' \n")
         return {
-            "file": path, "module": mod, "doc": doc,
-            "functions": [{"name": fn.qualname, "line": fn.def_line, "end": fn.end_line, "async": fn.is_async,
-                           "decorators": fn.decorators, "calls": fn.calls[:20],
-                           "fan_in": self._fan_in.get(f"{path}::{fn.qualname}", 0),
-                           "tested": fn.name in self._tested,
-                           "findings": self._findings_by_fn[f"{path}::{fn.qualname}"]}
-                          for fn in pf.module.functions],
-            "imports": sorted(internal), "external": sorted(external), "imported_by": imported_by,
+            "file": path,
+            "module": mod,
+            "doc": doc,
+            "functions": [
+                {
+                    "name": fn.qualname,
+                    "line": fn.def_line,
+                    "end": fn.end_line,
+                    "async": fn.is_async,
+                    "decorators": fn.decorators,
+                    "calls": fn.calls[:20],
+                    "fan_in": self._fan_in.get(f"{path}::{fn.qualname}", 0),
+                    "tested": fn.name in self._tested,
+                    "findings": self._findings_by_fn[f"{path}::{fn.qualname}"],
+                }
+                for fn in pf.module.functions
+            ],
+            "imports": sorted(internal),
+            "external": sorted(external),
+            "imported_by": imported_by,
             "findings": [f.id for f in self.findings if f.file == path],
         }
 

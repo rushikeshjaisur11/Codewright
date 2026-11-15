@@ -77,6 +77,13 @@ def review(
             f.proof_detail = "proof skipped (--no-proof)"
     weights = {f.intent: fb.intent_weight(f.intent) for f in kept}
     return ReviewResult(
-        st, g, rank.rank(kept, top, weights), rejected, muted, len(matches), base,
-        round(time.perf_counter() - t0, 2), fb,
+        st,
+        g,
+        rank.rank(kept, top, weights),
+        rejected,
+        muted,
+        len(matches),
+        base,
+        round(time.perf_counter() - t0, 2),
+        fb,
     )

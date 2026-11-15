@@ -64,7 +64,9 @@ def check_symbols(findings: list[Finding], python: str, symbols: dict[str, str])
     try:
         proc = subprocess.run(
             [python, "-c", _CHECK_SCRIPT, json.dumps(wanted)],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         result = json.loads(proc.stdout or "{}")
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):

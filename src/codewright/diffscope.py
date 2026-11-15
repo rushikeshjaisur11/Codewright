@@ -15,7 +15,9 @@ def changed_lines(root: str | Path, base: str) -> dict[str, set[int]]:
     """Map of file -> changed line numbers (new side) between `base` and the working tree."""
     proc = subprocess.run(
         ["git", "diff", "--relative", "--unified=0", "--no-color", base, "--", "*.py"],
-        cwd=root, capture_output=True, text=True,
+        cwd=root,
+        capture_output=True,
+        text=True,
     )
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or f"git diff {base} failed")
@@ -31,8 +33,9 @@ def changed_lines(root: str | Path, base: str) -> dict[str, set[int]]:
             start, count = int(m.group(1)), int(m.group(2) or 1)
             out[current].update(range(start, start + max(count, 1)))
     # Untracked files count as entirely changed.
-    untracked = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "*.py"],
-                               cwd=root, capture_output=True, text=True).stdout.split()
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "*.py"], cwd=root, capture_output=True, text=True
+    ).stdout.split()
     for path in untracked:
         out[path] = {-1}
     return out

@@ -60,8 +60,12 @@ def latest(name: str, cache: dict | None = None, timeout: float = 8.0) -> dict |
     version = data["info"]["version"]
     files = data.get("releases", {}).get(version) or []
     released = min((f.get("upload_time_iso_8601", "") for f in files), default="")
-    out = {"version": version, "released": released[:10],
-           "requires_python": data["info"].get("requires_python"), "fetched": time.time()}
+    out = {
+        "version": version,
+        "released": released[:10],
+        "requires_python": data["info"].get("requires_python"),
+        "fetched": time.time(),
+    }
     cache[name] = out
     return out
 
@@ -91,23 +95,37 @@ def check(stack: Stack, root: str | Path | None = None, names: list[str] | None 
         dep = stack.dependencies.get(name)
         info = latest(name, cache)
         if info is None:
-            out.append({"name": name, "installed": dep.version if dep else None, "latest": None,
-                        "bump": "unknown", "new_since_last_check": False, "unlocks": []})
+            out.append(
+                {
+                    "name": name,
+                    "installed": dep.version if dep else None,
+                    "latest": None,
+                    "bump": "unknown",
+                    "new_since_last_check": False,
+                    "unlocks": [],
+                }
+            )
             continue
         installed = dep.version if dep else None
         unlocks = [
             {"card": c.id, "title": c.title}
             for c in cards
-            if c.library == name and c.versions not in ("*", "")
+            if c.library == name
+            and c.versions not in ("*", "")
             and card_store.version_matches(info["version"], c.versions)
             and not card_store.version_matches(installed, c.versions)
         ]
-        out.append({
-            "name": name, "installed": installed, "latest": info["version"], "released": info["released"],
-            "bump": bump(installed, info["version"]),
-            "new_since_last_check": previous.get(name) not in (None, info["version"]),
-            "unlocks": unlocks,
-        })
+        out.append(
+            {
+                "name": name,
+                "installed": installed,
+                "latest": info["version"],
+                "released": info["released"],
+                "bump": bump(installed, info["version"]),
+                "new_since_last_check": previous.get(name) not in (None, info["version"]),
+                "unlocks": unlocks,
+            }
+        )
     _save_cache(root, cache)
     order = {"major": 0, "minor": 1, "patch": 2, "unknown": 3, "current": 4}
     return sorted(out, key=lambda r: (order[r["bump"]], r["name"]))

@@ -10,21 +10,25 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path as _P
-
-
-def ensure_dir(root) -> _P:
-    """Create .codewright/ with a .gitignore that keeps caches local and shared state committed."""
-    d = _P(root) / ".codewright"
-    d.mkdir(parents=True, exist_ok=True)
-    gi = d / ".gitignore"
-    if not gi.exists():
-        gi.write_text("# Local caches; feedback.json, design.json and config.json are meant to be committed.\nsnapshots/\nreleases.json\n")
-    return d
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .models import Finding
+
+GITIGNORE = (
+    "# Local caches; feedback.json, design.json and config.json are meant to be committed.\nsnapshots/\nreleases.json\n"
+)
+
+
+def ensure_dir(root) -> Path:
+    """Create .codewright/ with a .gitignore that keeps caches local and shared state committed."""
+    d = Path(root) / ".codewright"
+    d.mkdir(parents=True, exist_ok=True)
+    gi = d / ".gitignore"
+    if not gi.exists():
+        gi.write_text(GITIGNORE)
+    return d
+
 
 STATUSES = ("accepted", "rejected", "muted")
 
@@ -75,11 +79,16 @@ class Feedback:
     def save(self, root: str | Path) -> None:
         p = self.path(root)
         ensure_dir(root)
-        p.write_text(json.dumps({
-            "verdicts": {k: asdict(v) for k, v in self.verdicts.items()},
-            "mutes": [asdict(m) for m in self.mutes],
-            "constraints": self.constraints,
-        }, indent=2))
+        p.write_text(
+            json.dumps(
+                {
+                    "verdicts": {k: asdict(v) for k, v in self.verdicts.items()},
+                    "mutes": [asdict(m) for m in self.mutes],
+                    "constraints": self.constraints,
+                },
+                indent=2,
+            )
+        )
 
     # -------------------------------------------------------------- updates
     def record(self, finding: Finding, status: str, reason: str = "") -> None:

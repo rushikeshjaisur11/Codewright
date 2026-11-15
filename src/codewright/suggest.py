@@ -126,19 +126,23 @@ def _add_import(pf: ParsedFile, lines: list[str], statement: str) -> list[str]:
         prefix = f"from {parts[1]} import "
         for i, ln in enumerate(lines):
             if ln.startswith(prefix) and "(" not in ln and "#" not in ln and "\\" not in ln:
-                names = [n.strip() for n in ln[len(prefix):].split(",")]
+                names = [n.strip() for n in ln[len(prefix) :].split(",")]
                 if parts[3] not in names:
                     lines = list(lines)
-                    lines[i] = prefix + ", ".join(names + [parts[3]]) + "\n"
+                    lines[i] = prefix + ", ".join([*names, parts[3]]) + "\n"
                 return lines
     last_import = 0
     for child in pf.root.children:
         if child.type in ("import_statement", "import_from_statement", "future_import_statement"):
             last_import = child.end_point[0] + 1
-        elif child.type == "expression_statement" and last_import == 0 and child.named_children and \
-                child.named_children[0].type == "string":
+        elif (
+            child.type == "expression_statement"
+            and last_import == 0
+            and child.named_children
+            and child.named_children[0].type == "string"
+        ):
             last_import = child.end_point[0] + 1  # after the module docstring
-    return lines[:last_import] + [statement] + lines[last_import:]
+    return [*lines[:last_import], statement, *lines[last_import:]]
 
 
 def _span_patch(pf: ParsedFile, m: IntentMatch) -> str | None:

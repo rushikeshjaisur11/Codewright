@@ -34,8 +34,11 @@ def review(path: str, base: str = "", proof: bool = False, top: int = 10) -> dic
     """
     ws = _ws(path)
     r = ws.run_review(proof=proof, base=base or None)
-    return {"findings": [f.to_dict() for f in r.findings[:top]], "dropped_by_critic": len(r.rejected),
-            "files": len(r.graph.files)}
+    return {
+        "findings": [f.to_dict() for f in r.findings[:top]],
+        "dropped_by_critic": len(r.rejected),
+        "files": len(r.graph.files),
+    }
 
 
 @server.tool()
@@ -76,8 +79,7 @@ def architecture_map(path: str, level: str = "system", target: str = "") -> dict
         view = m.flow(target or eps[0]["id"])
     else:
         view = m.system()
-    return {**view.to_dict(), "mermaid": view.mermaid(), "entry_points": m.entry_points(),
-            "components": m.components()}
+    return {**view.to_dict(), "mermaid": view.mermaid(), "entry_points": m.entry_points(), "components": m.components()}
 
 
 @server.tool()

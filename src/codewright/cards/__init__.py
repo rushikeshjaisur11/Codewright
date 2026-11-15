@@ -65,7 +65,9 @@ def applicable(card: Card, match: IntentMatch, stack: Stack) -> tuple[bool, str,
         return version_matches(py, card.versions), "stdlib", f"{card.symbol} (Python {py})"
     if card.kind == "platform":
         found = next(r for r in card.requires_any if stack.has(r)) if card.requires_any else None
-        label = f"{card.symbol} (via {found} {stack.version_of(found) or ''})".replace(" )", ")") if found else card.symbol
+        label = (
+            f"{card.symbol} (via {found} {stack.version_of(found) or ''})".replace(" )", ")") if found else card.symbol
+        )
         return True, "platform", label
     lib = card.library or ""
     if stack.has(lib):

@@ -44,7 +44,11 @@ class LLMConfig:
                 except json.JSONDecodeError:
                     file_cfg = {}
         model = os.environ.get("CODEWRIGHT_MODEL") or file_cfg.get("codewright_model") or DEFAULT_MODEL
-        offline = (os.environ.get("CODEWRIGHT_OFFLINE") or str(file_cfg.get("codewright_offline", ""))) in ("1", "true", "True")
+        offline = (os.environ.get("CODEWRIGHT_OFFLINE") or str(file_cfg.get("codewright_offline", ""))) in (
+            "1",
+            "true",
+            "True",
+        )
         return cls(model, offline)
 
     def save(self, root: str | Path) -> None:
@@ -61,13 +65,19 @@ def status(cfg: LLMConfig) -> dict:
     try:
         import litellm  # noqa: F401
     except ImportError:
-        return {"available": False, "model": cfg.model,
-                "reason": "litellm is not installed (pip install 'codewright[llm]')"}
+        return {
+            "available": False,
+            "model": cfg.model,
+            "reason": "litellm is not installed (pip install 'codewright[llm]')",
+        }
     provider = cfg.model.split("/", 1)[0] if "/" in cfg.model else "openai"
     needed = _CREDENTIAL_ENV.get(provider)
     if needed and not any(os.environ.get(k) for k in needed):
-        return {"available": False, "model": cfg.model,
-                "reason": f"no credentials for {provider} (set one of {', '.join(needed)})"}
+        return {
+            "available": False,
+            "model": cfg.model,
+            "reason": f"no credentials for {provider} (set one of {', '.join(needed)})",
+        }
     return {"available": True, "model": cfg.model, "reason": ""}
 
 

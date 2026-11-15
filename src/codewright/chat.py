@@ -18,9 +18,50 @@ from .intents.detectors import is_test_file
 from .llm import LLMConfig, complete
 
 _WORD = re.compile(r"[A-Za-z][a-z0-9]*|[A-Z]+(?![a-z])|\d+")
-STOP = {"the", "a", "an", "is", "are", "how", "does", "do", "what", "where", "which", "this", "that", "in",
-        "of", "to", "and", "or", "for", "it", "on", "with", "repo", "code", "self", "return", "def", "import",
-        "from", "none", "true", "false", "if", "else", "as", "by", "be", "i", "my", "we", "can", "when"}
+STOP = {
+    "the",
+    "a",
+    "an",
+    "is",
+    "are",
+    "how",
+    "does",
+    "do",
+    "what",
+    "where",
+    "which",
+    "this",
+    "that",
+    "in",
+    "of",
+    "to",
+    "and",
+    "or",
+    "for",
+    "it",
+    "on",
+    "with",
+    "repo",
+    "code",
+    "self",
+    "return",
+    "def",
+    "import",
+    "from",
+    "none",
+    "true",
+    "false",
+    "if",
+    "else",
+    "as",
+    "by",
+    "be",
+    "i",
+    "my",
+    "we",
+    "can",
+    "when",
+}
 
 
 def tokens(s: str) -> list[str]:
@@ -49,9 +90,10 @@ class CodeIndex:
                 continue
             lines = pf.lines
             for fn in pf.module.functions:
-                body = "".join(lines[fn.start_line - 1: fn.end_line])
-                self.passages.append(Passage(f"{path}::{fn.qualname}", path, fn.def_line, fn.end_line,
-                                             fn.qualname, body))
+                body = "".join(lines[fn.start_line - 1 : fn.end_line])
+                self.passages.append(
+                    Passage(f"{path}::{fn.qualname}", path, fn.def_line, fn.end_line, fn.qualname, body)
+                )
             head = "".join(lines[:15])
             self.passages.append(Passage(f"{path}::<module>", path, 1, min(len(lines), 15), path, head))
         self.docs = [Counter(tokens(p.title) * 3 + tokens(p.file) * 2 + tokens(p.text)) for p in self.passages]
@@ -66,7 +108,7 @@ class CodeIndex:
     def search(self, query: str, k: int = 6) -> list[tuple[Passage, float]]:
         q = tokens(query)
         scored = []
-        for p, d, ln in zip(self.passages, self.docs, self.lengths):
+        for p, d, ln in zip(self.passages, self.docs, self.lengths, strict=True):
             s = 0.0
             for t in q:
                 if t in d:
@@ -85,20 +127,25 @@ SYSTEM = (
 )
 
 
-def answer(index: CodeIndex, question: str, history: list[dict] | None = None,
-           cfg: LLMConfig | None = None) -> dict:
+def answer(index: CodeIndex, question: str, history: list[dict] | None = None, cfg: LLMConfig | None = None) -> dict:
     hits = index.search(question)
-    citations = [{"n": i + 1, "id": p.id, "file": p.file, "line": p.line, "end": p.end, "title": p.title,
-                  "score": round(s, 2)} for i, (p, s) in enumerate(hits)]
+    citations = [
+        {"n": i + 1, "id": p.id, "file": p.file, "line": p.line, "end": p.end, "title": p.title, "score": round(s, 2)}
+        for i, (p, s) in enumerate(hits)
+    ]
     if not hits and cfg is None and (topical := _topical(index, question)):
         return {"answer": topical[0], "citations": topical[1], "mode": "extractive"}
     if not hits:
-        return {"answer": "I couldn't find code matching that question. Try naming a function, "
-                          "module, route or library.", "citations": [], "mode": "extractive"}
+        return {
+            "answer": "I couldn't find code matching that question. Try naming a function, module, route or library.",
+            "citations": [],
+            "mode": "extractive",
+        }
     if cfg is not None:
-        context = "\n\n".join(f"[{i + 1}] {p.file}:{p.line}-{p.end} ({p.title})\n{p.text[:1800]}"
-                              for i, (p, _) in enumerate(hits))
-        msgs = list(history or [])[-6:] + [{"role": "user", "content": f"Passages:\n{context}\n\nQuestion: {question}"}]
+        context = "\n\n".join(
+            f"[{i + 1}] {p.file}:{p.line}-{p.end} ({p.title})\n{p.text[:1800]}" for i, (p, _) in enumerate(hits)
+        )
+        msgs = [*list(history or [])[-6:], {"role": "user", "content": f"Passages:\n{context}\n\nQuestion: {question}"}]
         text = complete(cfg, SYSTEM, msgs)
         if text:
             return {"answer": text, "citations": citations, "mode": "llm"}
@@ -121,8 +168,11 @@ TOPICS = [
 
 def _topical(index: CodeIndex, question: str) -> tuple[str, list[dict]] | None:
     names = {p.title.rsplit(".", 1)[-1].lower() for p in index.passages}
-    if any(w.lower() in names for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", question) if "_" in w or len(w) > 3
-           and w.lower() not in STOP and w.lower() in names):
+    if any(
+        w.lower() in names
+        for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", question)
+        if "_" in w or (len(w) > 3 and w.lower() not in STOP and w.lower() in names)
+    ):
         return None  # the question names a function: answer about that symbol instead
     words = set(re.findall(r"[a-z]+", question.lower()))
     topic = next((t for keys, t in TOPICS if words & set(keys)), None)
@@ -139,8 +189,17 @@ def _topical(index: CodeIndex, question: str) -> tuple[str, list[dict]] | None:
         for c in cites:
             if c["id"] == key:
                 return c["n"]
-        cites.append({"n": len(cites) + 1, "id": key, "file": path, "line": fn.def_line, "end": fn.end_line,
-                      "title": fn.qualname, "score": 1.0})
+        cites.append(
+            {
+                "n": len(cites) + 1,
+                "id": key,
+                "file": path,
+                "line": fn.def_line,
+                "end": fn.end_line,
+                "title": fn.qualname,
+                "score": 1.0,
+            }
+        )
         return len(cites)
 
     def fn_of(key: str):
@@ -174,13 +233,16 @@ def _topical(index: CodeIndex, question: str) -> tuple[str, list[dict]] | None:
             lines.append(f"- `{ep['trigger']}` → " + " → ".join(chain) + (f"; reaches {', '.join(ext)}" if ext else ""))
         return "\n".join(lines), cites
 
-    kinds = {"database": ("database",), "http": ("http",), "llm": ("llm",), "cache": ("cache",), "queue": ("queue",)}[topic]
+    kinds = {"database": ("database",), "http": ("http",), "llm": ("llm",), "cache": ("cache",), "queue": ("queue",)}[
+        topic
+    ]
     found = []
     for path, pf in g.files.items():
         if is_test_file(path):
             continue
         for fn in pf.module.functions:
             from .graph import resolve
+
             systems = set()
             for call in fn.calls:
                 ext = amap._external_for(resolve(pf.module, call))
@@ -190,6 +252,7 @@ def _topical(index: CodeIndex, question: str) -> tuple[str, list[dict]] | None:
                 found.append((path, fn, sorted(systems)))
         # Module-level code, e.g. `root_agent = SequentialAgent(...)`.
         from .intents.detectors import calls_in
+
         systems, first = set(), None
         for node, name in calls_in(pf.root, pf):
             ext = amap._external_for(name)
@@ -199,12 +262,18 @@ def _topical(index: CodeIndex, question: str) -> tuple[str, list[dict]] | None:
         if systems:
             ln = first.start_point[0] + 1
             from .models import Function
+
             found.append((path, Function("<module>", "<module>", path, ln, ln, ln), sorted(systems)))
     if not found:
         lines.append(f"No code calls a {topic} library directly. Imports alone are not counted.")
         return "\n".join(lines), cites
-    label = {"database": "the database", "http": "external HTTP APIs", "llm": "models or agents",
-             "cache": "a cache", "queue": "a queue"}[topic]
+    label = {
+        "database": "the database",
+        "http": "external HTTP APIs",
+        "llm": "models or agents",
+        "cache": "a cache",
+        "queue": "a queue",
+    }[topic]
     lines.append(f"{len(found)} function(s) talk to {label} directly:")
     lines.append("")
     for path, fn, systems in found[:8]:
@@ -229,13 +298,17 @@ def _extractive(index: CodeIndex, hits: list[tuple[Passage, float]]) -> str:
         if fn is not None:
             if fn.decorators:
                 desc += f", exposed as `@{fn.decorators[0]}`"
-            internal = [c for c in fn.calls if any(c.rsplit('.', 1)[-1] == x.rsplit('::', 1)[-1].rsplit('.', 1)[-1]
-                                                   for x in g.edges.get(p.id, ()))]
+            internal = [
+                c
+                for c in fn.calls
+                if any(c.rsplit(".", 1)[-1] == x.rsplit("::", 1)[-1].rsplit(".", 1)[-1] for x in g.edges.get(p.id, ()))
+            ]
             if internal:
                 desc += f"; calls {', '.join(f'`{c}`' for c in internal[:4])}"
             ups = callers.get(p.id, [])
             if ups:
-                desc += f"; called from {', '.join(f'`{u.split('::')[1]}`' for u in ups[:3])}"
+                names = ", ".join(f"`{u.split('::')[1]}`" for u in ups[:3])
+                desc += f"; called from {names}"
             if p.id in g.entry_points:
                 desc += "; this is an entry point"
         lines.append(desc)

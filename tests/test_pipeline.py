@@ -68,7 +68,10 @@ def test_detectors_fire_on_fixture():
 
 
 def test_detectors_stay_quiet_on_plain_code(tmp_path):
-    write_repo(tmp_path, {"m.py": """
+    write_repo(
+        tmp_path,
+        {
+            "m.py": """
         import time
         SEEN = {}
 
@@ -79,7 +82,9 @@ def test_detectors_stay_quiet_on_plain_code(tmp_path):
 
         def lookup(k):
             return SEEN.get(k)
-    """})
+    """
+        },
+    )
     assert detect(graph.build(tmp_path)) == []
 
 
@@ -98,10 +103,13 @@ ADK_LOOP = """
 
 @pytest.mark.parametrize("version,card_id", [("1.20.0", "adk.sequential-agent"), ("2.9.0", "adk.workflow")])
 def test_adk_card_depends_on_installed_version(tmp_path, version, card_id):
-    write_repo(tmp_path, {
-        "agent.py": ADK_LOOP,
-        "uv.lock": f'version = 1\n\n[[package]]\nname = "google-adk"\nversion = "{version}"\n',
-    })
+    write_repo(
+        tmp_path,
+        {
+            "agent.py": ADK_LOOP,
+            "uv.lock": f'version = 1\n\n[[package]]\nname = "google-adk"\nversion = "{version}"\n',
+        },
+    )
     g = graph.build(tmp_path)
     st = stack.discover(tmp_path)
     [match] = detect(g)
@@ -110,17 +118,25 @@ def test_adk_card_depends_on_installed_version(tmp_path, version, card_id):
 
 
 def test_deprecated_class_not_flagged_before_2_0(tmp_path):
-    write_repo(tmp_path, {
-        "agent.py": "from google.adk.agents import SequentialAgent\nroot = SequentialAgent(name='x', sub_agents=[])\n",
-        "uv.lock": 'version = 1\n\n[[package]]\nname = "google-adk"\nversion = "1.20.0"\n',
-    })
+    write_repo(
+        tmp_path,
+        {
+            "agent.py": (
+                "from google.adk.agents import SequentialAgent\nroot = SequentialAgent(name='x', sub_agents=[])\n"
+            ),
+            "uv.lock": 'version = 1\n\n[[package]]\nname = "google-adk"\nversion = "1.20.0"\n',
+        },
+    )
     g = graph.build(tmp_path)
     findings = make_findings(detect(g), stack.discover(tmp_path), g, cards.load())
     assert findings == []
 
 
 def test_installed_library_beats_new_dependency(tmp_path):
-    write_repo(tmp_path, {"m.py": """
+    write_repo(
+        tmp_path,
+        {
+            "m.py": """
         import time
 
         def fetch(fn):
@@ -129,13 +145,15 @@ def test_installed_library_beats_new_dependency(tmp_path):
                     return fn()
                 except OSError:
                     time.sleep(1)
-    """})
+    """
+        },
+    )
     g = graph.build(tmp_path)
     [match] = detect(g)
-    [(card, kind, api)] = cards.best_cards(match, stack.discover(tmp_path), cards.load())
+    [(_, kind, api)] = cards.best_cards(match, stack.discover(tmp_path), cards.load())
     assert kind == "wellknown" and "not installed" in api
     (tmp_path / "requirements.txt").write_text("tenacity==9.0.0\n")
-    [(card, kind, api)] = cards.best_cards(match, stack.discover(tmp_path), cards.load())
+    [(_, kind, api)] = cards.best_cards(match, stack.discover(tmp_path), cards.load())
     assert kind == "installed" and "9.0.0" in api
 
 
@@ -143,7 +161,10 @@ def test_installed_library_beats_new_dependency(tmp_path):
 
 
 def test_lru_cache_patch_skipped_when_dict_used_elsewhere(tmp_path):
-    write_repo(tmp_path, {"m.py": """
+    write_repo(
+        tmp_path,
+        {
+            "m.py": """
         CACHE = {}
 
         def get(k):
@@ -155,7 +176,9 @@ def test_lru_cache_patch_skipped_when_dict_used_elsewhere(tmp_path):
 
         def reset():
             CACHE.clear()
-    """})
+    """
+        },
+    )
     g = graph.build(tmp_path)
     [f] = make_findings(detect(g), stack.discover(tmp_path), g, cards.load())
     assert f.patch is None
@@ -193,8 +216,10 @@ def test_review_proves_lru_cache_patch():
 
 def test_review_rejects_patch_that_breaks_tests(tmp_path):
     # The suite passes today but asserts the function is not wrapped, so the patch must fail it.
-    write_repo(tmp_path, {
-        "m.py": """
+    write_repo(
+        tmp_path,
+        {
+            "m.py": """
             _C = {}
 
             def get(k):
@@ -204,14 +229,15 @@ def test_review_rejects_patch_that_breaks_tests(tmp_path):
                 _C[k] = v
                 return v
         """,
-        "tests/test_m.py": """
+            "tests/test_m.py": """
             import m
 
             def test_not_wrapped():
                 assert m.get(2) == 4
                 assert not hasattr(m.get, "cache_info")
         """,
-    })
+        },
+    )
     result = review(tmp_path, python=sys.executable)
     assert result.findings == []
     assert [f.rejected_reason for f in result.rejected] == ["patch breaks the test suite"]
