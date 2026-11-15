@@ -38,6 +38,7 @@ def review(
     test_timeout: int = 300,
     base: str | None = None,
     use_feedback: bool = True,
+    proof_jobs: int | None = None,
 ) -> ReviewResult:
     t0 = time.perf_counter()
     root = Path(root).resolve()
@@ -69,7 +70,7 @@ def review(
     # Drop malformed or hallucinated findings before spending time on proof.
     kept, rejected = critic.review(findings)
     if run_proof:
-        proof.prove(kept, root, py, timeout=test_timeout)
+        proof.prove(kept, root, py, timeout=test_timeout, jobs=proof_jobs)
         kept, broke = critic.review(kept)
         rejected += broke
     else:

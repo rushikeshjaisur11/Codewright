@@ -191,6 +191,13 @@ def detect_pydantic_v1(pf, fn, node, graph):
 
 
 def _pydantic_models(pf) -> set[str]:
+    """Classes in the file that subclass a pydantic model. Computed once per file, not per function."""
+    if "pydantic_models" not in pf.cache:
+        pf.cache["pydantic_models"] = _find_pydantic_models(pf)
+    return pf.cache["pydantic_models"]
+
+
+def _find_pydantic_models(pf) -> set[str]:
     names = set()
     for n in walk(pf.root, into_defs=True):
         if n.type == "class_definition":

@@ -34,13 +34,24 @@ def review(
     python: str | None = typer.Option(None, help="Interpreter for symbol checks and tests (default: repo .venv)."),
     cards: list[Path] = typer.Option([], "--cards", help="Extra directory of capability card YAML files."),
     base: str | None = typer.Option(None, "--base", help="PR mode: only review code changed since this git ref."),
+    jobs: int | None = typer.Option(
+        None, "--jobs", "-j", min=1, help="Patched test runs to run at once (default: CPUs, at most 4)."
+    ),
 ) -> None:
     """Review a repo: ranked, proven 'instead of X, use Y' findings."""
     from .engine import review as run_review
     from .report import print_terminal, to_json, to_markdown, to_pr_comment
 
     with console.status("Scanning..."):
-        result = run_review(path, run_proof=proof, top=top or None, python=python, extra_cards=cards or None, base=base)
+        result = run_review(
+            path,
+            run_proof=proof,
+            top=top or None,
+            python=python,
+            extra_cards=cards or None,
+            base=base,
+            proof_jobs=jobs,
+        )
     if fmt is Format.terminal and output is None:
         print_terminal(result, console)
         return

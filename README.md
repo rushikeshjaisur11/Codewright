@@ -52,6 +52,7 @@ Everything runs locally and the code is never uploaded. A model is optional (see
 
 ```bash
 codewright review .                         # ranked findings in the terminal (runs proof by default)
+codewright review . -j 8                    # run up to 8 patched test suites at once
 codewright review . -f markdown -o report.md
 codewright review . --base origin/main -f pr -o comment.md   # PR mode: changed code only
 codewright check .                          # exit 1 when code drifts from .codewright/design.json
@@ -86,12 +87,12 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 | Step | Module | What it does |
 | --- | --- | --- |
 | 1. Stack discovery | `stack.py` | Reads `uv.lock`, `poetry.lock`, `Pipfile.lock`, `requirements*.txt`, `pyproject.toml`, `.python-version` and Dockerfiles. Lockfile versions beat declared ranges |
-| 2. Code graph | `graph.py` | Its own tree-sitter indexer: imports, functions, decorators, call edges and entry points. Code reachable from an entry point is on the hot path; code reachable from a test is covered |
+| 2. Code graph | `graph.py` | Its own tree-sitter indexer: imports, classes, functions, decorators, call edges and entry points. Calls resolve through imports (relative imports and package re-exports included), enclosing scopes, `self`/`super()` and base classes; a call on an object of unknown type is matched by method name only when the name isn't one builtin types already have (`d.items()` never links to your `items`). Code reachable from an entry point is on the hot path |
 | 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand (17 intents) |
 | 4. Capability cards | `cards/data/*.yaml` | Per library and version: the API, gain, effort, risk, "when not to", scale threshold and sources. Preference: already installed, then stdlib, then platform, then a new dependency |
 | 5. Suggestion | `suggest.py` | Picks the best card and writes the smallest safe diff when the code's shape allows it |
 | 6. Critic | `critic.py` | Drops findings missing a file, an API version, a gain, effort, risk, threshold, "when not to" or a source, and checks that the suggested symbol exists in the repo's own interpreter |
-| 7. Proof | `proof.py` | Runs `pytest` in a temp copy before and after the patch. **Verified** only when the suite passes both times *and* a test reaches the changed function; a patch that breaks tests is dropped |
+| 7. Proof | `proof.py` | Runs `pytest` in a temp copy before and after the patch. The baseline run records which tests actually execute each function (`sys.monitoring` on 3.12+, a profile hook on 3.11). **Verified** only when the suite passes both times *and* a test ran the changed function, and the finding names that test. Patched runs go in parallel (`--jobs`, default: CPUs up to 4); one that fails in parallel is re-run alone before the patch is blamed. The copy's `src/` folders go first on the path, so an editable install can't make the tests run the unpatched original. A patch that breaks tests is dropped |
 | 8. Feedback and ranking | `feedback.py`, `rank.py` | Impact (×1.5 on the hot path) × confidence × team acceptance for that intent ÷ effort |
 
 ### Intents

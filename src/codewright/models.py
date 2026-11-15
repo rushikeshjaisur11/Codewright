@@ -132,7 +132,8 @@ class Finding:
     span: tuple[int, int] = (0, 0)  # enclosing function's first and last line
     status: str | None = None  # feedback: accepted | rejected | muted
     card_id: str = ""
-    covered: bool = False  # some test reaches this function through the call graph
+    covered: bool = False  # a test reaches this function: run during proof, else by the call graph
+    reached_by: list[str] = field(default_factory=list)  # test ids that ran it during proof (first few)
 
     def to_dict(self) -> dict[str, Any]:
         from dataclasses import asdict
