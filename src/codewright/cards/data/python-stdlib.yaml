@@ -1,0 +1,36 @@
+# Capability cards: Python standard library.
+# A card says what a library offers for an intent, at which versions, with
+# the gain, the risk, the scale threshold and when NOT to use it.
+- id: stdlib.functools.lru_cache
+  intent: memo-cache
+  title: Replace the hand-rolled memo dict with functools.lru_cache
+  symbol: functools.lru_cache
+  kind: stdlib
+  library: null
+  versions: ">=3.8"
+  suggestion: >-
+    Decorate the function with @functools.lru_cache(maxsize=...) and delete the
+    manual dict lookups. The cache becomes bounded and exposes hit/miss stats.
+  gain: >-
+    Bounded memory (least-recently-used eviction instead of unbounded growth),
+    hit/miss stats through cache_info(), cache_clear() for tests, and fewer lines.
+  effort: 1
+  impact: 2
+  risk: >-
+    Arguments must be hashable. maxsize changes behaviour for rarely used keys:
+    they are recomputed after eviction. Tune maxsize to your key cardinality.
+  when_not: >-
+    When entries must expire by time, be invalidated per key, survive restarts or
+    be shared between processes; or on instance methods, where the cache keeps
+    `self` alive.
+  threshold: >-
+    Past one process (several workers or hosts) the in-process cache stops being
+    shared; move to a shared cache such as Redis.
+  sources:
+    - https://docs.python.org/3/library/functools.html#functools.lru_cache
+  snippet: |
+    import functools
+
+    @functools.lru_cache(maxsize=1024)
+    def get_value(key):
+        return compute(key)

@@ -1,0 +1,281 @@
+# Capability cards: third-party libraries and platforms.
+# kind: library cards are preferred when the library is already installed
+# ("installed"); otherwise they are offered as a well-known option with +1 effort.
+
+- id: tenacity.retry
+  intent: retry
+  title: Replace the hand-written retry loop with tenacity
+  symbol: tenacity.retry
+  kind: library
+  library: tenacity
+  versions: ">=8.0"
+  offer_uninstalled: true
+  suggestion: >-
+    Decorate the call with @tenacity.retry and declare the policy (attempts,
+    exponential backoff with jitter, which exceptions retry) instead of a
+    loop with try/except and sleep.
+  gain: >-
+    A declarative, tested retry policy: exponential backoff with jitter avoids
+    synchronised retry storms, only the listed exceptions retry, and the loop,
+    counter and sleep code go away. Works for async functions too.
+  effort: 2
+  impact: 3
+  risk: >-
+    Retrying a non-idempotent call (a payment, an insert without an idempotency
+    key) can apply it twice. Make sure the retried exceptions are transient.
+  when_not: >-
+    When the client library already retries (google-api-core Retry, botocore,
+    urllib3 Retry on a requests adapter): configure that one instead of stacking
+    two retry layers.
+  threshold: >-
+    Under sustained downstream failure at high request rates, retries multiply
+    load; add a circuit breaker or a retry budget.
+  sources:
+    - https://tenacity.readthedocs.io/en/latest/
+  snippet: |
+    from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_random_exponential
+
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_random_exponential(multiplier=0.5, max=10),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        reraise=True,
+    )
+    def call_service(...):
+        ...
+
+- id: postgres.skip-locked-queue
+  intent: poll-queue
+  title: Use SELECT ... FOR UPDATE SKIP LOCKED with LISTEN/NOTIFY instead of polling
+  symbol: "PostgreSQL FOR UPDATE SKIP LOCKED + LISTEN/NOTIFY"
+  kind: platform
+  library: null
+  requires_any: [psycopg, psycopg2, psycopg2-binary, asyncpg, sqlalchemy]
+  versions: "*"
+  suggestion: >-
+    Claim jobs with `SELECT ... FOR UPDATE SKIP LOCKED LIMIT n` inside a
+    transaction, and wake workers with LISTEN/NOTIFY instead of a sleep loop.
+  gain: >-
+    No double-processing when several workers run, and workers wake as soon as
+    a job is inserted instead of querying on a fixed interval.
+  effort: 3
+  impact: 3
+  risk: >-
+    NOTIFY is not delivered to a worker that is disconnected, so keep a slow
+    fallback poll. Long transactions while holding a claimed row block vacuum.
+  when_not: >-
+    When the database is not PostgreSQL, or the queue already lives in a broker
+    (Cloud Tasks, Pub/Sub, SQS, Celery).
+  threshold: >-
+    When job volume or fan-out outgrows one database (many consumers per message,
+    replay, cross-service delivery), move to a dedicated broker.
+  match:
+    skip_locked: false
+  sources:
+    - https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE
+    - https://www.postgresql.org/docs/current/sql-listen.html
+    - https://www.postgresql.org/docs/current/sql-notify.html
+  snippet_lang: sql
+  snippet: |
+    SELECT id, payload FROM jobs
+    WHERE status = 'pending'
+    ORDER BY id
+    FOR UPDATE SKIP LOCKED
+    LIMIT 10;
+
+- id: sqlalchemy.engine-once
+  intent: connection-per-request
+  title: Create the SQLAlchemy engine once and reuse its connection pool
+  symbol: sqlalchemy.create_engine
+  kind: library
+  library: sqlalchemy
+  versions: ">=1.4"
+  match:
+    library: sqlalchemy
+  suggestion: >-
+    Create the engine once at module import or in the app lifespan, and check
+    out connections per request with `with engine.connect()`; the engine pools them.
+  gain: >-
+    The engine's built-in connection pool is reused, so requests skip the TCP,
+    TLS and auth handshake, and the database sees a bounded number of connections.
+  effort: 2
+  impact: 4
+  risk: >-
+    Pool size times worker count must stay under the database's max_connections.
+  when_not: >-
+    In short-lived serverless functions that serve one request each; there, use
+    NullPool or a server-side pooler such as PgBouncer.
+  threshold: >-
+    Past a few hundred concurrent workers, add a server-side pooler (PgBouncer,
+    Cloud SQL connector) in front of the database.
+  sources:
+    - https://docs.sqlalchemy.org/en/20/core/pooling.html
+    - https://fastapi.tiangolo.com/advanced/events/
+
+- id: psycopg.pool
+  intent: connection-per-request
+  title: Use a psycopg connection pool opened at app startup
+  symbol: psycopg_pool.ConnectionPool
+  kind: library
+  library: psycopg-pool
+  versions: ">=3.1"
+  requires_any: [psycopg]
+  offer_uninstalled: true
+  match:
+    library: psycopg
+  suggestion: >-
+    Open one psycopg_pool.ConnectionPool (or AsyncConnectionPool) in the app
+    lifespan and borrow connections with `with pool.connection() as conn:`.
+  gain: >-
+    Requests reuse open connections instead of paying the connect handshake each
+    time, and concurrent connections are capped.
+  effort: 2
+  impact: 4
+  risk: >-
+    A connection returned in a failed transaction state is reset by the pool;
+    code that relied on per-request isolation of session settings must reset them.
+  when_not: >-
+    In one-shot scripts or serverless handlers that run a single query.
+  threshold: >-
+    Past a few hundred concurrent workers, add a server-side pooler such as PgBouncer.
+  sources:
+    - https://www.psycopg.org/psycopg3/docs/advanced/pool.html
+    - https://fastapi.tiangolo.com/advanced/events/
+
+- id: asyncpg.pool
+  intent: connection-per-request
+  title: Create one asyncpg pool at app startup
+  symbol: asyncpg.create_pool
+  kind: library
+  library: asyncpg
+  versions: ">=0.20"
+  match:
+    library: asyncpg
+  suggestion: >-
+    Call asyncpg.create_pool() once in the app lifespan and use
+    `async with pool.acquire() as conn:` in handlers.
+  gain: >-
+    Connections are reused across requests and capped, removing the per-request
+    connect latency.
+  effort: 2
+  impact: 4
+  risk: >-
+    Prepared-statement caching conflicts with PgBouncer in transaction mode;
+    set statement_cache_size=0 there.
+  when_not: >-
+    In one-shot scripts or serverless handlers that run a single query.
+  threshold: >-
+    Past a few hundred concurrent workers, add a server-side pooler such as PgBouncer.
+  sources:
+    - https://magicstack.github.io/asyncpg/current/api/index.html#connection-pools
+    - https://fastapi.tiangolo.com/advanced/events/
+
+- id: httpx.shared-client
+  intent: connection-per-request
+  title: Share one httpx client across requests
+  symbol: httpx.AsyncClient
+  kind: library
+  library: httpx
+  versions: ">=0.18"
+  match:
+    library: httpx
+  suggestion: >-
+    Create one httpx.Client/AsyncClient in the app lifespan and reuse it, instead
+    of building a client inside each request handler.
+  gain: >-
+    Keep-alive connection pooling: repeat calls to the same host skip DNS, TCP
+    and TLS setup.
+  effort: 1
+  impact: 3
+  risk: >-
+    Per-request headers or auth must move to the request call, not the shared client.
+  when_not: >-
+    When each request needs a differently configured client (proxies, certs).
+  threshold: >-
+    At high fan-out to one host, tune httpx.Limits(max_connections, max_keepalive_connections).
+  sources:
+    - https://www.python-httpx.org/advanced/clients/
+    - https://fastapi.tiangolo.com/advanced/events/
+
+- id: requests.shared-session
+  intent: connection-per-request
+  title: Reuse one requests.Session instead of creating one per request
+  symbol: requests.Session
+  kind: library
+  library: requests
+  versions: ">=2.0"
+  match:
+    library: requests
+  suggestion: >-
+    Create the Session once (module level or app startup) and reuse it.
+  gain: >-
+    Keep-alive connection pooling through urllib3: repeat calls skip TCP and TLS setup.
+  effort: 1
+  impact: 3
+  risk: >-
+    Cookies and default headers set on the session are shared by all callers.
+  when_not: >-
+    When callers need isolated cookies or credentials.
+  threshold: >-
+    Under heavy concurrency, tune the HTTPAdapter pool_maxsize.
+  sources:
+    - https://requests.readthedocs.io/en/latest/user/advanced/#session-objects
+
+- id: adk.workflow
+  intent: agent-orchestrator
+  title: Move fixed agent orchestration to an ADK 2.0 graph workflow
+  symbol: "google-adk Workflow (graph workflows)"
+  kind: library
+  library: google-adk
+  versions: ">=2.0"
+  suggestion: >-
+    Express the agent sequence, parallel branches or loop as an ADK 2.0 graph
+    workflow instead of SequentialAgent/ParallelAgent/LoopAgent or a hand-written
+    driver loop.
+  gain: >-
+    SequentialAgent, ParallelAgent and LoopAgent are deprecated from ADK 2.0 in
+    favour of graph workflows, which add routing between nodes, human input and
+    resumability checkpoints (v2.6.0+).
+  effort: 3
+  impact: 4
+  risk: >-
+    Migration changes how state and events flow between steps; re-run your agent
+    evals and compare traces before switching.
+  when_not: >-
+    When the order of steps is decided by the model at run time; keep an LLM
+    agent with sub-agents or tools for that.
+  threshold: >-
+    Worth it as soon as there are two or more fixed steps or any branch, retry or
+    human approval step.
+  sources:
+    - https://developers.googleblog.com/en/why-we-built-adk-20/
+    - https://ecorpit.com/adk-2-0-workflows-vs-autonomous-agents-guide-2026/
+    - https://newreleases.io/project/github/google/adk-python/release/v2.6.0
+
+- id: adk.sequential-agent
+  intent: agent-orchestrator
+  title: Replace the hand-written agent loop with SequentialAgent
+  symbol: google.adk.agents.SequentialAgent
+  kind: library
+  library: google-adk
+  versions: ">=1.0,<2.0"
+  match:
+    deprecated_class: null
+  suggestion: >-
+    On ADK 1.x, wrap the agents in a SequentialAgent (or LoopAgent for repeats)
+    and pass data between them through session state with output_key.
+  gain: >-
+    One runner call instead of a driver loop; events, state and tracing flow
+    through ADK so the steps show up in the dev UI and evals.
+  effort: 2
+  impact: 3
+  risk: >-
+    These classes are deprecated in ADK 2.0; plan the move to graph workflows
+    when you upgrade.
+  when_not: >-
+    When the next step depends on the model's decision; use an LLM agent with
+    sub-agents instead.
+  threshold: >-
+    Once there are branches or human approval steps, upgrade to ADK 2.0 workflows.
+  sources:
+    - https://google.github.io/adk-docs/agents/workflow-agents/sequential-agents/
