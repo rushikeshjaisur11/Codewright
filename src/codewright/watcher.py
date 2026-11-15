@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
@@ -70,6 +71,16 @@ def latest(name: str, cache: dict | None = None, timeout: float = 8.0) -> dict |
     return out
 
 
+def prefetch(names: list[str], cache: dict, timeout: float = 8.0) -> None:
+    """Look up many packages at once (8 at a time), filling `cache`; one slow package no longer
+    holds up the rest, so a repo with 60 dependencies takes seconds, not minutes."""
+    todo = [n for n in dict.fromkeys(names) if not (cache.get(n) and time.time() - cache[n].get("fetched", 0) < TTL)]
+    if not todo:
+        return
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda n: latest(n, cache, timeout), todo))
+
+
 def bump(installed: str | None, new: str) -> str:
     if not installed:
         return "unknown"
@@ -91,7 +102,9 @@ def check(stack: Stack, root: str | Path | None = None, names: list[str] | None 
     previous = {k: v.get("version") for k, v in cache.items()}
     cards = card_store.load()
     out = []
-    for name in names or sorted(stack.dependencies):
+    names = names or sorted(stack.dependencies)
+    prefetch(names, cache)
+    for name in names:
         dep = stack.dependencies.get(name)
         info = latest(name, cache)
         if info is None:
@@ -134,6 +147,7 @@ def check(stack: Stack, root: str | Path | None = None, names: list[str] | None 
 def latest_versions(names: list[str], fallback: dict[str, str], root: str | Path | None = None) -> dict[str, str]:
     """Exact versions for a starter repo: live from PyPI, else the bundled fallback."""
     cache = _load_cache(root)
+    prefetch(names, cache, timeout=5.0)
     out = {}
     for n in names:
         info = latest(n, cache, timeout=5.0)

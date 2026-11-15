@@ -139,6 +139,7 @@
   symbol: subprocess.run
   kind: stdlib
   library: null
+  autofix: true  # only for a literal command without shell syntax whose result is unused
   versions: ">=3.5"
   suggestion: Call subprocess.run([...], check=True) with the command as a list, so no shell parses it.
   gain: >-

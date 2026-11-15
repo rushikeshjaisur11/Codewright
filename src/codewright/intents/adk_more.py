@@ -358,6 +358,8 @@ def detect_deprecated_api(pf: ParsedFile) -> list[IntentMatch]:
             hit("runner_plugins", kwargs["plugins"], "`plugins=` on the Runner is deprecated")
         if cls == "RunConfig" and "save_live_audio" in kwargs:
             hit("save_live_audio", kwargs["save_live_audio"], "`RunConfig(save_live_audio=...)` is deprecated")
+            name = kwargs["save_live_audio"].parent.child_by_field_name("name")  # the keyword itself
+            out[-1].data |= {"edits": [(name.start_byte, name.end_byte, "save_live_blob")], "imports": []}
         if cls in DEPRECATED_CALLS:
             hit(DEPRECATED_CALLS[cls], call, f"`{cls}` is deprecated")
     return out

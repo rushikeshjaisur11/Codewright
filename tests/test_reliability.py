@@ -2,6 +2,7 @@
 
 import asyncio
 import subprocess
+import sys
 import time
 import tomllib
 from pathlib import Path
@@ -208,3 +209,45 @@ def test_trigger_words_include_names_imported_under_another_name(tmp_path):
         "        except OSError:\n            pause(1)\n"
     )
     assert any(m.intent == "retry" for m in detect(graph.build(tmp_path)))
+
+
+# ---------------------------------------------------------------- auto-patches that can't change behaviour
+
+
+def _findings(tmp_path):
+    from codewright import cards, stack
+    from codewright.suggest import make_findings
+
+    g = graph.build(tmp_path)
+    return make_findings(detect(g), stack.discover(tmp_path), g, cards.load())
+
+
+def test_os_system_patched_only_for_a_plain_command_whose_result_is_unused(tmp_path):
+    (tmp_path / "m.py").write_text(
+        "import os\n\n"
+        "def build():\n    os.system('git status --short')\n\n"
+        "def concat(name):\n    os.system('rm -rf ' + name)\n\n"
+        "def piped():\n    os.system('ls | wc -l')\n\n"
+        "def var():\n    os.system('echo $HOME')\n\n"
+        "def used():\n    return os.system('make test')\n"
+    )
+    by_fn = {f.function: f for f in _findings(tmp_path) if f.intent == "os-system"}
+    assert set(by_fn) == {"build", "concat", "piped", "var", "used"}
+    assert '+    subprocess.run(["git", "status", "--short"], check=False)' in by_fn["build"].patch
+    assert "+import subprocess" in by_fn["build"].patch
+    assert all(by_fn[n].patch is None for n in ("concat", "piped", "var", "used"))
+
+
+def test_os_system_patch_keeps_behaviour(tmp_path):
+    (tmp_path / "m.py").write_text("import os\n\ndef touch():\n    os.system('touch made-by-patch')\n")
+    f = next(f for f in _findings(tmp_path) if f.intent == "os-system")
+    subprocess.run(["git", "apply", "-"], cwd=tmp_path, input=f.patch, text=True, check=True)
+    subprocess.run([sys.executable, "-c", "import m; m.touch()"], cwd=tmp_path, check=True)
+    assert (tmp_path / "made-by-patch").exists()
+
+
+def test_save_live_audio_is_renamed(tmp_path):
+    (tmp_path / "uv.lock").write_text('version = 1\n\n[[package]]\nname = "google-adk"\nversion = "2.14.1"\n')
+    (tmp_path / "rc.py").write_text("from google.adk.agents import RunConfig\ncfg = RunConfig(save_live_audio=True)\n")
+    f = next(f for f in _findings(tmp_path) if f.card_id == "adk.save-live-blob")
+    assert "+cfg = RunConfig(save_live_blob=True)" in f.patch

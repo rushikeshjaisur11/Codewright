@@ -7,6 +7,8 @@ plus any ``data["imports"]`` the rewrite needs. ``suggest.py`` turns those into 
 
 from __future__ import annotations
 
+import json
+
 from tree_sitter import Node
 
 from ..graph import resolve, text
@@ -386,10 +388,42 @@ def detect_os_system(pf, fn, node, graph):
         return []
     for call, name in calls_in(body, pf):
         if name in ("os.system", "os.popen"):
-            return [
-                IntentMatch("os-system", fn, line(call), f"{name}() runs the command through a shell", {"call": name})
-            ]
+            data: dict = {"call": name}
+            if name == "os.system" and (argv := _plain_command(call)) is not None:
+                imports = [] if "subprocess" in pf.module.imports else ["import subprocess"]
+                listed = "[" + ", ".join(json.dumps(a, ensure_ascii=False) for a in argv) + "]"
+                data |= {
+                    "edits": [(call.start_byte, call.end_byte, f"subprocess.run({listed}, check=False)")],
+                    "imports": imports,
+                }
+            return [IntentMatch("os-system", fn, line(call), f"{name}() runs the command through a shell", data)]
     return []
+
+
+SHELL_SYNTAX = set("|&;<>()$`\\\"'*?[]#~=%{}!\n")
+
+
+def _plain_command(call: Node) -> list[str] | None:
+    """The argument list for `os.system("git status")` when the rewrite can't change behaviour:
+    `os.system` spelled out, its result unused, and a plain string literal with no shell syntax
+    (pipes, redirects, variables, globs, quotes). Anything else is left for a human."""
+    import ast
+    import shlex
+
+    if text(_callee(call)) != "os.system" or call.parent is None or call.parent.type != "expression_statement":
+        return None
+    args = call.child_by_field_name("arguments").named_children
+    if len(args) != 1 or args[0].type != "string" or any(c.type == "interpolation" for c in args[0].children):
+        return None
+    if text(args[0])[0] not in "\"'":  # no f-, b-, r- or u-prefixed strings
+        return None
+    try:
+        command = ast.literal_eval(text(args[0]))
+    except (ValueError, SyntaxError):
+        return None
+    if not isinstance(command, str) or not command.strip() or set(command) & SHELL_SYNTAX:
+        return None
+    return shlex.split(command)
 
 
 @detector("string-concat-loop", triggers=("+=",))

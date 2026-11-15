@@ -111,11 +111,11 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 | Blocking `requests` in `async def` | `httpx.AsyncClient` | |
 | Connection or client per request | SQLAlchemy engine reuse, psycopg/asyncpg pools, shared httpx client or requests Session | |
 | Polling loop over a jobs table | Postgres `FOR UPDATE SKIP LOCKED` + `LISTEN/NOTIFY` | |
-| Google ADK 2.x agents (18 intents) | See [Google ADK](#google-adk) | 2 of them |
+| Google ADK 2.x agents (18 intents) | See [Google ADK](#google-adk) | 3 of them |
 | `@app.on_event` | FastAPI lifespan | |
 | `session.query()` on SQLAlchemy 2.x | `select()` | |
 | Manual counting, grouping, thread fan-out | `Counter`, `defaultdict`, `ThreadPoolExecutor` | |
-| `os.system` | `subprocess.run` with an argument list | |
+| `os.system` | `subprocess.run` with an argument list | yes, for a plain command whose result is unused |
 | `+=` string building in a loop | `"".join()` | |
 
 Add your own cards: put YAML files in a folder and pass `--cards that/folder`. Each card needs `sources` and a `when_not`, or the critic drops its findings.
@@ -147,7 +147,7 @@ A card whose lowest version is above 2.0 starts at the first 2.x release that ha
 | A web route that drives a Runner by hand | `get_fast_api_app` | |
 | A tool polling a job in a sleep loop | `LongRunningFunctionTool` + resumability | |
 | A retry loop around an agent run | `Gemini(retry_options=HttpRetryOptions(...))` | |
-| Deprecated APIs: `global_instruction`, `Runner(plugins=)`, `VertexAiCodeExecutor` (2.12+), `save_live_audio`, `ApiRegistry` (2.7.1+) | Their replacements | |
+| Deprecated APIs: `global_instruction`, `Runner(plugins=)`, `VertexAiCodeExecutor` (2.12+), `save_live_audio`, `ApiRegistry` (2.7.1+) | Their replacements | `save_live_audio` |
 | An import that needs an extra the lockfile lacks: `mcp`, `db`, `gcp`, `extensions`, `a2a` | The `google-adk[extra]` to add | |
 
 The reference entries cover the rest of ADK 2.x, grouped by topic:

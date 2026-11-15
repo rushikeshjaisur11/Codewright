@@ -740,6 +740,7 @@
   kind: library
   library: google-adk
   versions: ">=2.0"
+  autofix: true
   match:
     api: save_live_audio
   suggestion: >-
