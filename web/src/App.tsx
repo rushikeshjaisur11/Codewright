@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen, Compass, GitPullRequest, LayoutDashboard, MessageSquareCode, Moon, Package,
   PenTool, Play, Settings as SettingsIcon, Sun, X,
@@ -6,14 +6,15 @@ import {
 import { api, ReviewPayload, WorkspaceInfo } from "./api";
 import { CodeView, Spinner, timeAgo, useToast } from "./ui";
 import RepoSwitcher from "./RepoSwitcher";
-import Overview from "./pages/Overview";
-import Review from "./pages/Review";
-import MapPage from "./pages/Map";
-import Chat from "./pages/Chat";
-import Design from "./pages/Design";
-import Releases from "./pages/Releases";
-import Knowledge from "./pages/Knowledge";
-import SettingsPage from "./pages/Settings";
+// Pages load on demand: the first screen doesn't wait for the map, design or chat code.
+const Overview = lazy(() => import("./pages/Overview"));
+const Review = lazy(() => import("./pages/Review"));
+const MapPage = lazy(() => import("./pages/Map"));
+const Chat = lazy(() => import("./pages/Chat"));
+const Design = lazy(() => import("./pages/Design"));
+const Releases = lazy(() => import("./pages/Releases"));
+const Knowledge = lazy(() => import("./pages/Knowledge"));
+const SettingsPage = lazy(() => import("./pages/Settings"));
 
 export type Page = "overview" | "review" | "map" | "chat" | "design" | "releases" | "knowledge" | "settings";
 
@@ -197,6 +198,7 @@ export default function App() {
             )}
           </header>
           <main className={`content ${flush ? "flush" : ""}`}>
+            <Suspense fallback={<div className="page"><Spinner /></div>}>
             {route.page === "overview" && <Overview />}
             {route.page === "review" && <Review />}
             {route.page === "map" && <MapPage />}
@@ -205,6 +207,7 @@ export default function App() {
             {route.page === "releases" && <Releases />}
             {route.page === "knowledge" && <Knowledge wid={wid} />}
             {route.page === "settings" && <SettingsPage />}
+            </Suspense>
           </main>
         </div>
       </div>
