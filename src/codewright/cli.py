@@ -23,6 +23,7 @@ class Format(str, Enum):
     markdown = "markdown"
     json = "json"
     pr = "pr"
+    sarif = "sarif"
 
 
 @contextlib.contextmanager
@@ -42,6 +43,9 @@ def review(
     proof: bool = typer.Option(True, "--proof/--no-proof", help="Run the test suite before and after each patch."),
     fmt: Format = typer.Option(Format.terminal, "--format", "-f", help="Output format."),
     output: Path | None = typer.Option(None, "--output", "-o", help="Write the report to a file."),
+    sarif_output: Path | None = typer.Option(
+        None, "--sarif-output", help="Also write SARIF (for GitHub code scanning) to this file, from the same run."
+    ),
     python: str | None = typer.Option(None, help="Interpreter for symbol checks and tests (default: repo .venv)."),
     cards: list[Path] = typer.Option([], "--cards", help="Extra directory of capability card YAML files."),
     base: str | None = typer.Option(None, "--base", help="PR mode: only review code changed since this git ref."),
@@ -59,7 +63,7 @@ def review(
 ) -> None:
     """Review a repo: ranked, proven 'instead of X, use Y' findings."""
     from .engine import review as run_review
-    from .report import print_terminal, to_json, to_markdown, to_pr_comment
+    from .report import print_terminal, to_json, to_markdown, to_pr_comment, to_sarif
 
     with console.status("Scanning..."), _clean_errors():
         result = run_review(
@@ -73,10 +77,12 @@ def review(
             full_suite=full_suite,
             build_env=build_env,
         )
+    if sarif_output:
+        sarif_output.write_text(to_sarif(result))
     if fmt is Format.terminal and output is None:
         print_terminal(result, console)
         return
-    text = {Format.json: to_json, Format.pr: to_pr_comment}.get(fmt, to_markdown)(result)
+    text = {Format.json: to_json, Format.pr: to_pr_comment, Format.sarif: to_sarif}.get(fmt, to_markdown)(result)
     if output:
         output.write_text(text)
         console.print(f"Wrote {output}")

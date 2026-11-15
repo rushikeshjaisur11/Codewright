@@ -251,3 +251,45 @@ def test_save_live_audio_is_renamed(tmp_path):
     (tmp_path / "rc.py").write_text("from google.adk.agents import RunConfig\ncfg = RunConfig(save_live_audio=True)\n")
     f = next(f for f in _findings(tmp_path) if f.card_id == "adk.save-live-blob")
     assert "+cfg = RunConfig(save_live_blob=True)" in f.patch
+
+
+# ---------------------------------------------------------------- SARIF and the GitHub Action
+
+
+def test_sarif_output_from_the_same_run(tmp_path):
+    import json
+
+    out = tmp_path / "out.sarif"
+    r = CliRunner().invoke(
+        app,
+        [
+            "review",
+            str(FIXTURE),
+            "--no-proof",
+            "--top",
+            "0",
+            "-f",
+            "pr",
+            "-o",
+            str(tmp_path / "s.md"),
+            "--sarif-output",
+            str(out),
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    run = json.loads(out.read_text())["runs"][0]
+    assert json.loads(out.read_text())["version"] == "2.1.0" and run["tool"]["driver"]["name"] == "Codewright"
+    rule_ids = {rule["id"] for rule in run["tool"]["driver"]["rules"]}
+    assert run["results"] and all(res["ruleId"] in rule_ids for res in run["results"])
+    loc = run["results"][0]["locations"][0]["physicalLocation"]
+    assert loc["artifactLocation"]["uri"].startswith("app/") and loc["region"]["startLine"] >= 1
+    assert all(res["level"] in ("note", "warning") for res in run["results"])
+
+
+def test_action_passes_inputs_through_the_environment():
+    import yaml
+
+    action = yaml.safe_load((Path(__file__).parent.parent / "action.yml").read_text())
+    review = next(s for s in action["runs"]["steps"] if s.get("id") == "review")
+    assert "${{" not in review["run"]  # no expression interpolated into the script (injection-safe)
+    assert {"REVIEW_PATH", "PR_ONLY", "PROOF", "BASE_REF"} <= set(review["env"])

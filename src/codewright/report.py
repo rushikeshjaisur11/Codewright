@@ -143,3 +143,69 @@ def to_pr_comment(result: ReviewResult) -> str:
         out.append("</details>\n")
     out.append("<sub>Codewright suggests; humans decide. Nothing is merged automatically.</sub>")
     return "\n".join(out)
+
+
+def to_sarif(result: ReviewResult) -> str:
+    """SARIF 2.1.0 for GitHub code scanning (and other SARIF viewers): one rule per card, one result per finding."""
+    from . import __version__
+
+    rules: dict[str, dict] = {}
+    results = []
+    for f in result.findings:
+        rule_id = f.card_id or f.intent
+        if rule_id not in rules:
+            rules[rule_id] = {
+                "id": rule_id,
+                "name": "".join(w.capitalize() for w in f.intent.replace("-", " ").split()),
+                "shortDescription": {"text": f.title},
+                "fullDescription": {"text": f"{f.suggestion} When not to: {f.when_not}"},
+                "help": {
+                    "text": f"{f.suggestion}\n\nGain: {f.gain}\nRisk: {f.risk}\nWhen not to: {f.when_not}",
+                    "markdown": (
+                        f"{f.suggestion}\n\n**Gain:** {f.gain}\n\n**Risk:** {f.risk}\n\n**When not to:** {f.when_not}"
+                        + "".join(f"\n- <{s}>" for s in f.sources)
+                    ),
+                },
+                **({"helpUri": f.sources[0]} if f.sources else {}),
+                "properties": {"tags": ["codewright", f.intent], "precision": "high"},
+            }
+        results.append(
+            {
+                "ruleId": rule_id,
+                "level": "warning" if (f.hot_path or f.impact >= 4) else "note",
+                "message": {"text": f"{f.evidence}. Instead: {f.title} ({f.api}). Proof: {f.proof.value}."},
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {"uri": f.file, "uriBaseId": "%SRCROOT%"},
+                            "region": {"startLine": max(f.line, 1)},
+                        }
+                    }
+                ],
+                "partialFingerprints": {"codewrightFindingId": f.id},
+                "properties": {
+                    "proof": f.proof.value,
+                    "score": f.score,
+                    "autoPatch": bool(f.patch),
+                    "function": f.function,
+                },
+            }
+        )
+    sarif = {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "Codewright",
+                        "version": __version__,
+                        "informationUri": "https://github.com/rushikeshjaisur11/codewright",
+                        "rules": list(rules.values()),
+                    }
+                },
+                "results": results,
+            }
+        ],
+    }
+    return json.dumps(sarif, indent=2)

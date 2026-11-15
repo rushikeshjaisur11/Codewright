@@ -56,6 +56,7 @@ The web app only answers requests addressed to `localhost`, and refuses requests
 codewright review .                         # ranked findings in the terminal (runs proof by default)
 codewright review . -j 8                    # run up to 8 patched test suites at once
 codewright review . -f markdown -o report.md
+codewright review . -f sarif -o codewright.sarif   # for GitHub code scanning and other SARIF viewers
 codewright review . --base origin/main -f pr -o comment.md   # PR mode: changed code only
 codewright check .                          # exit 1 when code drifts from .codewright/design.json
 codewright map . --level flow               # Mermaid diagram of a request flow
@@ -69,13 +70,31 @@ codewright cards verify --python .venv/bin/python --links   # every card's API e
 
 ### In CI
 
+The repository is also a GitHub Action. On pull requests it reviews only the lines the PR changed, shows findings as code-scanning alerts on the diff, and writes a summary with the suggested patches to the job page:
+
+```yaml
+on: pull_request
+permissions:
+  contents: read
+  security-events: write   # to upload code-scanning alerts
+jobs:
+  codewright:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rushikeshjaisur11/codewright@main
+        # with: { proof: "true" }   # also run the tests before and after each patch
+```
+
+Or call the CLI yourself:
+
 ```yaml
 - run: pip install "codewright @ git+https://github.com/rushikeshjaisur11/codewright"
-- run: codewright review . --base origin/${{ github.base_ref }} -f pr -o codewright.md
+- run: codewright review . --base origin/${{ github.base_ref }} -f pr -o codewright.md --sarif-output codewright.sarif
 - run: codewright check .
 ```
 
-Post `codewright.md` as a PR comment with your usual comment action. Codewright suggests; it never merges.
+Codewright suggests; it never merges.
 
 ### For coding agents
 
