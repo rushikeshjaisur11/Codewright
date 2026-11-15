@@ -1,0 +1,178 @@
+# Capability cards: Python standard library (async hygiene, timing, deprecations, collections).
+- id: stdlib.asyncio.sleep
+  intent: blocking-sleep-in-async
+  title: Use await asyncio.sleep() inside async functions
+  symbol: asyncio.sleep
+  kind: stdlib
+  library: null
+  versions: ">=3.7"
+  autofix: true
+  suggestion: Replace time.sleep() with `await asyncio.sleep()` so the event loop keeps serving other tasks.
+  gain: >-
+    The event loop is no longer frozen during the wait: every other request on the
+    same worker keeps running instead of queueing behind the sleep.
+  effort: 1
+  impact: 4
+  risk: The function now yields during the wait, so shared state can change between the lines before and after it.
+  when_not: When the function only ever runs in a worker thread via run_in_executor; then time.sleep is fine.
+  threshold: Matters from the first concurrent request; each blocking second stalls every coroutine on that loop.
+  sources:
+    - https://docs.python.org/3/library/asyncio-task.html#asyncio.sleep
+    - https://docs.python.org/3/library/asyncio-dev.html#running-blocking-code
+
+- id: stdlib.time.perf_counter
+  intent: wall-clock-timing
+  title: Measure durations with time.perf_counter(), not time.time()
+  symbol: time.perf_counter
+  kind: stdlib
+  library: null
+  versions: ">=3.3"
+  autofix: true
+  suggestion: Use time.perf_counter() for both timestamps; it is monotonic and has the highest available resolution.
+  gain: >-
+    Durations can't go negative or jump when NTP or a person adjusts the system
+    clock, and resolution is far finer than time.time() on most platforms.
+  effort: 1
+  impact: 2
+  risk: perf_counter values are only meaningful as differences; don't store or log them as timestamps.
+  when_not: When the value is a real point in time (a log timestamp, an expiry) rather than a duration.
+  threshold: Applies at any scale; most visible for short (sub-millisecond) or long-running measurements.
+  sources:
+    - https://docs.python.org/3/library/time.html#time.perf_counter
+    - https://peps.python.org/pep-0418/
+
+- id: stdlib.datetime.now-utc
+  intent: datetime-utcnow
+  title: Replace datetime.utcnow() with datetime.now(timezone.utc)
+  symbol: datetime.timezone.utc
+  kind: stdlib
+  library: null
+  versions: ">=3.2"
+  autofix: true
+  suggestion: Use datetime.now(timezone.utc), which returns a timezone-aware UTC datetime.
+  gain: >-
+    Removes a DeprecationWarning on Python 3.12+ and the classic bug where a naive
+    "UTC" datetime is treated as local time by astimezone() or timestamp().
+  effort: 1
+  impact: 3
+  risk: >-
+    Aware and naive datetimes can't be compared or subtracted; code that mixes the
+    result with other naive datetimes (or naive DB columns) will raise TypeError.
+  when_not: When the value is written to a naive timestamp column that the rest of the system reads as UTC; migrate both together.
+  threshold: Applies at any scale.
+  sources:
+    - https://docs.python.org/3/library/datetime.html#datetime.datetime.utcnow
+    - https://docs.python.org/3/whatsnew/3.12.html#deprecated
+
+- id: stdlib.collections.Counter
+  intent: manual-counter
+  title: Count with collections.Counter
+  symbol: collections.Counter
+  kind: stdlib
+  library: null
+  versions: ">=3.1"
+  suggestion: Use `counts = Counter(items)` or `counts[k] += 1` on a Counter; missing keys start at 0.
+  gain: Removes the if/else branch per item and adds most_common(), arithmetic between counters and total().
+  effort: 1
+  impact: 1
+  risk: A Counter returns 0 for missing keys instead of raising KeyError, which can hide typos in keys.
+  when_not: When the dict is serialised somewhere that needs exactly a plain dict type.
+  threshold: Applies at any scale.
+  sources:
+    - https://docs.python.org/3/library/collections.html#collections.Counter
+  snippet: |
+    from collections import Counter
+
+    counts = Counter(words)
+    top = counts.most_common(10)
+
+- id: stdlib.collections.defaultdict
+  intent: manual-defaultdict
+  title: Group with collections.defaultdict
+  symbol: collections.defaultdict
+  kind: stdlib
+  library: null
+  versions: ">=3.0"
+  suggestion: Create the dict as defaultdict(list) (or set/dict) and append directly; missing keys are created on first use.
+  gain: Removes the membership check per item and the chance of forgetting it on one code path.
+  effort: 1
+  impact: 1
+  risk: Reading a missing key now inserts it; use `.get()` or `in` where a lookup must not create entries.
+  when_not: When the dict is returned to callers that expect KeyError on missing keys.
+  threshold: Applies at any scale.
+  sources:
+    - https://docs.python.org/3/library/collections.html#collections.defaultdict
+  snippet: |
+    from collections import defaultdict
+
+    groups = defaultdict(list)
+    for item in items:
+        groups[item.key].append(item)
+
+- id: stdlib.concurrent.futures
+  intent: manual-thread-fanout
+  title: Fan out with concurrent.futures.ThreadPoolExecutor
+  symbol: concurrent.futures.ThreadPoolExecutor
+  kind: stdlib
+  library: null
+  versions: ">=3.2"
+  suggestion: Submit the work to a ThreadPoolExecutor with a bounded max_workers and collect results with map() or as_completed().
+  gain: >-
+    Bounded concurrency instead of one thread per item, results and exceptions come
+    back to the caller (a bare Thread swallows them), and shutdown is handled by the with-block.
+  effort: 2
+  impact: 3
+  risk: Exceptions are re-raised when you read each result; code that relied on threads failing silently will now see errors.
+  when_not: For CPU-bound pure-Python work, where the GIL serialises threads; use ProcessPoolExecutor instead.
+  threshold: Once the number of items can exceed a few dozen, unbounded thread creation costs memory and scheduler time.
+  sources:
+    - https://docs.python.org/3/library/concurrent.futures.html#threadpoolexecutor
+  snippet: |
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(fetch, urls))
+
+- id: stdlib.subprocess.run
+  intent: os-system
+  title: Run commands with subprocess.run() and an argument list
+  symbol: subprocess.run
+  kind: stdlib
+  library: null
+  versions: ">=3.5"
+  suggestion: Call subprocess.run([...], check=True) with the command as a list, so no shell parses it.
+  gain: >-
+    No shell injection through interpolated values, a real exit-code check with
+    check=True, and access to stdout/stderr through capture_output.
+  effort: 2
+  impact: 3
+  risk: Shell features (pipes, globs, ~ expansion) stop working; do those in Python or with explicit arguments.
+  when_not: In throwaway local scripts whose command never contains outside input.
+  threshold: Applies at any scale; critical as soon as any part of the command comes from user or file input.
+  sources:
+    - https://docs.python.org/3/library/subprocess.html#replacing-os-system
+    - https://docs.python.org/3/library/subprocess.html#security-considerations
+  snippet: |
+    import subprocess
+
+    subprocess.run(["git", "clone", url, dest], check=True)
+
+- id: stdlib.str.join
+  intent: string-concat-loop
+  title: Build strings with "".join() instead of += in a loop
+  symbol: str.join
+  kind: stdlib
+  library: null
+  versions: ">=3.0"
+  suggestion: Collect the pieces in a list and call "".join(parts) once at the end.
+  gain: >-
+    Linear time on every Python implementation. CPython often optimises += in place,
+    but that optimisation is not guaranteed (PyPy, or when another reference exists).
+  effort: 1
+  impact: 1
+  risk: None beyond the edit itself.
+  when_not: For a handful of concatenations; readability wins there.
+  threshold: Matters once the loop can run thousands of times or the string grows to megabytes.
+  sources:
+    - https://docs.python.org/3/library/stdtypes.html#str.join
+    - https://peps.python.org/pep-0008/#programming-recommendations
