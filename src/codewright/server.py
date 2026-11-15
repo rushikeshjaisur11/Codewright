@@ -20,7 +20,7 @@ from .intents import DETECTORS
 from .llm import LLMConfig
 from .llm import status as llm_status
 from .report import to_json, to_markdown, to_pr_comment
-from .service import Service, Workspace
+from .service import Service, Workspace, browse, forget, git_branch, load_recent
 
 STATIC = Path(__file__).parent / "web"
 
@@ -45,6 +45,10 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
             "last_run": w.last_run,
             "error": w.error,
             "has_result": w.result is not None,
+            "branch": git_branch(w.root),
+            "findings": len(w.result.findings) if w.result else None,
+            "verified": sum(1 for f in w.result.findings if f.proof.value == "verified") if w.result else None,
+            "files": len(w.result.graph.files) if w.result else None,
         }
 
     # ------------------------------------------------------------------ meta
@@ -67,6 +71,29 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
         except FileNotFoundError:
             raise HTTPException(400, f"not a directory: {path}") from None
         return ws_summary(wid, w)
+
+    @app.delete("/api/workspaces/{wid}")
+    def close_workspace(wid: str):
+        svc.close(wid)
+        return {"closed": wid}
+
+    @app.get("/api/recent")
+    def recent():
+        open_roots = {str(w.root) for w in svc.workspaces.values()}
+        return [r for r in load_recent() if r["path"] not in open_roots]
+
+    @app.delete("/api/recent")
+    def forget_recent(path: str):
+        forget(path)
+        return {"forgot": path}
+
+    @app.get("/api/fs")
+    def list_folders(path: str = ""):
+        """Folder picker for the repo switcher. The server binds 127.0.0.1 by default."""
+        try:
+            return browse(path or None)
+        except FileNotFoundError:
+            raise HTTPException(404, f"not a folder: {path}") from None
 
     @app.get("/api/cards")
     def catalog():

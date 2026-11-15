@@ -139,6 +139,74 @@ def component_of(path: str, depth: int = 1) -> str:
     return ".".join(name.split(".")[:depth])
 
 
+NAMESPACE_DIRS = {"packages", "apps", "libs", "services", "projects", "modules", "components", "plugins"}
+
+
+def assign_components(
+    paths: list[str], max_rounds: int = 4, share: float = 0.4, max_children: int = 24
+) -> dict[str, str]:
+    """Pick the system view's components so no single box swallows the repo.
+
+    Start from top-level packages. A component is split one level deeper when it holds
+    more than `share` of all modules, or is a monorepo namespace folder (packages/, apps/...),
+    and its modules spread over at least two subpackages. Levels with a single child
+    (``src/``, ``pkg/pkg/``) are passed through. Labels drop ``src``, repeated names and
+    the namespace folder, so ``packages/devmem/src/devmem/core`` reads ``devmem.core``.
+    """
+    parts = {p: module_name(p).split(".") if module_name(p) else ["(root)"] for p in paths}
+    depth = dict.fromkeys(paths, 1)
+    total = len(paths) or 1
+    for _ in range(max_rounds):
+        groups: dict[tuple[str, ...], list[str]] = defaultdict(list)
+        for p in paths:
+            groups[tuple(parts[p][: depth[p]])].append(p)
+        changed = False
+        for key, members in groups.items():
+            if not (len(members) > total * share or key[-1] in NAMESPACE_DIRS):
+                continue
+            extra = 0
+            while True:  # pass through single-child levels
+                deeper = [m for m in members if len(parts[m]) > depth[m] + extra]
+                children = {parts[m][depth[m] + extra] for m in deeper}
+                if len(children) != 1 or len(deeper) != len(members):
+                    break
+                extra += 1
+            if len(children) < 2:
+                continue
+            if len(children) > max_children:
+                # Too many boxes: push down real subpackages only; loose modules stay together.
+                at = {m: depth[m] + extra for m in deeper}
+                deeper = [m for m in deeper if len(parts[m]) > at[m] + 1]
+            for m in deeper:
+                depth[m] += extra + 1
+            changed = changed or bool(deeper)
+        if not changed:
+            break
+    return {p: _component_label(parts[p][: depth[p]]) for p in paths}
+
+
+def importable_names(mod: str) -> list[str]:
+    """Dotted names other code can import `mod` by, besides its file path."""
+    parts = mod.split(".")
+    out = []
+    if "src" in parts:
+        out.append(".".join(parts[len(parts) - parts[::-1].index("src") :]))
+    if parts[0] in NAMESPACE_DIRS and len(parts) > 2:
+        out.append(".".join(parts[2:]))
+    return [o for o in out if o and o != mod]
+
+
+def _component_label(parts: list[str]) -> str:
+    out: list[str] = []
+    for i, x in enumerate(parts):
+        if x == "src" or (out and out[-1].replace("-", "_") == x.replace("-", "_")):
+            continue
+        if i == 0 and x in NAMESPACE_DIRS and len(parts) > 1:
+            continue
+        out.append(x)
+    return ".".join(out) or ".".join(parts)
+
+
 def resolve_relative(target: str, from_path: str) -> str:
     if not target.startswith("."):
         return target
@@ -156,9 +224,13 @@ class ArchMap:
         self.g = graph
         self.findings = findings or []
         self.modules = {module_name(p): p for p in graph.files if not is_test_file(p)}
-        # One top-level package (the common case): split the system view one level deeper.
-        tops = {component_of(p) for p in self.modules.values()}
-        self.depth = 2 if len(tops) == 1 and len(self.modules) > 2 else 1
+        self._compmap = assign_components(list(self.modules.values()))
+        # Imports name modules by their importable path (``devmem.store``), not their file path
+        # (``packages/devmem/src/devmem/store.py``): index both.
+        self._import_names: dict[str, str] = {}
+        for mod in self.modules:
+            for alias in importable_names(mod):
+                self._import_names.setdefault(alias, mod)
         self._fan_in = Counter(c for callees in graph.edges.values() for c in callees)
         self._tested = self._tested_names()
         self._findings_by_file = Counter(f.file for f in self.findings)
@@ -166,7 +238,7 @@ class ArchMap:
 
     # ----------------------------------------------------------------- helpers
     def _comp(self, path: str) -> str:
-        return component_of(path, self.depth)
+        return self._compmap.get(path) or component_of(path)
 
     def _tested_names(self) -> set[str]:
         names = set()
@@ -184,6 +256,8 @@ class ArchMap:
             cand = ".".join(parts[:i])
             if cand in self.modules:
                 return cand
+            if cand in self._import_names:
+                return self._import_names[cand]
         return None
 
     def _module_imports(self, path: str) -> tuple[set[str], set[str]]:

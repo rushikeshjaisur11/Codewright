@@ -301,7 +301,7 @@ def is_test_file(path: str) -> bool:
         name.startswith("test_")
         or name.endswith("_test.py")
         or name == "conftest.py"
-        or any(p in ("tests", "test") for p in parts[:-1])
+        or any(p in ("tests", "test", "fixtures") for p in parts[:-1])
     )
 
 

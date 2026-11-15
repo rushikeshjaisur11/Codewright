@@ -390,3 +390,70 @@ def test_mcp_tools_registered():
 
     tools = asyncio.run(server.list_tools())
     assert {"review", "architecture_map", "ask_code", "check_drift", "record_feedback"} <= {t.name for t in tools}
+
+
+# ---------------------------------------------------------------- map components and the repo switcher
+
+
+def test_components_split_monorepos_and_big_packages():
+    from codewright.archmap import assign_components
+
+    mono = (
+        [f"packages/core/src/core/{m}.py" for m in ("a", "b", "c")]
+        + [f"packages/web/web/{m}.py" for m in ("routes", "views", "forms", "auth")]
+        + [f"scripts/{m}.py" for m in ("tool", "seed", "dump")]
+    )
+    comps = assign_components(mono)
+    assert comps["packages/core/src/core/a.py"] == "core"  # src/ and the repeated name collapse
+    assert comps["packages/web/web/routes.py"] == "web"
+    assert comps["scripts/tool.py"] == "scripts"
+    assert len(set(comps.values())) == 3
+
+    flat = [f"app/m{i}.py" for i in range(30)] + ["app/sub/x.py", "app/sub/y.py"]
+    comps = assign_components(flat)
+    assert comps["app/m1.py"] == "app"  # too many loose modules: they stay together
+    assert comps["app/sub/x.py"] == "app.sub"  # real subpackages still split out
+
+
+def test_switcher_api_recent_and_folders(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from codewright.server import create_app
+
+    a = write_repo(tmp_path / "a", {"pyproject.toml": "[project]\nname='a'\n", "m.py": "x = 1\n"})
+    b = write_repo(tmp_path / "b", {"requirements.txt": "", "m.py": "y = 2\n"})
+    (b / ".git").mkdir()
+    (b / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n")
+    client = TestClient(create_app([str(a)]))
+
+    listing = client.get("/api/fs", params={"path": str(tmp_path)}).json()
+    assert {d["name"]: (d["git"], d["python"]) for d in listing["dirs"]} == {"a": (False, True), "b": (True, True)}
+    assert client.get("/api/fs", params={"path": str(tmp_path / "missing")}).status_code == 404
+
+    opened = client.post("/api/workspaces", json={"path": str(b)}).json()
+    assert opened["branch"] == "feature/x"
+    assert [w["name"] for w in client.get("/api/workspaces").json()] == ["a", "b"]
+    assert client.get("/api/recent").json() == []  # both open, so nothing extra in recent
+
+    client.delete(f"/api/workspaces/{opened['id']}")
+    assert [r["name"] for r in client.get("/api/recent").json()] == ["b"]
+    client.delete("/api/recent", params={"path": str(b)})
+    assert client.get("/api/recent").json() == []
+
+
+def test_imports_resolve_through_src_and_namespace_layouts(tmp_path):
+    from codewright.archmap import importable_names
+
+    assert importable_names("packages.core.src.core.store") == ["core.store", "src.core.store"]
+    write_repo(
+        tmp_path,
+        {
+            "packages/core/src/core/__init__.py": "",
+            "packages/core/src/core/store.py": "def save():\n    return 1\n",
+            "packages/app/src/app/__init__.py": "",
+            "packages/app/src/app/cli.py": "from core.store import save\n\ndef main():\n    return save()\n",
+        },
+    )
+    m = ArchMap(graph.build(tmp_path))
+    edges = {(e.source, e.target) for e in m.system().edges}
+    assert ("c:app", "c:core") in edges

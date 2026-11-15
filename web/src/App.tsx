@@ -1,10 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BookOpen, Compass, FolderOpen, GitPullRequest, LayoutDashboard, MessageSquareCode, Moon, Package,
+  BookOpen, Compass, GitPullRequest, LayoutDashboard, MessageSquareCode, Moon, Package,
   PenTool, Play, Settings as SettingsIcon, Sun, X,
 } from "lucide-react";
 import { api, ReviewPayload, WorkspaceInfo } from "./api";
-import { CodeView, Modal, Spinner, timeAgo, useToast } from "./ui";
+import { CodeView, Spinner, timeAgo, useToast } from "./ui";
+import RepoSwitcher from "./RepoSwitcher";
 import Overview from "./pages/Overview";
 import Review from "./pages/Review";
 import MapPage from "./pages/Map";
@@ -46,7 +47,6 @@ export default function App() {
   const [data, setData] = useState<ReviewPayload | null>(null);
   const [code, setCode] = useState<{ file: string; text: string; line?: number; span?: [number, number] } | null>(null);
   const [openRepo, setOpenRepo] = useState(false);
-  const [repoPath, setRepoPath] = useState("");
   const poll = useRef<number | null>(null);
 
   useEffect(() => {
@@ -71,6 +71,12 @@ export default function App() {
     }).catch((e) => toast(`Can't reach the Codewright server: ${e.message}`, "error"));
   }, [toast]);
 
+  const refreshWorkspaces = useCallback(async () => {
+    const list = await api.workspaces();
+    setWorkspaces(list);
+    return list;
+  }, []);
+
   const reload = useCallback(async () => {
     if (!wid) return;
     const d = await api.review(wid);
@@ -82,12 +88,13 @@ export default function App() {
         if (!n.running && poll.current != null) {
           clearInterval(poll.current);
           poll.current = null;
+          refreshWorkspaces();
           if (n.error) toast(n.error, "error");
           else toast(`Review finished: ${n.result?.findings.length ?? 0} findings`);
         }
       }, 1200);
     }
-  }, [wid, toast]);
+  }, [wid, toast, refreshWorkspaces]);
 
   useEffect(() => {
     if (!wid) return;
@@ -141,18 +148,6 @@ export default function App() {
     releases: "Releases", knowledge: "Knowledge base", settings: "Settings",
   };
 
-  async function doOpen() {
-    try {
-      const w = await api.open(repoPath.trim());
-      setWorkspaces((x) => (x.some((y) => y.id === w.id) ? x : [...x, w]));
-      setWid(w.id);
-      setOpenRepo(false);
-      setRepoPath("");
-    } catch (e) {
-      toast((e as Error).message, "error");
-    }
-  }
-
   const flush = route.page === "map" || route.page === "chat";
   return (
     <AppCtx.Provider value={ctx}>
@@ -162,14 +157,8 @@ export default function App() {
             <span className="mark" aria-hidden="true" />
             <div className="brand-name">Codewright</div>
           </div>
-          <label className="nav-label" htmlFor="cw-repo">Repository</label>
-          <div className="row" style={{ padding: "0 4px 6px" }}>
-            <select id="cw-repo" className="select grow" value={wid ?? ""} onChange={(e) => setWid(e.target.value)}>
-              {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-              {!workspaces.length && <option value="">No repository</option>}
-            </select>
-            <button className="btn icon" title="Open another repository" onClick={() => setOpenRepo(true)}><FolderOpen size={15} /></button>
-          </div>
+          <RepoSwitcher workspaces={workspaces} current={current} onSwitch={setWid} onChanged={refreshWorkspaces}
+            open={openRepo} setOpen={setOpenRepo} />
           <div className="nav-label">Modes</div>
           {nav.map((n) => (
             <button key={n.page} className={`nav-item ${route.page === n.page ? "active" : ""}`} onClick={() => go(n.page)}>
@@ -235,15 +224,6 @@ export default function App() {
         </>
       )}
 
-      {openRepo && (
-        <Modal title="Open a repository" onClose={() => setOpenRepo(false)}
-          footer={<><button className="btn" onClick={() => setOpenRepo(false)}>Cancel</button>
-            <button className="btn primary" disabled={!repoPath.trim()} onClick={doOpen}>Open and review</button></>}>
-          <p className="muted" style={{ marginTop: 0 }}>Path to a local repository on the machine running Codewright. Code is analysed locally; nothing is uploaded.</p>
-          <input className="input" style={{ width: "100%" }} placeholder="/home/me/projects/my-service" value={repoPath}
-            autoFocus onChange={(e) => setRepoPath(e.target.value)} onKeyDown={(e) => e.key === "Enter" && repoPath.trim() && doOpen()} />
-        </Modal>
-      )}
     </AppCtx.Provider>
   );
 }

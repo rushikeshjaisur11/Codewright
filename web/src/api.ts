@@ -54,7 +54,13 @@ export interface ReviewData {
 
 export interface WorkspaceInfo {
   id: string; root: string; name: string; running: boolean; last_run: number | null; error: string | null;
-  has_result: boolean;
+  has_result: boolean; branch: string | null; findings: number | null; verified: number | null; files: number | null;
+}
+
+export interface RecentRepo { path: string; name: string; opened: number }
+export interface FolderListing {
+  path: string; parent: string | null; home: string; git: boolean; python: boolean;
+  dirs: { name: string; path: string; git: boolean; python: boolean }[];
 }
 
 export interface ReviewPayload extends WorkspaceInfo { result: ReviewData | null }
@@ -162,6 +168,11 @@ const q = (s: string) => encodeURIComponent(s);
 export const api = {
   status: () => req<{ version: string; intents: string[]; workspaces: WorkspaceInfo[] }>("GET", "/api/status"),
   open: (path: string) => req<WorkspaceInfo>("POST", "/api/workspaces", { path }),
+  workspaces: () => req<WorkspaceInfo[]>("GET", "/api/workspaces"),
+  closeWorkspace: (id: string) => req<{ closed: string }>("DELETE", `/api/workspaces/${id}`),
+  recent: () => req<RecentRepo[]>("GET", "/api/recent"),
+  forgetRecent: (path: string) => req<{ forgot: string }>("DELETE", `/api/recent?path=${q(path)}`),
+  folders: (path = "") => req<FolderListing>("GET", `/api/fs?path=${q(path)}`),
   review: (id: string) => req<ReviewPayload>("GET", `${w(id)}/review`),
   runReview: (id: string, proof: boolean, base: string) => req<WorkspaceInfo>("POST", `${w(id)}/review`, { proof, base }),
   feedback: (id: string, fid: string, status: string, reason = "") =>

@@ -32,18 +32,21 @@ Everything runs locally and the code is never uploaded. A model is optional (see
 | --- | --- |
 | Overview | Findings, proof rate, acceptance rate, hot-path count, stack, drift and upgrades at a glance |
 | Review | Filterable findings with evidence, the suggested API and version, gain, risk, "when not to", scale threshold, proof, diff and sources. Accept, reject (with a reason), mute an intent, copy or apply a patch, PR mode and PR-comment export |
-| Map | System, module and request-flow diagrams generated from the code graph. Every box links to its files and lines; overlays show findings, fan-in hotspots and untested code. Mermaid export, drift panel and "changes this week" |
+| Map | System, module and request-flow diagrams generated from the code graph, laid out with ELK (layered, orthogonal edges). Hover a box to trace its connections, double-click to drill in (breadcrumbs take you back), press `/` to find a node, filter by kind, switch direction. Every box links to its files and lines; overlays show findings, fan-in hotspots and untested code. Monorepos (`packages/*`, `src/` layouts) are split into their real packages. Mermaid export, drift panel and "changes this week" |
 | Code chat | Questions about the code, answered with citations you can click open |
 | Design | Interview → three candidate architectures with fit scores, a diagram, components with exact versions from PyPI, editable capacity assumptions, decision records, data model and API outline. Download the design doc or a starter repo, or save the design as the repo's intended architecture |
 | Releases | Newer versions of each dependency and the capability cards an upgrade would unlock |
 | Knowledge base | Every capability card, searchable |
 | Settings | Model, offline mode, team constraints, mute rules, MCP and CI snippets |
+| Repo switcher | Press `⌘K` / `Ctrl+K`: switch between open repos (branch, findings, last review), reopen recent ones (remembered in `~/.codewright/recent.json`) or browse this machine's folders to open a new one |
 
 | Overview | Map |
 | --- | --- |
 | ![Overview: findings, proof rate, acceptance rate and stack](docs/screenshots/overview.png) | ![Map: the system view generated from the code graph](docs/screenshots/map.png) |
-| **Design** | **Light theme** |
-| ![Design: three candidate architectures and the recommended one's diagram](docs/screenshots/design.png) | ![Review in the light theme](docs/screenshots/review-light.png) |
+| **Design** | **Repo switcher (⌘K)** |
+| ![Design: three candidate architectures and the recommended one's diagram](docs/screenshots/design.png) | ![Repo switcher: open and recent repos with branch and findings](docs/screenshots/switcher.png) |
+| **Light theme** | |
+| ![Review in the light theme](docs/screenshots/review-light.png) | |
 
 ## Command line
 

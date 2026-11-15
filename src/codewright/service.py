@@ -7,6 +7,8 @@ memory, so the UI can switch between modes without re-scanning.
 from __future__ import annotations
 
 import contextlib
+import json
+import os
 import threading
 import time
 import uuid
@@ -109,6 +111,80 @@ class Workspace:
         return watcher.check(self.ensure().stack, self.root)
 
 
+# --------------------------------------------------------------------------- recent repos and folder browsing
+
+
+def _home() -> Path:
+    return Path(os.environ.get("CODEWRIGHT_HOME", "~/.codewright")).expanduser()
+
+
+def load_recent() -> list[dict]:
+    """Repos opened before, newest first, that still exist on disk."""
+    p = _home() / "recent.json"
+    try:
+        items = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [i for i in items if isinstance(i, dict) and Path(i.get("path", "")).is_dir()]
+
+
+def _save_recent(items: list[dict]) -> None:
+    with contextlib.suppress(OSError):
+        d = _home()
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "recent.json").write_text(json.dumps(items[:15], indent=2))
+
+
+def remember(path: Path) -> None:
+    items = [i for i in load_recent() if i.get("path") != str(path)]
+    _save_recent([{"path": str(path), "name": path.name, "opened": time.time()}, *items])
+
+
+def forget(path: str) -> None:
+    _save_recent([i for i in load_recent() if i.get("path") != path])
+
+
+def git_branch(root: Path) -> str | None:
+    head = root / ".git" / "HEAD"
+    try:
+        ref = head.read_text().strip()
+    except OSError:
+        return None
+    return ref.removeprefix("ref: refs/heads/") if ref.startswith("ref: ") else ref[:8]
+
+
+def browse(path: str | None) -> dict:
+    """Subfolders of `path` (default: home), marking which look like Python repos."""
+    p = Path(path).expanduser().resolve() if path else Path.home()
+    if not p.is_dir():
+        raise FileNotFoundError(str(path))
+    dirs = []
+    try:
+        entries = sorted(p.iterdir(), key=lambda e: e.name.lower())
+    except PermissionError:
+        entries = []
+    for e in entries:
+        if not e.is_dir() or e.name.startswith(".") or e.name in ("node_modules", "__pycache__"):
+            continue
+        try:
+            names = {c.name for c in e.iterdir()} if os.access(e, os.R_OK) else set()
+        except OSError:
+            names = set()
+        py = bool(names & {"pyproject.toml", "setup.py", "requirements.txt", "uv.lock", "poetry.lock", "Pipfile"})
+        dirs.append({"name": e.name, "path": str(e), "git": ".git" in names, "python": py})
+        if len(dirs) >= 400:
+            break
+    parent = str(p.parent) if p.parent != p else None
+    return {
+        "path": str(p),
+        "parent": parent,
+        "home": str(Path.home()),
+        "dirs": dirs,
+        "git": (p / ".git").exists(),
+        "python": any((p / n).exists() for n in ("pyproject.toml", "setup.py", "requirements.txt", "uv.lock")),
+    }
+
+
 class Service:
     def __init__(self, roots: list[str | Path] | None = None):
         self.workspaces: dict[str, Workspace] = {}
@@ -124,7 +200,11 @@ class Service:
         wid = uuid.uuid5(uuid.NAMESPACE_URL, str(p)).hex[:10]
         if wid not in self.workspaces:
             self.workspaces[wid] = Workspace(p)
+        remember(p)
         return wid, self.workspaces[wid]
+
+    def close(self, wid: str) -> None:
+        self.workspaces.pop(wid, None)
 
     def get(self, wid: str) -> Workspace:
         if wid not in self.workspaces:
