@@ -87,9 +87,13 @@ def prove(findings: list[Finding], root: str | Path, python: str, timeout: int =
                 f.proof_detail = "patch did not apply cleanly"
                 continue
             after = run_tests(work, python, timeout)
-            if after.ok:
+            if after.ok and f.covered:
                 f.proof = ProofStatus.VERIFIED
-                f.proof_detail = f"tests pass before ({baseline.seconds:.1f}s) and after ({after.seconds:.1f}s)"
+                f.proof_detail = (f"tests that reach `{f.function}` pass before ({baseline.seconds:.1f}s) "
+                                  f"and after ({after.seconds:.1f}s) the change")
+            elif after.ok:
+                f.proof_detail = (f"the suite still passes after the change, but no test reaches `{f.function}`, "
+                                  "so this proves only that nothing else broke; add a test to verify it")
             else:
                 f.proof = ProofStatus.BROKE_TESTS
                 f.proof_detail = "tests fail after the change:\n" + after.output[-800:]

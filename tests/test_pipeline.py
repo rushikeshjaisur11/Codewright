@@ -186,7 +186,8 @@ def test_review_proves_lru_cache_patch():
     assert lru.proof is ProofStatus.VERIFIED, lru.proof_detail
     assert lru.symbol_check == "ok"
     assert "+@functools.lru_cache(maxsize=1024)" in lru.patch
-    assert result.findings[0] is lru  # proven, cheap, on the hot path -> ranked first
+    # Proof raises confidence above every unproven finding (exact rank depends on what's installed).
+    assert lru.confidence > max(f.confidence for f in result.findings if f is not lru)
     assert all(f.file and f.api and f.gain and f.when_not for f in result.findings)
 
 

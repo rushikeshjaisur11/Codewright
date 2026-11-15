@@ -1,0 +1,97 @@
+# Capability cards: framework APIs whose recommended form changed between versions.
+- id: pydantic.v2-methods
+  intent: pydantic-v1-api
+  title: Use the Pydantic v2 method names
+  symbol: pydantic.BaseModel.model_validate
+  kind: library
+  library: pydantic
+  versions: ">=2.0"
+  autofix: true
+  suggestion: Rename parse_obj -> model_validate, parse_raw -> model_validate_json, construct -> model_construct, update_forward_refs -> model_rebuild.
+  gain: >-
+    Removes PydanticDeprecatedSince20 warnings and the dependency on v1 shims that are
+    scheduled for removal in Pydantic v3.
+  effort: 1
+  impact: 2
+  risk: model_validate_json parses JSON in Rust and is stricter than v1 parse_raw on some inputs; run your validation tests.
+  when_not: When the code must keep supporting Pydantic v1 installs too.
+  threshold: Applies at any scale; required before upgrading to Pydantic v3.
+  sources:
+    - https://docs.pydantic.dev/latest/migration/#changes-to-pydanticbasemodel
+
+- id: fastapi.lifespan
+  intent: fastapi-on-event
+  title: Replace @app.on_event with a lifespan handler
+  symbol: fastapi.FastAPI
+  kind: library
+  library: fastapi
+  versions: ">=0.93"
+  suggestion: Move startup and shutdown code into one async context manager passed as FastAPI(lifespan=...).
+  gain: >-
+    on_event is deprecated; a lifespan keeps setup and teardown of the same resource
+    together and lets you share it through app.state without globals.
+  effort: 2
+  impact: 2
+  risk: Once lifespan is set, on_event handlers are not called; move all of them in the same change.
+  when_not: Never needed to keep; only defer if a dependency still registers on_event hooks itself.
+  threshold: Applies at any scale.
+  sources:
+    - https://fastapi.tiangolo.com/advanced/events/
+  snippet: |
+    from contextlib import asynccontextmanager
+    from fastapi import FastAPI
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.pool = await create_pool()
+        yield
+        await app.state.pool.close()
+
+    app = FastAPI(lifespan=lifespan)
+
+- id: sqlalchemy.select-2.0
+  intent: sqlalchemy-legacy-query
+  title: Use SQLAlchemy 2.0 select() instead of the legacy Query API
+  symbol: sqlalchemy.select
+  kind: library
+  library: sqlalchemy
+  versions: ">=2.0"
+  suggestion: Write `session.scalars(select(User).where(User.id == uid))` instead of `session.query(User).filter(...)`.
+  gain: >-
+    One query style for Core and ORM, full typing support, and the API the 2.0 docs
+    and new features are built on; Query is kept only as legacy.
+  effort: 3
+  impact: 2
+  risk: Result shapes differ (Row vs ORM object); use session.scalars() for single-entity queries and check .first()/.one() calls.
+  when_not: In a large codebase mid-migration, convert module by module rather than mixing both styles in one file.
+  threshold: Applies at any scale.
+  sources:
+    - https://docs.sqlalchemy.org/en/20/orm/queryguide/query.html
+    - https://docs.sqlalchemy.org/en/20/changelog/migration_20.html
+  snippet: |
+    from sqlalchemy import select
+
+    user = session.scalars(select(User).where(User.id == uid)).one()
+
+- id: httpx.async-client
+  intent: blocking-http-in-async
+  title: Use httpx.AsyncClient for HTTP calls inside async code
+  symbol: httpx.AsyncClient
+  kind: library
+  library: httpx
+  versions: ">=0.18"
+  offer_uninstalled: true
+  suggestion: Await calls on a shared httpx.AsyncClient instead of calling requests inside an async function.
+  gain: >-
+    The event loop keeps serving other requests while waiting on the network, and a
+    shared client adds keep-alive connection pooling.
+  effort: 2
+  impact: 4
+  risk: Timeouts default differently (httpx uses 5 seconds); set them explicitly to match the old behaviour.
+  when_not: When the function is only ever called from synchronous code; then make it a plain def instead.
+  threshold: Matters from the first concurrent request on the same worker.
+  sources:
+    - https://www.python-httpx.org/async/
+  snippet: |
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(url)

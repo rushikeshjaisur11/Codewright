@@ -16,14 +16,15 @@ def confidence(f: Finding) -> float:
     return round(max(0.1, min(c, 1.0)), 2)
 
 
-def score(f: Finding) -> float:
+def score(f: Finding, weight: float = 1.0) -> float:
     impact = f.impact * (1.5 if f.hot_path else 1.0)
-    return round(impact * f.confidence / max(f.effort, 1), 3)
+    return round(impact * f.confidence * weight / max(f.effort, 1), 3)
 
 
-def rank(findings: list[Finding], top: int | None = 10) -> list[Finding]:
+def rank(findings: list[Finding], top: int | None = 10, weights: dict[str, float] | None = None) -> list[Finding]:
+    weights = weights or {}
     for f in findings:
         f.confidence = confidence(f)
-        f.score = score(f)
+        f.score = score(f, weights.get(f.intent, 1.0))
     ordered = sorted(findings, key=lambda f: (-f.score, f.file, f.line))
     return ordered if top is None else ordered[:top]

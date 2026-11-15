@@ -101,3 +101,26 @@ def _panel(i: int, f: Finding) -> Panel:
     elif f.snippet:
         parts.append(Syntax(f.snippet, f.snippet_lang, theme="ansi_dark", word_wrap=True))
     return Panel(Group(*parts), title=f"{i}. {f.title}", subtitle=f"{f.file}:{f.line} · {f.function}")
+
+
+def to_pr_comment(result: ReviewResult) -> str:
+    """Compact GitHub PR comment: one collapsible block per finding, changed code only."""
+    scope = f" on lines changed since `{result.base}`" if result.base else ""
+    if not result.findings:
+        return f"### Codewright\n\nNo findings{scope}. "\
+               f"{len(result.rejected)} candidate(s) were dropped by the critic.\n"
+    out = [f"### Codewright: {len(result.findings)} suggestion(s){scope}\n",
+           "| # | Suggestion | Where | Proof |", "| --- | --- | --- | --- |"]
+    for i, f in enumerate(result.findings, 1):
+        out.append(f"| {i} | {f.title} | `{f.file}:{f.line}` | {f.proof.value} |")
+    out.append("")
+    for i, f in enumerate(result.findings, 1):
+        out.append(f"<details><summary><b>{i}. {f.title}</b> — <code>{f.file}:{f.line}</code></summary>\n")
+        out.append(f"**Found:** {f.evidence}  \n**Instead:** {f.suggestion}  \n**API:** {f.api}  \n"
+                   f"**Gain:** {f.gain}  \n**When not to:** {f.when_not}  \n**Proof:** {f.proof_detail}\n")
+        if f.patch:
+            out.append(f"```diff\n{f.patch.rstrip()}\n```")
+        out.append("Sources: " + " · ".join(f"[{j + 1}]({s})" for j, s in enumerate(f.sources)))
+        out.append("</details>\n")
+    out.append("<sub>Codewright suggests; humans decide. Nothing is merged automatically.</sub>")
+    return "\n".join(out)

@@ -51,10 +51,14 @@ def make_findings(matches: list[IntentMatch], stack: Stack, graph: CodeGraph, ca
             snippet=card.snippet,
             snippet_lang=card.snippet_lang,
             hot_path=graph.key(fn) in hot,
+            span=(fn.start_line, fn.end_line),
+            card_id=card.id,
         )
         builder = PATCHERS.get(card.id)
         if builder is not None:
             finding.patch = builder(pf, m)
+        elif card.autofix and m.data.get("edits"):
+            finding.patch = _span_patch(pf, m)
         findings.append(finding)
     return findings
 
@@ -116,6 +120,17 @@ def _lru_cache_patch(pf: ParsedFile, m: IntentMatch) -> str | None:
 
 
 def _add_import(pf: ParsedFile, lines: list[str], statement: str) -> list[str]:
+    # `from X import Y`: extend an existing single-line `from X import ...` when there is one.
+    parts = statement.split()
+    if len(parts) == 4 and parts[0] == "from" and parts[2] == "import":
+        prefix = f"from {parts[1]} import "
+        for i, ln in enumerate(lines):
+            if ln.startswith(prefix) and "(" not in ln and "#" not in ln and "\\" not in ln:
+                names = [n.strip() for n in ln[len(prefix):].split(",")]
+                if parts[3] not in names:
+                    lines = list(lines)
+                    lines[i] = prefix + ", ".join(names + [parts[3]]) + "\n"
+                return lines
     last_import = 0
     for child in pf.root.children:
         if child.type in ("import_statement", "import_from_statement", "future_import_statement"):
@@ -124,6 +139,17 @@ def _add_import(pf: ParsedFile, lines: list[str], statement: str) -> list[str]:
                 child.named_children[0].type == "string":
             last_import = child.end_point[0] + 1  # after the module docstring
     return lines[:last_import] + [statement] + lines[last_import:]
+
+
+def _span_patch(pf: ParsedFile, m: IntentMatch) -> str | None:
+    """Apply a detector's (start_byte, end_byte, replacement) edits and any imports it needs."""
+    src = pf.source
+    for start, end, new in sorted(m.data["edits"], reverse=True):
+        src = src[:start] + new.encode() + src[end:]
+    after = src.decode("utf-8", errors="replace").splitlines(keepends=True)
+    for stmt in m.data.get("imports", []):
+        after = _add_import(pf, after, stmt + "\n")
+    return unified_diff(pf.path, pf.lines, after)
 
 
 PATCHERS = {

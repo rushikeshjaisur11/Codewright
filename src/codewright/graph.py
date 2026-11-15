@@ -67,6 +67,21 @@ class CodeGraph:
             stack.extend(self.edges.get(q, ()))
         return seen
 
+    def test_reachable(self) -> set[str]:
+        """Every function some test function reaches through the call graph."""
+        from .intents.detectors import is_test_file
+
+        starts = [self.key(fn) for pf, fn in self.functions() if is_test_file(pf.path)]
+        seen: set[str] = set()
+        stack = list(starts)
+        while stack:
+            q = stack.pop()
+            if q in seen:
+                continue
+            seen.add(q)
+            stack.extend(self.edges.get(q, ()))
+        return seen - set(starts)
+
     def key(self, fn: Function) -> str:
         return f"{fn.file}::{fn.qualname}"
 
@@ -170,7 +185,7 @@ def _imports(node: Node, module: Module) -> None:
     mod_node = node.child_by_field_name("module_name")
     base = text(mod_node)
     for child in node.named_children:
-        if child is mod_node:
+        if mod_node is not None and child.start_byte == mod_node.start_byte:
             continue
         if child.type == "dotted_name":
             module.imports[text(child)] = f"{base}.{text(child)}"

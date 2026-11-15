@@ -96,6 +96,7 @@ class Card:
     requires_any: list[str] = field(default_factory=list)  # at least one must be installed
     match: dict[str, Any] = field(default_factory=dict)  # constraints on IntentMatch.data (None = absent)
     offer_uninstalled: bool = False  # may be suggested as a new dependency
+    autofix: bool = False  # apply the detector's byte-span edits as the patch
 
 
 @dataclass
@@ -128,6 +129,10 @@ class Finding:
     proof_detail: str = ""
     score: float = 0.0
     rejected_reason: str | None = None
+    span: tuple[int, int] = (0, 0)  # enclosing function's first and last line
+    status: str | None = None  # feedback: accepted | rejected | muted
+    card_id: str = ""
+    covered: bool = False  # some test reaches this function through the call graph
 
     def to_dict(self) -> dict[str, Any]:
         from dataclasses import asdict

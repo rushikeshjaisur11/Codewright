@@ -33,6 +33,15 @@ for sym in json.loads(sys.argv[1]):
         except AttributeError:
             status = "missing"
         break
+    if status == "unchecked":
+        import builtins
+        obj = builtins
+        try:
+            for attr in parts:
+                obj = getattr(obj, attr)
+            status = "ok"
+        except AttributeError:
+            pass
     out[sym] = status
 print(json.dumps(out))
 """
