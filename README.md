@@ -67,6 +67,7 @@ codewright feedback <finding-id> rejected --reason "not worth the churn"
 codewright stack .                          # what versions it thinks you run
 codewright graph .                          # functions, call edges and entry points
 codewright mcp                              # MCP server on stdio for coding agents
+codewright mcp --http --host 0.0.0.0        # one shared MCP server for a team (see below)
 codewright cards verify --python .venv/bin/python --links   # every card's API exists in the installed version; sources resolve
 ```
 
@@ -98,13 +99,46 @@ Or call the CLI yourself:
 
 Codewright suggests; it never merges.
 
-### For coding agents
+### For coding agents (MCP)
 
-```json
-{ "mcpServers": { "codewright": { "command": "codewright", "args": ["mcp"] } } }
+Codewright is an MCP server, so Claude Code, Cursor, VS Code, Copilot, Devin and other agents can call it. Use it **locally** (nothing to host; it reviews folders on your machine) or run **one shared server for the team** (nobody installs anything).
+
+**Local**, one line, nothing to install first (uv fetches it):
+
+```bash
+claude mcp add codewright -- uvx --from git+https://github.com/rushikeshjaisur11/codewright codewright mcp
 ```
 
-Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `architecture_map`, `ask_code`, `check_drift`, `dependency_releases`, `search_knowledge` (what the installed version of a library offers for a task, before writing code against it).
+`codewright mcp config` prints the same setup for Cursor, VS Code, Claude Desktop and other clients.
+
+**Shared server for a team**, over Streamable HTTP at `/mcp`:
+
+```bash
+export CODEWRIGHT_MCP_TOKENS=$(codewright mcp token)        # one per person or team; comma-separated
+codewright mcp --http --host 0.0.0.0 --port 8765 --root /srv/repos/shop --root /srv/repos/billing
+# or in a container:
+docker build -t codewright .
+docker run -p 8765:8765 -e CODEWRIGHT_MCP_TOKENS=... -v /srv/repos/shop:/repos/shop codewright --root /repos/shop
+```
+
+Then each person runs `codewright mcp config --url https://codewright.example.com` and pastes what it prints. For Claude Code that is:
+
+```bash
+claude mcp add --transport http codewright https://codewright.example.com/mcp --header "Authorization: Bearer $CODEWRIGHT_TOKEN"
+```
+
+On a shared server, a tool's `repo` is one of:
+- the name of a repository the server was started with (`--root`);
+- a git URL on an allowed host (`https://github.com/org/repo`, `#branch` for a branch), cloned shallowly into the server's cache and refreshed when older than 5 minutes. Private repos use the server's `CODEWRIGHT_GIT_TOKEN`, `~/.netrc` or git credential helper. Set other hosts with `--git-host git.corp.example`, or turn this off with `--no-git`;
+- nothing: `review_files` reviews files the agent sends inline (the files it's editing plus `uv.lock`, `requirements.txt` or `pyproject.toml`, so versions match). Nothing is kept.
+
+What the shared server guards:
+- **Tokens.** Every request needs a bearer token; `/healthz` is the only open path. The server refuses to listen on a non-local address without a token unless you pass `--no-auth` (for when a gateway in front authenticates).
+- **No repository code runs.** Proof runs a repo's tests and installs its dependencies, so it's off unless you start with `--allow-proof`.
+- **Access.** Callers reach only the `--root` repos and allowed git hosts. Clones use https only (no `file://`, `ssh` or `ext::`), with no hooks and no LFS downloads. Inline files can't escape their throwaway folder.
+- **Host headers.** `--public-host codewright.example.com` refuses requests that don't use that name, and a server bound to localhost is protected against DNS rebinding.
+
+Tools: `review`, `review_files`, `review_markdown`, `explain_finding`, `record_feedback`, `architecture_map`, `ask_code`, `check_drift`, `dependency_releases`, `search_knowledge` (what the installed version of a library offers for a task, before writing code against it), `list_repos`.
 
 ## How a review works
 

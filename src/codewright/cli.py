@@ -212,12 +212,98 @@ def serve(
     uvicorn.run(create_app([str(path)], allowed_hosts=hosts), host=host, port=port, log_level="warning")
 
 
-@app.command()
-def mcp() -> None:
-    """Run the MCP server on stdio, for coding agents."""
-    from .mcp_server import main
+mcp_app = typer.Typer(
+    help="MCP server for coding agents: local (stdio) or one shared server for a team (--http).",
+    invoke_without_command=True,
+)
+app.add_typer(mcp_app, name="mcp")
 
-    main()
+
+@mcp_app.callback()
+def mcp(
+    ctx: typer.Context,
+    http: bool = typer.Option(False, "--http", help="Serve over Streamable HTTP at /mcp instead of stdio."),
+    host: str = typer.Option("127.0.0.1", help="Address to bind with --http (0.0.0.0 to serve a team)."),
+    port: int = typer.Option(8765, help="Port for --http."),
+    root: list[Path] = typer.Option([], "--root", help="Repository the shared server serves (repeatable)."),
+    token: list[str] = typer.Option(
+        [], "--token", help="Accepted bearer token (repeatable). Or CODEWRIGHT_MCP_TOKENS."
+    ),
+    git_host: list[str] = typer.Option(
+        [], "--git-host", help="Git host callers may name (repeatable). Default: github.com, gitlab.com, bitbucket.org."
+    ),
+    no_git: bool = typer.Option(False, "--no-git", help="Don't clone git URLs; only --root repos and review_files."),
+    allow_proof: bool = typer.Option(
+        False, "--allow-proof", help="Let callers run proof (it runs repos' tests and installs their dependencies)."
+    ),
+    public_host: list[str] = typer.Option(
+        [], "--public-host", help="Domain the server is reached at (repeatable); other Host headers are refused."
+    ),
+    no_auth: bool = typer.Option(False, "--no-auth", help="Serve --http on a non-local address without tokens."),
+) -> None:
+    """Run the MCP server: on stdio for one agent, or with --http as a shared server for a team."""
+    if ctx.invoked_subcommand is not None:
+        return
+    import os
+
+    from .mcp_server import is_loopback, main
+    from .remote import DEFAULT_GIT_HOSTS, Policy
+
+    if not http:
+        main()
+        return
+    tokens = [*token, *[t for t in os.environ.get("CODEWRIGHT_MCP_TOKENS", "").split(",") if t.strip()]]
+    tokens = [t.strip() for t in tokens]
+    if any(len(t) < 16 for t in tokens):
+        console.print("[red]Tokens must be at least 16 characters; `codewright mcp token` makes one.[/]")
+        raise typer.Exit(2)
+    if not tokens and not is_loopback(host) and not no_auth:
+        console.print(
+            f"[red]Refusing to serve {host} without a token.[/] Pass --token (make one with `codewright mcp token`) "
+            "or set CODEWRIGHT_MCP_TOKENS; --no-auth only if something in front of it authenticates."
+        )
+        raise typer.Exit(2)
+    roots = [r.expanduser().resolve() for r in root]
+    for r in roots:
+        if not r.is_dir():
+            console.print(f"[red]not a folder: {r}[/]")
+            raise typer.Exit(2)
+    hosts = () if no_git else tuple(h.lower() for h in git_host) or DEFAULT_GIT_HOSTS
+    policy = Policy(shared=True, roots=roots, git_hosts=hosts, allow_proof=allow_proof)
+    where = f"http://{host}:{port}/mcp"
+    console.print(f"Codewright MCP on [bold]{where}[/] ({'token required' if tokens else 'no token'})")
+    console.print(
+        f"  repos: {', '.join(r.name for r in roots) or 'none'}; git: {', '.join(hosts) or 'off'}; "
+        f"proof: {'on' if allow_proof else 'off'}"
+    )
+    console.print("  connect an agent: `codewright mcp config --url <public URL>`")
+    main(http=True, host=host, port=port, tokens=tokens, policy=policy, public_hosts=public_host or None)
+
+
+@mcp_app.command("token")
+def mcp_token() -> None:
+    """Print a new random bearer token for --token / CODEWRIGHT_MCP_TOKENS."""
+    import secrets
+
+    print(secrets.token_urlsafe(32))
+
+
+@mcp_app.command("config")
+def mcp_config(
+    url: str = typer.Option(
+        "",
+        "--url",
+        help="Shared server URL, e.g. https://codewright.example.com/mcp. Without it: the local stdio setup.",
+    ),
+    token_env: str = typer.Option("CODEWRIGHT_TOKEN", help="Environment variable that holds your token."),
+) -> None:
+    """Print copy-paste setup for Claude Code, Cursor, VS Code and other MCP clients."""
+    from .mcp_setup import client_configs
+
+    for title, text in client_configs(url, token_env):
+        console.print(f"[bold]{title}[/]")
+        print(text)
+        print()
 
 
 @app.command()

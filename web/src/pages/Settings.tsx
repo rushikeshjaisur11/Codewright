@@ -158,6 +158,8 @@ export default function SettingsPage() {
             <pre className="code grow" style={{ margin: 0, padding: 12 }}>{mcp}</pre>
             <CopyButton text={mcp} small />
           </div>
+          <div className="muted" style={{ fontSize: 13 }}>For a whole team, run one shared server and give each person a token; <code>codewright mcp config --url https://your-host</code> prints the setup for Claude Code, Cursor and VS Code:</div>
+          <pre className="code" style={{ margin: 0, padding: 12 }}>{`CODEWRIGHT_MCP_TOKENS=$(codewright mcp token) codewright mcp --http --host 0.0.0.0 --root /srv/repos/app`}</pre>
           <div className="muted" style={{ fontSize: 13 }}>In CI, comment on pull requests with changed-code findings and fail on architecture drift:</div>
           <pre className="code" style={{ margin: 0, padding: 12 }}>{`codewright review . --base origin/main -f pr -o codewright.md\ncodewright check .   # exits 1 on drift from .codewright/design.json`}</pre>
         </div>

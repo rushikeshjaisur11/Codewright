@@ -416,9 +416,13 @@ def detect_duplicate_logic(graph: CodeGraph) -> list[IntentMatch]:
     """Functions in the same project whose bodies are identical apart from their names (8+ lines)."""
     groups: dict[tuple[str, str], list[tuple[ParsedFile, Function, int]]] = defaultdict(list)
     projects: dict[str, str] = {}
+    seen: set[tuple[str, str]] = set()
     for pf, fn in graph.functions():
-        if is_test_file(pf.path):
+        if is_test_file(pf.path) or any(d.split("(", 1)[0].rsplit(".", 1)[-1] == "overload" for d in fn.decorators):
             continue
+        if (pf.path, fn.qualname) in seen:
+            continue  # a redefinition shares its name (and node) with the first: one function, not a copy
+        seen.add((pf.path, fn.qualname))
         node = pf.nodes.get(fn.qualname)
         fp = _body_fingerprint(pf, node) if node is not None else None
         if fp:

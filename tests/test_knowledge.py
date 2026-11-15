@@ -70,7 +70,7 @@ def test_search_knowledge_mcp_tool(tmp_path):
     from codewright.mcp_server import search_knowledge, server
 
     assert "search_knowledge" in {t.name for t in asyncio.run(server.list_tools())}
-    hits = search_knowledge("pause a workflow for human approval", path=str(adk_repo(tmp_path, "2.14.1")))
+    hits = search_knowledge("pause a workflow for human approval", repo=str(adk_repo(tmp_path, "2.14.1")))
     assert hits[0]["id"] == "adk.ref.workflow-human-input"
     assert hits[0]["fit"]["status"] == "fits" and hits[0]["sources"] and hits[0]["snippet"]
 

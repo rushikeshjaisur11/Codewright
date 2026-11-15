@@ -64,7 +64,7 @@ def test_mcp_errors_reach_the_agent_as_messages():
     with pytest.raises(ToolError, match="unknown entry point 'x'"):
         mcp_server.architecture_map(str(FIXTURE), level="flow", target="x")
     schema = {t.name: t for t in asyncio.run(mcp_server.server.list_tools())}["review"].input_schema
-    assert {"path", "base", "proof", "top"} <= set(schema["properties"])  # wrapping kept the signature
+    assert {"repo", "base", "proof", "top"} <= set(schema["properties"])  # wrapping kept the signature
 
 
 def test_starter_pyproject_is_valid_and_tests_with_httpx2(tmp_path):

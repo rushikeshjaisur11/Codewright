@@ -306,3 +306,19 @@ def test_findings_lead_with_codebase_advice_and_never_patch(tmp_path):
     fs = [f for f in make_findings(detect(g), stack.discover(tmp_path), g, cards.load()) if f.intent.startswith("arch")]
     assert [f.card_id for f in fs] == ["arch.import-cycle"]
     assert fs[0].suggestion.startswith("Here ") and fs[0].patch is None and fs[0].sources
+
+
+def test_overloads_and_redefinitions_are_not_duplicates(tmp_path):
+    sig = "self, value: int, a: int = 1, b: int = 2, c: int = 3, d: int = 4, e: int = 5, f: int = 6"
+    write(
+        tmp_path,
+        {
+            "pyproject.toml": "[project]\nname='x'\n",
+            "x/api.py": "import typing as t\n\n\nclass S:\n"
+            + "".join(f"    @t.overload\n    def load(\n        {sig},\n    ) -> int: ...\n\n" for _ in range(2))
+            + "    def load(self, *args):\n"
+            + "".join(f"        v{i} = args[{i}] if len(args) > {i} else None\n" for i in range(9))
+            + "        return v0\n",
+        },
+    )
+    assert arch(tmp_path, "arch-duplicate-logic") == []
