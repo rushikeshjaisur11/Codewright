@@ -116,3 +116,103 @@ def test_retry_loop_in_a_celery_task_suggests_autoretry(tmp_path):
     fs = findings(repo(tmp_path, {"tasks.py": src}, {"celery": "5.7.0", "tenacity": "9.2.1"}))
     assert [f.function for f in fs["celery.autoretry"]] == ["sync"]
     assert [f.function for f in fs["tenacity.retry"]] == ["plain"]
+
+
+# ---------------------------------------------------------------- Pydantic auto-patches keep behaviour
+
+
+MODELS = """
+from pydantic import BaseModel, validator
+
+
+class A(BaseModel):
+    name: str
+    tags: list = []
+
+    class Config:
+        str_strip_whitespace = True
+        str_max_length = 20
+        extra = "forbid"
+
+    @validator("name")
+    def not_admin(cls, v):
+        if v == "admin":
+            raise ValueError("reserved")
+        return v.title()
+
+    @validator("tags", pre=True, allow_reuse=True)
+    def split(cls, v):
+        return v.split(",") if isinstance(v, str) else v
+
+    @validator("name")
+    def uses_values(cls, v, values):
+        return v
+
+
+class Legacy(BaseModel):
+    name: str
+
+    class Config:
+        anystr_strip_whitespace = True
+"""
+
+
+def _apply_all(root: Path) -> list[str]:
+    applied = []
+    for _ in range(10):
+        fs = [f for fl in findings(root).values() for f in fl if f.patch]
+        if not fs:
+            return applied
+        subprocess.run(["patch", "-p1", "--quiet"], cwd=root, input=fs[0].patch, text=True, check=True)
+        applied.append(fs[0].function)
+    return applied
+
+
+def test_pydantic_patches_keep_config_and_validation_identical(tmp_path):
+    import importlib.util
+    import warnings
+
+    import pydantic
+
+    root = repo(tmp_path, {"models.py": MODELS}, {"pydantic": pydantic.VERSION})
+    fs = findings(root)
+    assert {f.function for f in fs["pydantic.ignored-config"]} == {"Legacy"}  # v1 names: reported...
+    assert next(f for f in fs["pydantic.config-dict"] if f.function == "Legacy").patch is None  # ...not patched
+    validators = {f.function: f.patch for f in fs["pydantic.field-validator"]}
+    assert validators["A.uses_values"] is None  # takes `values`: behaves differently, left alone
+    original = (root / "models.py").read_text()
+    assert sorted(_apply_all(root)) == ["A", "A.not_admin", "A.split"]
+    patched = (root / "models.py").read_text()
+    assert "model_config = ConfigDict(" in patched and '@field_validator("tags", mode="before")' in patched
+
+    def load(name, src):
+        path = tmp_path / f"{name}.py"
+        path.write_text(src)
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            spec.loader.exec_module(mod)
+        return mod
+
+    before, after = load("before", original), load("after", patched)
+
+    def outcome(model, data):
+        try:
+            return ("ok", model.model_validate(data).model_dump())
+        except pydantic.ValidationError as exc:
+            return ("error", sorted(e["type"] for e in exc.errors()))
+
+    for cls, inputs in {
+        "A": [
+            {"name": "  bob "},
+            {"name": "admin"},
+            {"name": "x" * 30},
+            {"name": "z", "tags": "a,b"},
+            {"name": "z", "other": 1},
+        ],
+        "Legacy": [{"name": "  x "}],
+    }.items():
+        a, b = getattr(before, cls), getattr(after, cls)
+        assert dict(a.model_config) == dict(b.model_config), cls
+        assert [outcome(a, d) for d in inputs] == [outcome(b, d) for d in inputs], cls

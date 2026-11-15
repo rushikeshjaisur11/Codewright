@@ -8,6 +8,7 @@
   symbol: pydantic.field_validator
   kind: library
   library: pydantic
+  autofix: true  # only (cls, value) validators with plain field names
   versions: ">=2.0"
   suggestion: >-
     Use `@field_validator("x")` (a classmethod taking the value) for one field and
@@ -57,6 +58,7 @@
   symbol: pydantic.ConfigDict
   kind: library
   library: pydantic
+  autofix: true  # only when every option is already a Pydantic 2 name: the same settings, moved
   versions: ">=2.0"
   suggestion: >-
     Replace the nested `class Config:` with `model_config = ConfigDict(...)`. Several
@@ -170,3 +172,36 @@
     When the same derived value is added to responses in several places.
   sources:
     - https://docs.pydantic.dev/latest/concepts/fields/
+
+- id: pydantic.ignored-config
+  intent: pydantic-ignored-config
+  topic: Pydantic
+  title: Pydantic 1 config names are ignored on Pydantic 2
+  symbol: pydantic.ConfigDict
+  kind: library
+  library: pydantic
+  versions: ">=2.0"
+  suggestion: >-
+    Rename the options to their Pydantic 2 names (orm_mode is from_attributes,
+    anystr_strip_whitespace is str_strip_whitespace, max_anystr_length is str_max_length,
+    allow_population_by_field_name is populate_by_name, schema_extra is
+    json_schema_extra, validate_all is validate_default) and move them to
+    `model_config = ConfigDict(...)`. Then run the tests: the model starts doing what the
+    config always said.
+  gain: >-
+    Pydantic 2 only warns ("Valid config keys have changed in V2") and ignores these
+    names, so today the model doesn't strip whitespace, enforce lengths, read from ORM
+    objects or populate by field name, whatever the config says. Checked in Pydantic
+    2.0.3 and 2.14.3.
+  effort: 2
+  impact: 5
+  risk: >-
+    This changes behaviour on purpose: input that was accepted unstripped or too long
+    starts being stripped or rejected. Review callers and tests before shipping.
+  when_not: >-
+    Never leave them: either rename them, or delete them if the behaviour isn't wanted.
+  threshold: >-
+    Immediately: the model's actual behaviour differs from its declared configuration.
+  sources:
+    - https://docs.pydantic.dev/latest/migration/
+    - https://docs.pydantic.dev/latest/concepts/config/

@@ -111,7 +111,7 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 | --- | --- | --- |
 | 1. Stack discovery | `stack.py` | Reads `uv.lock`, `poetry.lock`, `Pipfile.lock`, `requirements*.txt`, `pyproject.toml`, `.python-version` and Dockerfiles. Lockfile versions beat declared ranges |
 | 2. Code graph | `graph.py` | Its own tree-sitter indexer: imports, classes, functions, decorators, call edges and entry points. Calls resolve through imports (relative imports and package re-exports included), enclosing scopes, `self`/`super()` and base classes; a call on an object of unknown type is matched by method name only when the name isn't one builtin types already have (`d.items()` never links to your `items`). Code reachable from an entry point is on the hot path |
-| 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand (39 intents) |
+| 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand (40 intents) |
 | 4. Capability cards | `cards/data/*.yaml` | Per library and version: the API, gain, effort, risk, "when not to", scale threshold and sources. Preference: already installed, then stdlib, then platform, then a new dependency |
 | 5. Suggestion | `suggest.py` | Picks the best card and writes the smallest safe diff when the code's shape allows it |
 | 6. Critic | `critic.py` | Drops findings missing a file, an API version, a gain, effort, risk, threshold, "when not to" or a source, and checks that the suggested symbol exists in the repo's own interpreter. A symbol whose library isn't installed there, or whose module needs an optional extra, counts as unchecked, not missing |
@@ -134,8 +134,9 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 | Google ADK 2.x agents (18 intents) | See [Google ADK](#google-adk) | 3 of them |
 | `@app.on_event` | FastAPI lifespan | |
 | `requests.get(...)` without `timeout=` | A `(connect, read)` timeout: requests never times out by default | |
-| Pydantic 1 `@validator` / `@root_validator` on Pydantic 2 | `@field_validator` / `@model_validator` | |
-| `class Config:` inside a Pydantic 2 model | `model_config = ConfigDict(...)` | |
+| Pydantic 1 `@validator` / `@root_validator` on Pydantic 2 | `@field_validator` / `@model_validator` | yes, for `(cls, value)` validators |
+| `class Config:` inside a Pydantic 2 model | `model_config = ConfigDict(...)` | yes, when every option is a v2 name |
+| Pydantic 1 option names (`orm_mode`, `anystr_strip_whitespace`...) on Pydantic 2, which ignores them | Their v2 names: the model starts doing what its config says | |
 | `from pydantic import BaseSettings` on Pydantic 2 (an import error) | `pydantic_settings.BaseSettings` | |
 | `sqlalchemy.ext.declarative` on SQLAlchemy 2 | `sqlalchemy.orm.declarative_base`, then `DeclarativeBase` | yes, the import |
 | `session.query()` on SQLAlchemy 2.x | `select()` | |
