@@ -247,7 +247,7 @@ function Detail({ f, dropped, onAccept, onReject, onMute, onApply, onCode }: {
         <div className="lead">Found: <Inline text={f.evidence} />.</div>
 
         <div className="callout accent">
-          <div className="section-title" style={{ color: "var(--accent)" }}><Lightbulb size={14} />Instead, use</div>
+          <div className="section-title" style={{ color: "var(--text)" }}><Lightbulb size={14} />Instead, use</div>
           <div><Inline text={f.suggestion} /></div>
           <div className="mono" style={{ marginTop: 8, color: "var(--text-2)" }}>{f.api}</div>
         </div>

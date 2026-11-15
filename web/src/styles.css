@@ -1,27 +1,33 @@
 /*
   Codewright UI — one system, dealt with the taste skill (tasteskill 2.5):
-  kind software (developer tool) · palette blue-black-cornflower (light grade: white-link-blue)
+  kind software (developer tool) · dark grade neutral charcoal (adapted from the dealt blue-black-cornflower) · light grade white-link-blue
   · type Reddit Sans + JetBrains Mono · radius sharp · buttons pill · mark dots.
   The interface stays ~95% neutral; colour comes from state (proof, diff) and the one accent.
   No violet anywhere. Motion numbers follow the skill's motion.md.
 */
 
 :root {
-  /* dealt palette: blue-black-cornflower */
-  --bg: #0a0d14;
-  --bg-elev: #0c1019;
-  --panel: #131824;
-  --panel-2: #171d2b;
-  --ink: #e9edf3;
-  --text: #e9edf3;
-  --text-2: #b6bdca;
-  --text-3: #8891a1;
-  --border: rgba(233, 237, 243, 0.1);
-  --border-strong: rgba(233, 237, 243, 0.18);
-  --accent: #5ab9fc;
-  --accent-ink: #0a0d14;
-  --accent-soft: rgba(90, 185, 252, 0.12);
-  --accent-line: rgba(90, 185, 252, 0.45);
+  /* dark grade: neutral greys; blue kept for small signals only (links, focus, selection) */
+  --bg: #0b0b0c;
+  --bg-elev: #0e0e10;
+  --panel: #151517;
+  --panel-2: #1b1b1e;
+  --ink: #ededee;
+  --text: #ededee;
+  --text-2: #b4b4b9;
+  --text-3: #8a8a91;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --accent: #6cb4f5;
+  --accent-ink: #0b0b0c;
+  --accent-soft: rgba(108, 180, 245, 0.1);
+  --accent-line: rgba(108, 180, 245, 0.4);
+  /* the main action: light on dark, not blue */
+  --primary: #ededee;
+  --primary-ink: #0b0b0c;
+  /* selected rows and the highlighted panel: neutral lift, not a blue wash */
+  --select: rgba(255, 255, 255, 0.05);
+  --highlight: rgba(255, 255, 255, 0.03);
 
   /* state colours, used small: dots, diff lines, marks */
   --green: #4cc38a;
@@ -56,7 +62,7 @@
   --m-press: 90ms;
   --m-panel: 200ms;
 
-  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.35);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5);
   --font-text: "Reddit Sans Variable", "Reddit Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
   --display-tracking: -0.03em;
@@ -79,6 +85,10 @@
   --accent-ink: #ffffff;
   --accent-soft: rgba(26, 75, 224, 0.08);
   --accent-line: rgba(26, 75, 224, 0.4);
+  --primary: #1a4be0;
+  --primary-ink: #ffffff;
+  --select: rgba(26, 75, 224, 0.07);
+  --highlight: rgba(26, 75, 224, 0.05);
   --green: #13804f;
   --green-soft: rgba(19, 128, 79, 0.09);
   --amber: #9a6400;
@@ -132,7 +142,7 @@ input, textarea, select { font: inherit; color: var(--text); }
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 18px; }
 .mark {
-  display: inline-block; flex: none; width: 20px; height: 20px; background: var(--accent);
+  display: inline-block; flex: none; width: 20px; height: 20px; background: var(--primary);
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='6.5' cy='6.5' r='4.5'/%3E%3Ccircle cx='17.5' cy='6.5' r='4.5'/%3E%3Ccircle cx='6.5' cy='17.5' r='4.5'/%3E%3Crect x='13' y='13' width='9' height='9' rx='1.5'/%3E%3C/svg%3E") center / contain no-repeat;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='6.5' cy='6.5' r='4.5'/%3E%3Ccircle cx='17.5' cy='6.5' r='4.5'/%3E%3Ccircle cx='6.5' cy='17.5' r='4.5'/%3E%3Crect x='13' y='13' width='9' height='9' rx='1.5'/%3E%3C/svg%3E") center / contain no-repeat;
 }
@@ -183,9 +193,9 @@ input, textarea, select { font: inherit; color: var(--text); }
 @media (hover: hover) and (pointer: fine) { .btn:hover:not(:disabled) { transform: translateY(-1px); } }
 .btn:active:not(:disabled) { transform: translateY(1px) scale(0.985); transition-duration: var(--m-press); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.btn.primary { background: var(--accent); color: var(--accent-ink); }
-.btn.primary:hover:not(:disabled) { background: color-mix(in oklab, var(--accent) 86%, var(--ink)); }
-.btn.on { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.btn.primary { background: var(--primary); color: var(--primary-ink); }
+.btn.primary:hover:not(:disabled) { background: color-mix(in oklab, var(--primary) 86%, var(--bg)); }
+.btn.on { background: var(--select); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-strong); }
 .btn.sm { height: 30px; padding: 0 12px; font-size: 13px; }
 .btn.icon { width: var(--btn-h); padding: 0; }
 .btn.sm.icon { width: 30px; }
@@ -240,7 +250,7 @@ input, textarea, select { font: inherit; color: var(--text); }
 .stat .value { font-size: 26px; font-weight: 500; letter-spacing: -0.04em; margin-top: 6px; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .stat .sub { color: var(--text-3); font-size: 13px; margin-top: 4px; }
 .meter { height: 4px; border-radius: 4px; background: color-mix(in oklab, var(--ink) 8%, transparent); overflow: hidden; margin-top: 12px; }
-.meter > span { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
+.meter > span { display: block; height: 100%; border-radius: 4px; background: var(--text-2); }
 
 .muted { color: var(--text-2); }
 .faint { color: var(--text-3); }
@@ -295,7 +305,7 @@ input, textarea, select { font: inherit; color: var(--text); }
 .code-line.del { background: var(--diff-del); box-shadow: inset 2px 0 0 var(--red); }
 .code-line.del .tx { color: var(--red); }
 .code-line.hunk { color: var(--text-3); background: color-mix(in oklab, var(--ink) 4%, transparent); }
-.code-line.hl { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+.code-line.hl { background: var(--select); box-shadow: inset 2px 0 0 var(--text-2); }
 .tok-kw { color: #ff8f8f; }
 .tok-str { color: #9bd88b; }
 .tok-com { color: var(--text-3); font-style: italic; }
@@ -344,7 +354,7 @@ input, textarea, select { font: inherit; color: var(--text); }
   transition: background var(--m-out) var(--ease);
 }
 .fitem:hover { background: color-mix(in oklab, var(--ink) 4%, transparent); transition-duration: var(--m-in); }
-.fitem.active { background: var(--accent-soft); }
+.fitem.active { background: var(--select); }
 .fitem.active::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--accent); }
 .fitem .t { font-weight: 500; line-height: 1.35; font-size: 14.5px; }
 .fitem .loc { font-family: var(--font-mono); font-size: 12px; color: var(--text-3); margin-top: 3px; }
@@ -365,7 +375,7 @@ input, textarea, select { font: inherit; color: var(--text); }
 .kv-item .k svg { color: var(--text-3); }
 .section-title { font-size: 13px; font-weight: 500; color: var(--text-3); margin-bottom: 8px; display: flex; align-items: center; gap: 7px; }
 .callout { border-radius: var(--r-md); padding: 14px 16px; background: var(--bg); border: 1px solid var(--border); font-size: 14.5px; line-height: 1.55; }
-.callout.accent { border-color: var(--accent-line); background: var(--accent-soft); }
+.callout.accent { border-color: var(--border-strong); background: var(--highlight); }
 .callout.green, .callout.amber, .callout.red { position: relative; padding-left: 36px; }
 .callout.green::before, .callout.amber::before, .callout.red::before { content: ""; position: absolute; left: 16px; top: 21px; width: 7px; height: 7px; border-radius: 50%; }
 .callout.green::before { background: var(--green); }
@@ -396,7 +406,7 @@ label.check input { accent-color: var(--accent); }
   transition: border-color var(--m-out) var(--ease), box-shadow var(--m-out) var(--ease);
 }
 .cw-node:hover { border-color: color-mix(in oklab, var(--ink) 35%, transparent); }
-.cw-node.selected { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.cw-node.selected { border-color: var(--text); box-shadow: 0 0 0 1px var(--text); }
 .cw-node .k { font-size: 11.5px; font-weight: 500; color: var(--text-3); display: flex; align-items: center; gap: 6px; }
 .cw-node .l { font-weight: 500; margin-top: 3px; line-height: 1.3; word-break: break-word; font-size: 13.5px; color: var(--text); }
 .cw-node .d { font-size: 11.5px; color: var(--text-3); margin-top: 2px; font-family: var(--font-mono); }
@@ -443,12 +453,12 @@ label.check input { accent-color: var(--accent); }
 .chip:hover { border-color: color-mix(in oklab, var(--ink) 40%, transparent); color: var(--text); transition-duration: var(--m-in); }
 @media (hover: hover) and (pointer: fine) { .chip:hover { transform: translateY(-1px); } }
 .chip:active { transform: translateY(1px) scale(0.985); transition-duration: var(--m-press); }
-.chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+.chip.on { background: var(--select); border-color: var(--text-2); color: var(--text); }
 
 /* ---------------------------------------------------------------- design */
 .design-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .cand { padding: 18px 20px; cursor: pointer; position: relative; text-align: left; font: inherit; color: inherit; width: 100%; }
-.cand.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.cand.active { border-color: var(--text-2); box-shadow: 0 0 0 1px var(--text-2); }
 .fit { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
 .fit .meter { flex: 1; margin: 0; }
 .adr { border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
@@ -460,7 +470,7 @@ label.check input { accent-color: var(--accent); }
 .adr .body ul { margin: 2px 0; padding-left: 18px; }
 .steps { display: flex; gap: 3px; }
 .steps i { height: 3px; flex: 1; border-radius: 3px; background: color-mix(in oklab, var(--ink) 10%, transparent); }
-.steps i.on { background: var(--accent); }
+.steps i.on { background: var(--text-2); }
 .list-plain { margin: 0; padding-left: 18px; color: var(--text-2); }
 .list-plain li { margin: 5px 0; }
 .pro::marker { content: "+  "; color: var(--green); font-weight: 600; }
