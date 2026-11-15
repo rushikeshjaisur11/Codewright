@@ -37,12 +37,18 @@ def discover(root: str | Path) -> Stack:
     return stack
 
 
-def _add(stack: Stack, name: str, version: str | None, specifier: str | None, source: str) -> None:
+LOCKFILES = ("uv.lock", "poetry.lock", "Pipfile.lock")
+
+
+def _add(
+    stack: Stack, name: str, version: str | None, specifier: str | None, source: str, extras: set[str] | None = None
+) -> None:
     key = normalise(name)
     existing = stack.dependencies.get(key)
     if existing is None:
-        stack.dependencies[key] = Dependency(key, version, specifier, source)
+        stack.dependencies[key] = Dependency(key, version, specifier, source, set(extras or ()))
         return
+    existing.extras |= set(extras or ())
     if version:
         existing.version = version
         existing.source = source
@@ -67,7 +73,7 @@ def _parse_requirement(line: str, stack: Stack, source: str) -> None:
     for s in req.specifier:
         if s.operator in ("==", "==="):
             pinned = s.version
-    _add(stack, req.name, pinned, spec, source)
+    _add(stack, req.name, pinned, spec, source, {e.lower() for e in req.extras})
 
 
 def _from_pyproject(root: Path, stack: Stack) -> None:

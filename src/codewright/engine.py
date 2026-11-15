@@ -45,7 +45,8 @@ def review(
     st = stack.discover(root)
     g = graph.build(root)
     matches = detect(g)
-    findings = make_findings(matches, st, g, card_store.load(extra_cards))
+    all_cards = card_store.load(extra_cards)
+    findings = make_findings(matches, st, g, all_cards)
 
     if base:
         changed = diffscope.changed_lines(root, base)
@@ -65,7 +66,9 @@ def review(
     if os.sep in py:
         py = os.path.abspath(py)  # tests run with a different cwd; keep venv symlinks intact
     symbols = {f.id: f.symbol for f in findings if critic.is_dotted_symbol(f.symbol)}
-    critic.check_symbols(findings, py, symbols)
+    libraries = {c.id: c.library for c in all_cards if c.library}
+    dists = {f.symbol: libraries[f.card_id] for f in findings if f.card_id in libraries}
+    critic.check_symbols(findings, py, symbols, dists)
 
     # Drop malformed or hallucinated findings before spending time on proof.
     kept, rejected = critic.review(findings)

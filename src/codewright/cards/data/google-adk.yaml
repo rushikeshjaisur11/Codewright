@@ -1,12 +1,12 @@
 # Capability cards: Google Agent Development Kit (google-adk).
-# Version ranges were checked against the released wheels on PyPI (1.0.0 to 2.14.1):
-#   Runner.run_async, InstructionProvider, DatabaseSessionService   since 1.0
-#   get_fast_api_app(agents_dir=..., session_service_uri=...)       since 1.5
-#   Gemini(retry_options=types.HttpRetryOptions(...))               since 1.9.0
-#   Workflow; SequentialAgent/ParallelAgent/LoopAgent deprecated    since 2.0
+# Cards here are produced by the detectors in intents/adk.py and intents/adk_more.py.
+# Knowledge-only entries (intent: reference) are in google-adk-reference.yaml.
+# Every `versions` lower bound is the first release with the API, found by checking the
+# source of one wheel per minor release on PyPI, 1.0.0 to 2.14.1.
 
 - id: adk.workflow
   intent: agent-orchestrator
+  topic: Agents and orchestration
   title: Move fixed agent orchestration to an ADK 2.0 graph workflow
   symbol: google.adk.Workflow
   kind: library
@@ -47,6 +47,7 @@
 
 - id: adk.sequential-agent
   intent: agent-orchestrator
+  topic: Agents and orchestration
   title: Replace the hand-written agent loop with SequentialAgent
   symbol: google.adk.agents.SequentialAgent
   kind: library
@@ -75,6 +76,7 @@
 
 - id: adk.run-async
   intent: adk-sync-run
+  topic: Runtime, context and apps
   title: Use Runner.run_async instead of the sync Runner.run in async code
   symbol: google.adk.runners.Runner.run_async
   kind: library
@@ -110,7 +112,10 @@
             reply = event.content.parts[0].text
 
 - id: adk.persistent-sessions
-  intent: adk-in-memory-sessions
+  intent: adk-in-memory-services
+  topic: Sessions, state and memory
+  match:
+    kind: sessions
   title: Store ADK sessions in a database instead of process memory
   symbol: google.adk.sessions.DatabaseSessionService
   kind: library
@@ -150,6 +155,7 @@
 
 - id: adk.instruction-provider
   intent: adk-frozen-instruction
+  topic: Agents and orchestration
   title: Build the instruction per request instead of once at import
   symbol: google.adk.agents.llm_agent.InstructionProvider
   kind: library
@@ -193,6 +199,7 @@
 
 - id: adk.fast-api-app
   intent: adk-hand-server
+  topic: Serving and deployment
   title: Serve the agent with ADK's get_fast_api_app instead of hand-written routes
   symbol: google.adk.cli.fast_api.get_fast_api_app
   kind: library
@@ -236,6 +243,7 @@
 
 - id: adk.gemini-retry-options
   intent: retry
+  topic: Models
   title: Let the Gemini client retry instead of a hand-written loop around the agent
   symbol: google.genai.types.HttpRetryOptions
   kind: library
@@ -276,3 +284,768 @@
         model=Gemini(model="gemini-flash-latest", retry_options=types.HttpRetryOptions(attempts=5, max_delay=30)),
         instruction="...",
     )
+
+# --------------------------------------------------------------------------- agents and structured output
+
+- id: adk.output-schema
+  intent: adk-parse-model-json
+  topic: Agents and orchestration
+  title: Let the agent return structured output with output_schema
+  symbol: google.adk.agents.LlmAgent
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Give the agent `output_schema=` a Pydantic model and `output_key=` a state
+    key. ADK asks the model for that schema, validates the reply and stores
+    it in session state, where the next step reads it.
+  gain: >-
+    The model is constrained to the schema instead of being asked nicely for
+    JSON, so the fenced, truncated or chatty replies that make json.loads fail
+    in production go away, and the parsed value lands in state for the next
+    agent or tool.
+  effort: 2
+  impact: 3
+  risk: >-
+    Before 1.11.0 an agent with output_schema can't use tools, and before
+    1.20.0 it can't have sub-agents or transfer control; on those versions
+    split the work into a tool-using agent and a formatting agent.
+  when_not: >-
+    When the reply is free text for a person, or the JSON is something the
+    model is quoting rather than producing.
+  threshold: >-
+    As soon as the parsed result feeds code: one malformed reply in a few
+    hundred is enough to page someone.
+  sources:
+    - https://adk.dev/agents/llm-agents/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/agents/llm_agent.py
+  snippet: |
+    from pydantic import BaseModel
+
+    from google.adk.agents import LlmAgent
+
+    class Ticket(BaseModel):
+        title: str
+        priority: int
+
+    triage = LlmAgent(
+        name="triage",
+        model="gemini-flash-latest",
+        instruction="Turn the user's report into a ticket.",
+        output_schema=Ticket,
+        output_key="ticket",  # session.state["ticket"] holds the validated dict
+    )
+
+- id: adk.runner-once
+  intent: adk-runner-per-request
+  topic: Serving and deployment
+  title: Build the agent and Runner once at startup, not per request
+  symbol: google.adk.runners.Runner
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Create the agent, the session service and the Runner once (at module level
+    or in the app's lifespan) and reuse them in every request; pass the user
+    and session ids to run_async.
+  gain: >-
+    A Runner holds the session, artifact and memory services and the plugin
+    manager; building one per request repeats that setup on every call, and
+    with an InMemoryRunner or InMemorySessionService each request starts with
+    an empty session store, so the conversation is forgotten between turns.
+  effort: 1
+  impact: 4
+  risk: >-
+    Shared objects must not hold per-request data; keep user data in session
+    state, not on the agent or Runner.
+  when_not: >-
+    When the agent itself is generated per tenant from configuration; then
+    cache one Runner per tenant instead of one per request.
+  threshold: >-
+    From the second turn of any conversation, if the session service is in
+    memory; otherwise once request latency matters.
+  sources:
+    - https://adk.dev/runtime/event-loop/
+    - https://adk.dev/sessions/session/
+
+# --------------------------------------------------------------------------- sessions and state
+
+- id: adk.state-delta
+  intent: adk-direct-state-write
+  topic: Sessions, state and memory
+  title: Change session state through an event, not on the session object
+  symbol: google.adk.events.EventActions
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Inside tools and callbacks, write to `tool_context.state` or
+    `callback_context.state`. From application code, pass `state_delta=` to
+    run_async (1.7.0+), or append an Event with `EventActions(state_delta=...)`
+    through `session_service.append_event`.
+  gain: >-
+    A Session returned by the session service is a snapshot: assigning to its
+    state changes only that copy. ADK records state changes as events, so the
+    direct write is never saved by DatabaseSessionService or Vertex, is
+    invisible to the next run, and can be overwritten by a concurrent turn.
+  effort: 1
+  impact: 4
+  risk: >-
+    Moving the write into an event changes when it becomes visible: after the
+    event is appended, not immediately.
+  when_not: >-
+    In a unit test that builds a Session by hand and never persists it.
+  threshold: >-
+    Any deployment with a persistent session service, where the lost write
+    shows up as state that silently resets.
+  sources:
+    - https://adk.dev/sessions/state/
+    - https://adk.dev/events/
+  snippet: |
+    async for event in runner.run_async(
+        user_id=user_id,
+        session_id=session_id,
+        new_message=message,
+        state_delta={"user:plan": "pro"},  # recorded with the turn, saved by the session service
+    ):
+        ...
+
+- id: adk.state-scopes
+  intent: adk-module-dict-state
+  topic: Sessions, state and memory
+  title: Keep tool data in session state with user and app scopes, not a module dict
+  symbol: google.adk.tools.ToolContext
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Take a `tool_context: ToolContext` parameter and use `tool_context.state`:
+    plain keys belong to the session, `user:` keys to every session of that
+    user, `app:` keys to every user, and `temp:` keys last one invocation.
+  gain: >-
+    A module-level dict is per process: it is empty after a restart, different
+    on every worker or replica, and shared between all users, so one user's
+    data can leak into another's answers. Session state is stored by the
+    session service and scoped by the prefix you choose.
+  effort: 2
+  impact: 4
+  risk: >-
+    Values must be serialisable (strings, numbers, lists, dicts), and state is
+    only durable with DatabaseSessionService or VertexAiSessionService.
+  when_not: >-
+    For read-only lookup tables or caches of public data that are the same for
+    every user.
+  threshold: >-
+    As soon as there is a second user or a second worker process.
+  sources:
+    - https://adk.dev/sessions/state/
+  snippet: |
+    from google.adk.tools import ToolContext
+
+    def remember_language(language: str, tool_context: ToolContext) -> dict:
+        """Remember the user's preferred language."""
+        tool_context.state["user:language"] = language  # every session of this user sees it
+        return {"status": "ok"}
+
+- id: adk.memory-bank
+  intent: adk-in-memory-services
+  topic: Sessions, state and memory
+  title: Keep long-term memory in Vertex AI Memory Bank, not process memory
+  symbol: google.adk.memory.VertexAiMemoryBankService
+  kind: library
+  library: google-adk
+  versions: ">=1.5.0"
+  match:
+    kind: memory
+  suggestion: >-
+    Give the Runner a VertexAiMemoryBankService for your Agent Engine, add
+    finished sessions with `add_session_to_memory`, and give agents the
+    `preload_memory` or `load_memory` tool to recall them.
+  gain: >-
+    InMemoryMemoryService forgets everything on restart and matches memories
+    by keyword only; Memory Bank stores them durably, extracts and
+    consolidates facts with a model, and retrieves them by meaning.
+  effort: 3
+  impact: 3
+  risk: >-
+    Needs a Vertex AI Agent Engine and adds a paid service; memories are
+    shared per user, so decide what may be remembered.
+  when_not: >-
+    In local development and tests, or when the app has no notion of a
+    returning user.
+  threshold: >-
+    Once users return across sessions and expect the agent to remember them.
+  sources:
+    - https://adk.dev/sessions/memory/
+
+- id: adk.gcs-artifacts
+  intent: adk-in-memory-services
+  topic: Sessions, state and memory
+  title: Store artifacts in Cloud Storage, not process memory
+  symbol: google.adk.artifacts.GcsArtifactService
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  match:
+    kind: artifacts
+  suggestion: >-
+    Give the Runner a `GcsArtifactService(bucket_name=...)`. Tools keep using
+    `tool_context.save_artifact` and `load_artifact` unchanged.
+  gain: >-
+    InMemoryArtifactService holds every saved file (uploads, generated images,
+    reports) in the server's RAM: they are gone on restart, invisible to other
+    replicas, and memory grows with every upload. GCS keeps them durably and
+    versioned per session or user.
+  effort: 2
+  impact: 3
+  risk: >-
+    On google-adk 2.x it needs `google-adk[gcp]` for google-cloud-storage, and
+    the service account needs access to the bucket.
+  when_not: >-
+    For local development, where `FileArtifactService` (1.19.0+) writes to
+    disk without a bucket.
+  threshold: >-
+    As soon as the app runs on more than one instance or users upload files.
+  sources:
+    - https://adk.dev/artifacts/
+  snippet: |
+    from google.adk.artifacts import GcsArtifactService
+
+    runner = Runner(
+        agent=root_agent,
+        app_name="my_app",
+        session_service=session_service,
+        artifact_service=GcsArtifactService(bucket_name="my-agent-artifacts"),
+    )
+
+- id: adk.events-compaction
+  intent: adk-history-slice
+  topic: Runtime, context and apps
+  title: Compact long conversations with EventsCompactionConfig instead of slicing events
+  symbol: google.adk.apps.app.EventsCompactionConfig
+  kind: library
+  library: google-adk
+  versions: ">=1.16.0"
+  suggestion: >-
+    Wrap the agent in an App with `events_compaction_config=EventsCompactionConfig(compaction_interval=..., overlap_size=...)`.
+    ADK summarises older invocations into one event and keeps sending that summary.
+  gain: >-
+    Slicing `session.events` drops whatever falls outside the window, often
+    the user's original goal or a tool result, and has to be repeated wherever
+    history is read. Compaction keeps a model-written summary of what was cut,
+    so context stays small without forgetting it.
+  effort: 2
+  impact: 3
+  risk: >-
+    Summaries cost a model call and can lose detail; tune compaction_interval
+    and overlap_size against your evals.
+  when_not: >-
+    When each turn is independent and history isn't needed at all: set
+    `include_contents="none"` on the agent instead.
+  threshold: >-
+    Once conversations run long enough to approach the model's context window
+    or noticeably raise latency and cost.
+  sources:
+    - https://adk.dev/context/compaction/
+  snippet: |
+    from google.adk.apps import App
+    from google.adk.apps.app import EventsCompactionConfig
+
+    app = App(
+        name="my_app",
+        root_agent=root_agent,
+        events_compaction_config=EventsCompactionConfig(compaction_interval=10, overlap_size=2),
+    )
+
+- id: adk.context-filter
+  intent: adk-history-slice
+  topic: Runtime, context and apps
+  title: Keep only recent turns with ContextFilterPlugin instead of slicing events
+  symbol: google.adk.plugins.context_filter_plugin.ContextFilterPlugin
+  kind: library
+  library: google-adk
+  versions: ">=1.15.1,<1.16.0"
+  suggestion: >-
+    Register `ContextFilterPlugin(num_invocations_to_keep=...)` so every model
+    call sees only the most recent invocations.
+  gain: >-
+    One plugin trims the context for every agent and model call, instead of
+    slicing `session.events` wherever history is read. Upgrade to 1.16.0+ for
+    compaction, which summarises what it cuts.
+  effort: 1
+  impact: 2
+  risk: >-
+    Older turns are dropped, not summarised; the model forgets them.
+  when_not: >-
+    When the earliest turns carry the user's goal or constraints.
+  threshold: >-
+    Once long conversations raise latency or cost noticeably.
+  sources:
+    - https://github.com/google/adk-python/blob/main/src/google/adk/plugins/context_filter_plugin.py
+
+# --------------------------------------------------------------------------- tools and MCP
+
+- id: adk.agent-tool
+  intent: adk-tool-runs-agent
+  topic: Tools and MCP
+  title: Wrap the agent in AgentTool instead of running it inside a tool
+  symbol: google.adk.tools.agent_tool.AgentTool
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Pass `AgentTool(agent=specialist)` in the calling agent's tools. ADK runs
+    the specialist in the same invocation and returns its final answer as the
+    tool result.
+  gain: >-
+    A Runner started inside a tool is a second, separate invocation: it has
+    its own session, so it can't see the user's state, its events and token
+    use don't appear in the parent's trace, and plugins and callbacks don't
+    run for it. AgentTool keeps it inside the parent run.
+  effort: 1
+  impact: 3
+  risk: >-
+    The wrapped agent's reply becomes a tool result the parent model reads,
+    so the parent stays in control; use sub_agents if control should move to
+    the specialist instead.
+  when_not: >-
+    When the inner agent must run in another service or process; connect it
+    with A2A (RemoteA2aAgent) instead.
+  threshold: >-
+    As soon as the inner agent needs the user's state or must show up in
+    traces and evals.
+  sources:
+    - https://adk.dev/tools-custom/function-tools/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/tools/agent_tool.py
+  snippet: |
+    from google.adk.agents import LlmAgent
+    from google.adk.tools.agent_tool import AgentTool
+
+    summarizer = LlmAgent(name="summarizer", model="gemini-flash-latest", instruction="Summarise the text.")
+    root_agent = LlmAgent(
+        name="assistant",
+        model="gemini-flash-latest",
+        tools=[AgentTool(agent=summarizer)],
+    )
+
+- id: adk.mcp-toolset
+  intent: adk-hand-mcp-client
+  topic: Tools and MCP
+  title: Connect MCP servers with McpToolset instead of a hand-written client
+  symbol: google.adk.tools.mcp_tool.McpToolset
+  kind: library
+  library: google-adk
+  versions: ">=1.13.0"
+  suggestion: >-
+    Put `McpToolset(connection_params=StdioConnectionParams(...))` (or
+    `StreamableHTTPConnectionParams(url=...)`) in the agent's tools, with
+    `tool_filter=[...]` to expose only the tools you want.
+  gain: >-
+    McpToolset lists the server's tools, turns their schemas into function
+    declarations, calls them and manages the session's lifetime and
+    reconnects. The hand-written client, the wrapper per tool and the session
+    cleanup go away.
+  effort: 2
+  impact: 3
+  risk: >-
+    Every tool the server offers is exposed to the model unless you filter;
+    on google-adk 2.x install `google-adk[mcp]`, or the import fails.
+  when_not: >-
+    When you need one fixed call to an MCP server from application code, not
+    tools the model chooses.
+  threshold: >-
+    As soon as the agent uses more than one or two of the server's tools.
+  sources:
+    - https://adk.dev/tools-custom/mcp-tools/
+  snippet: |
+    from google.adk.tools.mcp_tool import McpToolset, StdioConnectionParams
+    from mcp import StdioServerParameters
+
+    files = McpToolset(
+        connection_params=StdioConnectionParams(
+            server_params=StdioServerParameters(command="npx", args=["-y", "@modelcontextprotocol/server-filesystem", "/data"]),
+        ),
+        tool_filter=["read_file", "list_directory"],
+    )
+
+- id: adk.mcp-toolset-1x
+  intent: adk-hand-mcp-client
+  topic: Tools and MCP
+  title: Connect MCP servers with MCPToolset instead of a hand-written client
+  symbol: google.adk.tools.mcp_tool.MCPToolset
+  kind: library
+  library: google-adk
+  versions: ">=1.0,<1.13.0"
+  suggestion: >-
+    Put `MCPToolset(connection_params=...)` in the agent's tools, with
+    `tool_filter=[...]` to expose only the tools you want. From 1.13.0 the
+    class is also named McpToolset.
+  gain: >-
+    MCPToolset lists the server's tools, turns their schemas into function
+    declarations, calls them and manages the session. The hand-written client
+    and per-tool wrappers go away.
+  effort: 2
+  impact: 3
+  risk: >-
+    Every tool the server offers is exposed unless you filter.
+  when_not: >-
+    When you need one fixed call to an MCP server from application code.
+  threshold: >-
+    As soon as the agent uses more than one or two of the server's tools.
+  sources:
+    - https://adk.dev/tools-custom/mcp-tools/
+
+- id: adk.long-running-tool
+  intent: adk-polling-tool
+  topic: Tools and MCP
+  title: Return from long jobs with LongRunningFunctionTool instead of polling in the tool
+  symbol: google.adk.tools.LongRunningFunctionTool
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Start the job and return its id at once from a `LongRunningFunctionTool`;
+    when the job finishes, send its result back as a function response in a
+    new message. With `ResumabilityConfig(is_resumable=True)` on the App
+    (1.16.0+), the paused invocation resumes from there.
+  gain: >-
+    A sleep loop inside a tool holds the whole turn, the model call and the
+    request open until the job is done, which times out behind load balancers
+    and ties up a worker. A long-running tool lets the agent tell the user
+    it's working and pick up when the result arrives.
+  effort: 3
+  impact: 3
+  risk: >-
+    Your app has to deliver the job's result back to the session; resumed
+    tool calls must be idempotent because ADK only guarantees at-least-once.
+  when_not: >-
+    When the job reliably finishes in a few seconds.
+  threshold: >-
+    Once a job can outlast your HTTP timeout (often 30 to 60 seconds).
+  sources:
+    - https://adk.dev/tools-custom/function-tools/
+    - https://adk.dev/runtime/resume/
+
+# --------------------------------------------------------------------------- deprecated APIs
+
+- id: adk.global-instruction-plugin
+  intent: adk-deprecated-api
+  topic: Upgrading
+  title: Replace the deprecated global_instruction with GlobalInstructionPlugin
+  symbol: google.adk.plugins.global_instruction_plugin.GlobalInstructionPlugin
+  kind: library
+  library: google-adk
+  versions: ">=1.16.0"
+  match:
+    api: global_instruction
+  suggestion: >-
+    Move the text to `GlobalInstructionPlugin(global_instruction=...)` in the
+    App's plugins and remove `global_instruction=` from the agent.
+  gain: >-
+    `global_instruction` warns from 1.16.0 and will be removed; the plugin
+    applies the same instruction to every agent in the App from one place.
+  effort: 1
+  impact: 2
+  risk: >-
+    The plugin applies to every agent in the App, not just the agent tree
+    that had the field.
+  when_not: >-
+    Never worth keeping the deprecated field once you're on 1.16.0 or later.
+  threshold: >-
+    Before upgrading to the release that removes the field.
+  sources:
+    - https://adk.dev/agents/llm-agents/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/agents/llm_agent.py
+
+- id: adk.app-plugins
+  intent: adk-deprecated-api
+  topic: Upgrading
+  title: Register plugins on the App, not with the deprecated Runner(plugins=...)
+  symbol: google.adk.apps.App
+  kind: library
+  library: google-adk
+  versions: ">=1.14.1"
+  match:
+    api: runner_plugins
+  suggestion: >-
+    Build `App(name=..., root_agent=..., plugins=[...])` and pass `app=` to the
+    Runner instead of `agent=`, `app_name=` and `plugins=`.
+  gain: >-
+    `Runner(plugins=...)` warns from 1.14.1. The App is also where compaction,
+    context caching and resumability are configured, so the move sets those
+    up too.
+  effort: 1
+  impact: 2
+  risk: >-
+    The Runner raises if you pass both app= and plugins=.
+  when_not: >-
+    Never worth keeping once you're on 1.14.1 or later.
+  threshold: >-
+    Before upgrading to the release that removes the argument.
+  sources:
+    - https://adk.dev/apps/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/runners.py
+
+- id: adk.sandbox-code-executor
+  intent: adk-deprecated-api
+  topic: Upgrading
+  title: Replace the deprecated VertexAiCodeExecutor with AgentEngineSandboxCodeExecutor
+  symbol: google.adk.code_executors.AgentEngineSandboxCodeExecutor
+  kind: library
+  library: google-adk
+  versions: ">=2.12.0"
+  match:
+    api: vertex_code_executor
+  suggestion: >-
+    Use AgentEngineSandboxCodeExecutor, the replacement Google names in the
+    Vertex AI Extensions migration guide.
+  gain: >-
+    VertexAiCodeExecutor wraps the Vertex AI Extensions Code Interpreter,
+    which is deprecated with no Agent Platform equivalent; ADK deprecates the
+    executor from 2.12.0.
+  effort: 2
+  impact: 3
+  risk: >-
+    The sandbox runs in an Agent Engine; check its limits and pricing.
+  when_not: >-
+    When Gemini's built-in code execution (BuiltInCodeExecutor) is enough.
+  threshold: >-
+    Before Vertex AI Extensions is turned off.
+  sources:
+    - https://github.com/google/adk-python/blob/main/src/google/adk/code_executors/vertex_ai_code_executor.py
+    - https://docs.cloud.google.com/vertex-ai/generative-ai/docs/extensions/migrate
+
+- id: adk.save-live-blob
+  intent: adk-deprecated-api
+  topic: Upgrading
+  title: Rename RunConfig(save_live_audio=...) to save_live_blob
+  symbol: google.adk.agents.RunConfig
+  kind: library
+  library: google-adk
+  versions: ">=1.19.0"
+  match:
+    api: save_live_audio
+  suggestion: >-
+    Pass `save_live_blob=` instead of `save_live_audio=`.
+  gain: >-
+    `save_live_audio` warns from 1.19.0 and will be removed; `save_live_blob`
+    is the same switch under its new name.
+  effort: 1
+  impact: 1
+  risk: >-
+    None beyond the rename.
+  when_not: >-
+    Never worth keeping once you're on 1.19.0 or later.
+  threshold: >-
+    Before upgrading to the release that removes it.
+  sources:
+    - https://github.com/google/adk-python/blob/main/src/google/adk/agents/run_config.py
+
+- id: adk.agent-registry
+  intent: adk-deprecated-api
+  topic: Upgrading
+  title: Replace the deprecated ApiRegistry with AgentRegistry
+  symbol: google.adk.integrations.agent_registry.AgentRegistry
+  kind: library
+  library: google-adk
+  versions: ">=2.7.1"
+  match:
+    api: api_registry
+  suggestion: >-
+    Use AgentRegistry from google.adk.integrations.agent_registry.
+  gain: >-
+    ApiRegistry warns from 2.7.1 and will be removed.
+  effort: 2
+  impact: 2
+  risk: >-
+    AgentRegistry needs the `google-adk[agent-identity]` extra; check that
+    the registry resources you use are available there.
+  when_not: >-
+    Never worth keeping once you're on 2.7.1 or later.
+  threshold: >-
+    Before upgrading to the release that removes it.
+  sources:
+    - https://adk.dev/integrations/agent-registry/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/integrations/api_registry/api_registry.py
+
+# --------------------------------------------------------------------------- google-adk extras
+
+- id: adk.extra-mcp
+  intent: adk-missing-extra
+  topic: Upgrading
+  title: Install google-adk[mcp]; McpToolset is silently missing without it
+  symbol: "google-adk[mcp]"
+  kind: library
+  library: google-adk
+  versions: ">=2.0"
+  match:
+    package: mcp
+  unless_installed: [mcp]
+  extra: mcp
+  suggestion: >-
+    Depend on `google-adk[mcp]` (or add `mcp`) and re-lock.
+  gain: >-
+    google-adk 2.0 moved the mcp package out of the base install. Without it,
+    `google.adk.tools.mcp_tool` swallows the import error and exports
+    nothing, so `from google.adk.tools.mcp_tool import McpToolset` fails with
+    a bare "cannot import name" and no hint about the extra.
+  effort: 1
+  impact: 5
+  risk: >-
+    None; this restores what 1.x installed by default.
+  when_not: >-
+    Never: the import fails at startup.
+  threshold: >-
+    Immediately: this is an import error, not a slowdown.
+  sources:
+    - https://pypi.org/project/google-adk/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/tools/mcp_tool/__init__.py
+
+- id: adk.extra-db
+  intent: adk-missing-extra
+  topic: Upgrading
+  title: Install google-adk[db] for DatabaseSessionService
+  symbol: "google-adk[db]"
+  kind: library
+  library: google-adk
+  versions: ">=2.0"
+  match:
+    package: sqlalchemy
+  unless_installed: [sqlalchemy]
+  extra: db
+  suggestion: >-
+    Depend on `google-adk[db]` and re-lock, plus an async driver for your
+    database (asyncpg for PostgreSQL; aiosqlite is already included).
+  gain: >-
+    google-adk 2.0 moved SQLAlchemy out of the base install, so
+    DatabaseSessionService raises ImportError asking for google-adk[db].
+  effort: 1
+  impact: 5
+  risk: >-
+    None; this restores what 1.x installed by default.
+  when_not: >-
+    Never: sessions can't be created without it.
+  threshold: >-
+    Immediately: the first session lookup fails.
+  sources:
+    - https://pypi.org/project/google-adk/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/sessions/__init__.py
+
+- id: adk.extra-gcs
+  intent: adk-missing-extra
+  topic: Upgrading
+  title: Install google-adk[gcp] for GcsArtifactService
+  symbol: "google-adk[gcp]"
+  kind: library
+  library: google-adk
+  versions: ">=2.0"
+  match:
+    package: google-cloud-storage
+  unless_installed: [google-cloud-storage]
+  extra: gcp
+  suggestion: >-
+    Depend on `google-adk[gcp]` (or add google-cloud-storage) and re-lock.
+  gain: >-
+    google-adk 2.0 moved the Google Cloud client libraries into the gcp
+    extra; GcsArtifactService imports google-cloud-storage when it is created
+    and fails without it.
+  effort: 1
+  impact: 5
+  risk: >-
+    The gcp extra installs several Cloud clients; add google-cloud-storage
+    alone if image size matters.
+  when_not: >-
+    Never while the code uses GcsArtifactService.
+  threshold: >-
+    Immediately: the Runner can't be built.
+  sources:
+    - https://pypi.org/project/google-adk/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/artifacts/gcs_artifact_service.py
+
+- id: adk.extra-litellm
+  intent: adk-missing-extra
+  topic: Upgrading
+  title: Install google-adk[extensions] for LiteLlm
+  symbol: "google-adk[extensions]"
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  match:
+    package: litellm
+  unless_installed: [litellm]
+  extra: extensions
+  suggestion: >-
+    Depend on `google-adk[extensions]` (or add litellm) and re-lock.
+  gain: >-
+    LiteLlm is never part of the base install; importing
+    google.adk.models.lite_llm raises ImportError asking for the extensions
+    extra.
+  effort: 1
+  impact: 5
+  risk: >-
+    The extensions extra pulls in several integrations; add litellm alone to
+    keep the install small.
+  when_not: >-
+    Never while the code uses LiteLlm.
+  threshold: >-
+    Immediately: the import fails at startup.
+  sources:
+    - https://adk.dev/agents/models/litellm/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/models/lite_llm.py
+
+- id: adk.extra-anthropic
+  intent: adk-missing-extra
+  topic: Upgrading
+  title: Install the anthropic package for ADK's Claude models
+  symbol: "google-adk[extensions]"
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  match:
+    package: anthropic
+  unless_installed: [anthropic]
+  extra: extensions
+  suggestion: >-
+    Depend on `google-adk[extensions]` (or add anthropic) and re-lock.
+  gain: >-
+    google.adk.models.anthropic_llm imports the anthropic SDK, which the base
+    install doesn't include.
+  effort: 1
+  impact: 5
+  risk: >-
+    None.
+  when_not: >-
+    Never while the code uses Claude or AnthropicLlm.
+  threshold: >-
+    Immediately: the import fails at startup.
+  sources:
+    - https://adk.dev/agents/models/anthropic/
+
+- id: adk.extra-a2a
+  intent: adk-missing-extra
+  topic: Upgrading
+  title: Install google-adk[a2a] for A2A agents
+  symbol: "google-adk[a2a]"
+  kind: library
+  library: google-adk
+  versions: ">=1.6.1"
+  match:
+    package: a2a-sdk
+  unless_installed: [a2a-sdk]
+  extra: a2a
+  suggestion: >-
+    Depend on `google-adk[a2a]` and re-lock.
+  gain: >-
+    RemoteA2aAgent and to_a2a need the a2a-sdk package, which only the a2a
+    extra installs.
+  effort: 1
+  impact: 5
+  risk: >-
+    None.
+  when_not: >-
+    Never while the code uses A2A.
+  threshold: >-
+    Immediately: the import fails at startup.
+  sources:
+    - https://adk.dev/a2a/quickstart-exposing/
+    - https://adk.dev/a2a/quickstart-consuming/

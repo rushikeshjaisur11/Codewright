@@ -14,7 +14,8 @@ from .service import Service
 INSTRUCTIONS = (
     "Codewright reviews a repository for code that re-implements what an installed library, the standard "
     "library or the platform already provides, and proposes version-checked replacements with proof. "
-    "Call `review` before refactoring; prefer findings with proof=verified; respect `when_not`."
+    "Call `review` before refactoring; prefer findings with proof=verified; respect `when_not`. "
+    "Call `search_knowledge` before writing code against a library to get the API its installed version offers."
 )
 
 server = MCPServer("codewright", instructions=INSTRUCTIONS)
@@ -99,6 +100,26 @@ def check_drift(path: str) -> dict:
 def dependency_releases(path: str) -> list[dict]:
     """Newer releases of the repo's dependencies, and which capability cards an upgrade would unlock."""
     return _ws(path).releases()
+
+
+@server.tool()
+def search_knowledge(query: str, path: str = "", library: str = "", limit: int = 8) -> list[dict]:
+    """Search Codewright's knowledge base: what each library version offers, with when-not-to and sources.
+
+    Use it before writing code against a library (e.g. query "persist sessions", library "google-adk")
+    to get the API that fits the installed version. With `path`, each result says whether it fits that
+    repo's locked versions ("fits"), needs an upgrade ("upgrade"), or the library isn't used ("unused").
+    """
+    from . import cards as card_store
+    from . import knowledge
+    from . import stack as stack_mod
+
+    st = stack_mod.discover(path) if path else None
+    keep = ("id", "title", "symbol", "library", "versions", "topic", "suggestion", "gain", "risk", "when_not")
+    out = []
+    for c in knowledge.search(query, card_store.load(), st, library=library, limit=limit):
+        out.append({k: c[k] for k in keep} | {"snippet": c["snippet"], "sources": c["sources"], "fit": c["fit"]})
+    return out
 
 
 def main() -> None:

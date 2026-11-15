@@ -117,12 +117,12 @@ def detect_retry(pf, fn, node, graph):
         names = [name for _, name in calls_in(loop, pf)]
         sleeps = [name for name in names if name in SLEEP_CALLS]
         if has_try and sleeps:
-            # Retrying an ADK agent run or a Gemini call: the model client can retry for you.
+            # Retrying a whole agent turn through a Runner: the Gemini client can retry just the request.
+            # (A loop inside a custom model class, around another provider's SDK, is not that.)
             model_call = _imports_adk(pf) and any(
-                n.endswith((".run_async", ".generate_content", ".generate_content_async"))
-                or (n.endswith(".run") and "runner" in n.rsplit(".", 2)[-2].lower())
+                n.endswith((".run_async", ".run")) and "runner" in n.rsplit(".", 2)[-2].lower()
                 for n in names
-                if "." in n
+                if n.count(".") >= 1
             )
             return [
                 IntentMatch(

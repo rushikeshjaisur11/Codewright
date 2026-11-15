@@ -16,16 +16,30 @@ from .models import Finding, ProofStatus
 REQUIRED = ("file", "api", "gain", "risk", "when_not", "threshold")
 
 _CHECK_SCRIPT = r"""
-import importlib, json, sys
+import importlib, importlib.metadata, json, sys
 out = {}
+dists = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
 for sym in json.loads(sys.argv[1]):
     parts = sym.split(".")
     status = "unchecked"
-    for i in range(len(parts), 0, -1):
+    if dists.get(sym):
         try:
-            obj = importlib.import_module(".".join(parts[:i]))
-        except Exception:
+            importlib.metadata.distribution(dists[sym])
+        except importlib.metadata.PackageNotFoundError:
+            out[sym] = "unchecked"  # the library isn't installed here: nothing to check against
             continue
+    for i in range(len(parts), 0, -1):
+        mod = ".".join(parts[:i])
+        try:
+            obj = importlib.import_module(mod)
+        except ModuleNotFoundError as exc:
+            if exc.name and (mod == exc.name or mod.startswith(exc.name + ".")):
+                continue  # no such module: try a shorter prefix
+            status = "broken"  # the module exists but a dependency of its own is missing
+            break
+        except Exception:
+            status = "broken"  # the module exists but fails to import, e.g. asking for an extra
+            break
         try:
             for attr in parts[i:]:
                 obj = getattr(obj, attr)
@@ -35,7 +49,9 @@ for sym in json.loads(sys.argv[1]):
         except Exception:
             status = "unchecked"  # e.g. a lazy attribute that needs an optional extra
         break
-    if status == "unchecked":
+    if status == "broken":
+        status = "unchecked"
+    elif status == "unchecked":
         import builtins
         obj = builtins
         try:
@@ -58,14 +74,21 @@ def target_python(root: str | Path) -> str:
     return sys.executable
 
 
-def check_symbols(findings: list[Finding], python: str, symbols: dict[str, str]) -> None:
-    """symbols maps finding id -> dotted symbol (only for importable, dotted symbols)."""
+def check_symbols(
+    findings: list[Finding], python: str, symbols: dict[str, str], dists: dict[str, str] | None = None
+) -> None:
+    """symbols maps finding id -> dotted symbol (only for importable, dotted symbols).
+
+    dists maps a symbol to the distribution that provides it. When that distribution isn't
+    installed in `python`, the symbol is "unchecked": absent there says nothing about whether
+    the API exists, and the stack's lockfile already decided the card applies.
+    """
     wanted = sorted(set(symbols.values()))
     if not wanted:
         return
     try:
         proc = subprocess.run(
-            [python, "-c", _CHECK_SCRIPT, json.dumps(wanted)],
+            [python, "-c", _CHECK_SCRIPT, json.dumps(wanted), json.dumps(dists or {})],
             capture_output=True,
             text=True,
             timeout=60,

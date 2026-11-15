@@ -203,7 +203,7 @@ export default function App() {
             {route.page === "chat" && <Chat />}
             {route.page === "design" && <Design />}
             {route.page === "releases" && <Releases />}
-            {route.page === "knowledge" && <Knowledge />}
+            {route.page === "knowledge" && <Knowledge wid={wid} />}
             {route.page === "settings" && <SettingsPage />}
           </main>
         </div>

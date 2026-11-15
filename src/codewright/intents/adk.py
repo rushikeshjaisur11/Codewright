@@ -21,10 +21,14 @@ AGENT_CLASSES = {
     "google.adk.agents.llm_agent.Agent",
     "google.adk.agents.llm_agent.LlmAgent",
 }
-IN_MEMORY_SESSIONS = {
-    "google.adk.sessions.InMemorySessionService": "InMemorySessionService",
-    "google.adk.sessions.in_memory_session_service.InMemorySessionService": "InMemorySessionService",
-    "google.adk.runners.InMemoryRunner": "InMemoryRunner",
+IN_MEMORY_SERVICES = {  # constructor -> (class, what it keeps in memory)
+    "google.adk.sessions.InMemorySessionService": ("InMemorySessionService", "sessions"),
+    "google.adk.sessions.in_memory_session_service.InMemorySessionService": ("InMemorySessionService", "sessions"),
+    "google.adk.runners.InMemoryRunner": ("InMemoryRunner", "sessions"),
+    "google.adk.artifacts.InMemoryArtifactService": ("InMemoryArtifactService", "artifacts"),
+    "google.adk.artifacts.in_memory_artifact_service.InMemoryArtifactService": ("InMemoryArtifactService", "artifacts"),
+    "google.adk.memory.InMemoryMemoryService": ("InMemoryMemoryService", "memory"),
+    "google.adk.memory.in_memory_memory_service.InMemoryMemoryService": ("InMemoryMemoryService", "memory"),
 }
 WEB_FRAMEWORKS = ("fastapi", "flask", "starlette", "django", "quart", "aiohttp", "litestar", "sanic")
 
@@ -114,32 +118,39 @@ def detect_hand_server(pf, fn, node, graph):
     return []
 
 
-# --------------------------------------------------------------------------- in-memory sessions in a server
+# --------------------------------------------------------------------------- in-memory services in a server
 
 
-@module_detector("adk-in-memory-sessions")
-def detect_in_memory_sessions(pf: ParsedFile) -> list[IntentMatch]:
-    """InMemorySessionService or InMemoryRunner in code that serves requests."""
-    if not imports_adk(pf):
-        return []
-    serves = any(v.split(".", 1)[0] in WEB_FRAMEWORKS for v in pf.module.imports.values()) or any(
+def serves_requests(pf: ParsedFile) -> bool:
+    return any(v.split(".", 1)[0] in WEB_FRAMEWORKS for v in pf.module.imports.values()) or any(
         d.split("(", 1)[0].endswith(ROUTE_SUFFIXES) for f in pf.module.functions for d in f.decorators
     )
-    if not serves:
+
+
+@module_detector("adk-in-memory-services")
+def detect_in_memory_services(pf: ParsedFile) -> list[IntentMatch]:
+    """In-memory session, artifact or memory services in code that serves requests (one finding per kind)."""
+    if not imports_adk(pf) or not serves_requests(pf):
         return []
+    out, seen = [], set()
+    what = {"sessions": "every session", "artifacts": "every saved file", "memory": "all long-term memory"}
     for call, name in calls_in(pf.root, pf, into_defs=True):
-        if (cls := IN_MEMORY_SESSIONS.get(name)) is not None:
-            ln = line(call)
-            return [
-                IntentMatch(
-                    "adk-in-memory-sessions",
-                    _innermost_function(pf, ln),
-                    ln,
-                    f"{cls} keeps every session in this process's memory, in a module that serves requests",
-                    {"service": cls},
-                )
-            ]
-    return []
+        hit = IN_MEMORY_SERVICES.get(name)
+        if hit is None or hit[1] in seen:
+            continue
+        cls, kind = hit
+        seen.add(kind)
+        ln = line(call)
+        out.append(
+            IntentMatch(
+                "adk-in-memory-services",
+                _innermost_function(pf, ln),
+                ln,
+                f"{cls} keeps {what[kind]} in this process's memory, in a module that serves requests",
+                {"service": cls, "kind": kind},
+            )
+        )
+    return out
 
 
 # --------------------------------------------------------------------------- instructions frozen at import

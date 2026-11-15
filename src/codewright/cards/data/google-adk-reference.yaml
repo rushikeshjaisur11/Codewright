@@ -1,0 +1,1124 @@
+# Google ADK (google-adk) knowledge base: features no detector maps to.
+# intent: reference entries are never findings. They are searchable in the Knowledge base,
+# served to coding agents over MCP (search_knowledge), and listed as what an upgrade unlocks.
+# Each `versions` lower bound is the first release with the API, found by checking the
+# source of one wheel per minor release on PyPI (1.0.0 to 2.14.1); each symbol was
+# imported from google-adk 2.14.1.
+
+# --------------------------------------------------------------------------- agents and orchestration
+
+- id: adk.ref.sub-agents
+  intent: reference
+  topic: Agents and orchestration
+  title: Let the model delegate to specialist agents with sub_agents
+  symbol: google.adk.tools.transfer_to_agent
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Give a coordinating LlmAgent `sub_agents=[...]`, each with a short, precise
+    `description`. The model hands the conversation to the best match by
+    calling transfer_to_agent; the specialist then answers the user directly.
+  gain: >-
+    Routing is decided by the model from the agents' descriptions, so adding a
+    specialist means adding an agent, not another branch of if/elif routing
+    code.
+  effort: 2
+  impact: 3
+  risk: >-
+    Misroutes come from vague or overlapping descriptions; control moves to
+    the specialist, so the coordinator doesn't see its answer (use AgentTool
+    if it should).
+  when_not: >-
+    When the steps always run in the same order: use a Workflow (2.x) or
+    SequentialAgent (1.x).
+  threshold: >-
+    Worth it from two or three distinct kinds of request.
+  sources:
+    - https://adk.dev/workflows/patterns/
+    - https://adk.dev/agents/llm-agents/
+  snippet: |
+    from google.adk.agents import LlmAgent
+
+    billing = LlmAgent(name="billing", model="gemini-flash-latest", description="Invoices, refunds and payment methods.")
+    support = LlmAgent(name="support", model="gemini-flash-latest", description="Bugs, errors and how-to questions.")
+
+    root_agent = LlmAgent(
+        name="coordinator",
+        model="gemini-flash-latest",
+        instruction="Route each request to the right specialist.",
+        sub_agents=[billing, support],
+    )
+
+- id: adk.ref.custom-agent
+  intent: reference
+  topic: Agents and orchestration
+  title: Write custom control flow as a BaseAgent subclass
+  symbol: google.adk.agents.BaseAgent
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Subclass BaseAgent and implement `async def _run_async_impl(self, ctx)`,
+    calling sub-agents' `run_async(ctx)` and yielding their events, for logic
+    no built-in agent expresses.
+  gain: >-
+    Arbitrary Python control flow (conditions on state, external checks)
+    while events, state and tracing still flow through ADK.
+  effort: 3
+  impact: 3
+  risk: >-
+    You own the orchestration bugs; on 2.x a Workflow covers most branching
+    and looping without a subclass.
+  when_not: >-
+    When a Workflow, sub_agents or AgentTool already expresses the flow.
+  threshold: >-
+    When the flow depends on state or external results in ways a graph of
+    routes can't express.
+  sources:
+    - https://adk.dev/agents/custom-agents/
+
+- id: adk.ref.workflow-routes
+  intent: reference
+  topic: Agents and orchestration
+  title: Branch, loop and run steps in parallel with Workflow graphs
+  symbol: google.adk.Workflow
+  kind: library
+  library: google-adk
+  versions: ">=2.0"
+  suggestion: >-
+    Build a Workflow from edges between agents and plain functions; route on a
+    node's output to choose the next node, and fan out to run nodes in
+    parallel.
+  gain: >-
+    Deterministic orchestration as data: branches, loops and parallel steps
+    are visible in the dev UI and traces, and the graph replaces
+    SequentialAgent, ParallelAgent and LoopAgent, deprecated in 2.0.
+  effort: 3
+  impact: 4
+  risk: >-
+    A Workflow can't be an LlmAgent sub-agent yet.
+  when_not: >-
+    When the model should decide what happens next: use sub_agents.
+  threshold: >-
+    From the first fixed branch or loop in a multi-step agent.
+  sources:
+    - https://adk.dev/graphs/
+    - https://adk.dev/graphs/routes/
+    - https://adk.dev/graphs/dynamic/
+
+- id: adk.ref.workflow-human-input
+  intent: reference
+  topic: Agents and orchestration
+  title: Pause a Workflow for human input with RequestInput
+  symbol: google.adk.events.RequestInput
+  kind: library
+  library: google-adk
+  versions: ">=2.0"
+  suggestion: >-
+    In a Workflow node, `yield RequestInput(message=...)` to stop and wait for
+    the user's answer; the next node receives it.
+  gain: >-
+    Approval and clarification steps without a hand-built pending-state
+    machine: the run pauses at that node and resumes there.
+  effort: 2
+  impact: 3
+  risk: >-
+    The client has to show the request and send the answer back to the same
+    session.
+  when_not: >-
+    When the model itself should ask a follow-up question in conversation.
+  threshold: >-
+    Any step that needs a person's sign-off (payments, emails, deletions).
+  sources:
+    - https://adk.dev/graphs/human-input/
+  snippet: |
+    from google.adk import Workflow
+    from google.adk.events import RequestInput
+
+    def ask_amount():
+        yield RequestInput(message="How much should be refunded?")
+
+    def refund(node_input: str):
+        return f"Refunding {node_input}"
+
+    root_agent = Workflow(name="refund_flow", edges=[("START", ask_amount, refund)])
+
+- id: adk.ref.workflow-retry
+  intent: reference
+  topic: Agents and orchestration
+  title: Retry a flaky Workflow node with RetryConfig
+  symbol: google.adk.workflow.RetryConfig
+  kind: library
+  library: google-adk
+  versions: ">=2.0"
+  suggestion: >-
+    Set `retry_config=RetryConfig(max_attempts=..., exceptions=[...])` on the
+    node (agents accept it too) instead of a try/except loop inside it.
+  gain: >-
+    Exponential backoff with jitter per node, limited to the exceptions you
+    list, and only the failing node re-runs, not the whole workflow.
+  effort: 1
+  impact: 3
+  risk: >-
+    Retried nodes must be idempotent.
+  when_not: >-
+    For model API errors (429, 5xx): Gemini(retry_options=...) retries just
+    the request.
+  threshold: >-
+    Any node that calls an unreliable service.
+  sources:
+    - https://adk.dev/graphs/retry/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/workflow/_retry_config.py
+
+- id: adk.ref.planner
+  intent: reference
+  topic: Agents and orchestration
+  title: Turn on the model's thinking with BuiltInPlanner
+  symbol: google.adk.planners.BuiltInPlanner
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Set `planner=BuiltInPlanner(thinking_config=types.ThinkingConfig(...))` on
+    the agent to use Gemini's built-in thinking, or PlanReActPlanner for
+    models without it.
+  gain: >-
+    Better multi-step tool use on hard tasks, with the thinking budget set in
+    one place.
+  effort: 1
+  impact: 2
+  risk: >-
+    Thinking adds latency and output tokens.
+  when_not: >-
+    For simple, latency-sensitive replies.
+  threshold: >-
+    When the agent chains several tools or gets multi-step tasks wrong.
+  sources:
+    - https://adk.dev/agents/llm-agents/
+  snippet: |
+    from google.adk.agents import LlmAgent
+    from google.adk.planners import BuiltInPlanner
+    from google.genai import types
+
+    root_agent = LlmAgent(
+        name="analyst",
+        model="gemini-flash-latest",
+        planner=BuiltInPlanner(thinking_config=types.ThinkingConfig(thinking_budget=1024)),
+    )
+
+- id: adk.ref.a2a-expose
+  intent: reference
+  topic: Agents and orchestration
+  title: Serve an agent to other agents over A2A with to_a2a
+  symbol: google.adk.a2a.utils.agent_to_a2a.to_a2a
+  kind: library
+  library: google-adk
+  versions: ">=1.8.0"
+  suggestion: >-
+    `app = to_a2a(root_agent, port=8001)` returns an ASGI app speaking the
+    Agent2Agent protocol, with an agent card; run it with uvicorn.
+  gain: >-
+    Other teams' agents, in any framework that speaks A2A, can call yours as
+    a remote agent without a custom API.
+  effort: 2
+  impact: 3
+  risk: >-
+    Needs `google-adk[a2a]`; put authentication in front of it.
+  when_not: >-
+    When the caller is in the same process: use AgentTool or sub_agents.
+  threshold: >-
+    When agents are owned or deployed by different teams.
+  sources:
+    - https://adk.dev/a2a/quickstart-exposing/
+    - https://adk.dev/a2a/
+
+- id: adk.ref.a2a-consume
+  intent: reference
+  topic: Agents and orchestration
+  title: Call a remote agent with RemoteA2aAgent
+  symbol: google.adk.agents.remote_a2a_agent.RemoteA2aAgent
+  kind: library
+  library: google-adk
+  versions: ">=1.6.1"
+  suggestion: >-
+    Create `RemoteA2aAgent(name=..., agent_card=<url of its agent card>)` and
+    use it as a sub-agent or wrap it in AgentTool.
+  gain: >-
+    A remote agent behaves like a local one in the agent tree: delegation,
+    events and tracing work the same.
+  effort: 2
+  impact: 3
+  risk: >-
+    Needs `google-adk[a2a]`; every call is a network hop with its own latency
+    and failure modes.
+  when_not: >-
+    When you own both agents and they can run in one process.
+  threshold: >-
+    When the agent you need is deployed by someone else.
+  sources:
+    - https://adk.dev/a2a/quickstart-consuming/
+
+# --------------------------------------------------------------------------- tools and MCP
+
+- id: adk.ref.function-tools
+  intent: reference
+  topic: Tools and MCP
+  title: Write tools as plain functions with type hints and a docstring
+  symbol: google.adk.tools.FunctionTool
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Pass plain functions in `tools=[...]`; ADK wraps each in a FunctionTool.
+    The name, docstring and type-hinted parameters become the declaration the
+    model sees; return a dict, and add a `tool_context: ToolContext`
+    parameter to read state or save artifacts.
+  gain: >-
+    No schema to write by hand: the declaration follows the code, and
+    tool_context gives tools state, artifacts and memory search.
+  effort: 1
+  impact: 3
+  risk: >-
+    A vague docstring makes the model call the tool wrongly; tool_context is
+    hidden from the model, other parameters are not.
+  when_not: >-
+    When the tool is an existing API with an OpenAPI spec or an MCP server:
+    use OpenAPIToolset or McpToolset.
+  threshold: >-
+    Every custom tool.
+  sources:
+    - https://adk.dev/tools-custom/function-tools/
+  snippet: |
+    from google.adk.tools import ToolContext
+
+    def get_order(order_id: str, tool_context: ToolContext) -> dict:
+        """Look up an order by id. Returns its status and items."""
+        return {"status": "shipped", "items": 2}
+
+- id: adk.ref.tool-confirmation
+  intent: reference
+  topic: Tools and MCP
+  title: Ask the user to confirm a risky tool call with require_confirmation
+  symbol: google.adk.tools.tool_confirmation.ToolConfirmation
+  kind: library
+  library: google-adk
+  versions: ">=1.14.1"
+  suggestion: >-
+    Wrap the tool as `FunctionTool(func, require_confirmation=True)` (or a
+    function deciding per call). ADK pauses the call and asks the client to
+    confirm before running it.
+  gain: >-
+    Human sign-off on payments, emails or deletions without a home-made
+    "pending action" state and a second endpoint.
+  effort: 1
+  impact: 3
+  risk: >-
+    Your client must show the confirmation request and send the answer back.
+  when_not: >-
+    For read-only tools.
+  threshold: >-
+    Any tool with side effects a user would want to approve.
+  sources:
+    - https://adk.dev/tools-custom/confirmation/
+  snippet: |
+    from google.adk.tools import FunctionTool
+
+    def delete_file(path: str) -> dict:
+        """Delete a file."""
+        ...
+
+    tools = [FunctionTool(delete_file, require_confirmation=True)]
+
+- id: adk.ref.openapi-toolset
+  intent: reference
+  topic: Tools and MCP
+  title: Turn a REST API's OpenAPI spec into tools with OpenAPIToolset
+  symbol: google.adk.tools.openapi_tool.OpenAPIToolset
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    `OpenAPIToolset(spec_str=spec, spec_str_type="json")` (or `spec_dict=`)
+    creates one tool per operation; add the toolset to the agent's tools.
+  gain: >-
+    One tool per endpoint, with parameters and descriptions from the spec,
+    instead of a hand-written wrapper per call.
+  effort: 1
+  impact: 3
+  risk: >-
+    Every operation becomes a tool; large specs crowd the model's choices,
+    so filter them.
+  when_not: >-
+    When the API has no accurate spec.
+  threshold: >-
+    Once an agent needs more than two or three endpoints of one API.
+  sources:
+    - https://adk.dev/tools-custom/openapi-tools/
+
+- id: adk.ref.builtin-tools
+  intent: reference
+  topic: Tools and MCP
+  title: Use Gemini's built-in Google Search and URL context tools
+  symbol: google.adk.tools.google_search
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Add `google_search` (or `url_context`, 1.3.0+) to an agent's tools for
+    grounded answers with citations. These built-in tools must be the only
+    tool on their agent: wrap that agent in AgentTool to combine it with
+    others.
+  gain: >-
+    Grounded, cited web answers without a search API key or scraping code.
+  effort: 1
+  impact: 3
+  risk: >-
+    Mixing a built-in tool with other tools on one agent isn't supported.
+  when_not: >-
+    When answers must come only from your own data: use a retrieval tool.
+  threshold: >-
+    Any question about current events or public facts.
+  sources:
+    - https://adk.dev/grounding/google_search_grounding/
+    - https://adk.dev/tools/limitations/
+
+- id: adk.ref.code-execution
+  intent: reference
+  topic: Tools and MCP
+  title: Let the agent run code with a code executor
+  symbol: google.adk.code_executors.BuiltInCodeExecutor
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Set `code_executor=BuiltInCodeExecutor()` to use Gemini's sandboxed code
+    execution, or AgentEngineSandboxCodeExecutor (1.17.0+) for a managed
+    sandbox. Never use UnsafeLocalCodeExecutor outside local experiments.
+  gain: >-
+    Exact arithmetic and data analysis instead of the model guessing, with no
+    code running on your servers.
+  effort: 1
+  impact: 3
+  risk: >-
+    BuiltInCodeExecutor can't be combined with other tools on the same agent;
+    put it on its own agent behind AgentTool.
+  when_not: >-
+    When a deterministic function tool does the calculation.
+  threshold: >-
+    When users ask for calculations, charts or data transforms.
+  sources:
+    - https://adk.dev/integrations/code-execution/
+    - https://adk.dev/tools/limitations/
+
+- id: adk.ref.skills
+  intent: reference
+  topic: Tools and MCP
+  title: Package reusable instructions and resources as Skills
+  symbol: google.adk.tools.skill_toolset.SkillToolset
+  kind: library
+  library: google-adk
+  versions: ">=1.25.1"
+  suggestion: >-
+    Load skills from folders (`load_skill_from_dir`) or define them in code,
+    and give the agent a `SkillToolset(skills=[...])`; the model loads a
+    skill's full instructions only when it needs them.
+  gain: >-
+    Long, specialised instructions stay out of every prompt until used, and
+    one skill folder is shared by several agents.
+  effort: 2
+  impact: 2
+  risk: >-
+    Skills are newer than most of ADK; pin the version and re-check after
+    upgrades.
+  when_not: >-
+    For a short instruction every request needs.
+  threshold: >-
+    When the system instruction grows past a few pages of situational
+    guidance.
+  sources:
+    - https://adk.dev/skills/
+
+- id: adk.ref.toolbox
+  intent: reference
+  topic: Tools and MCP
+  title: Give agents database tools through MCP Toolbox for Databases
+  symbol: google.adk.tools.toolbox_toolset.ToolboxToolset
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Run the MCP Toolbox server with your SQL tools defined in tools.yaml and
+    add `ToolboxToolset(server_url=...)` to the agent.
+  gain: >-
+    Parameterised, reviewed SQL queries as tools, with connection pooling and
+    auth in the Toolbox server, instead of letting the model write SQL.
+  effort: 2
+  impact: 3
+  risk: >-
+    Needs the toolbox extra and a running Toolbox server.
+  when_not: >-
+    When the data is reached through your own API.
+  threshold: >-
+    As soon as an agent reads from a production database.
+  sources:
+    - https://adk.dev/integrations/mcp-toolbox-for-databases/
+
+# --------------------------------------------------------------------------- sessions, state and memory
+
+- id: adk.ref.state-templating
+  intent: reference
+  topic: Sessions, state and memory
+  title: Insert session state into instructions with {key} placeholders
+  symbol: google.adk.agents.LlmAgent
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Write `{key}` in a string instruction to insert `state["key"]`,
+    `{artifact.name}` for an artifact's text, and `{key?}` to skip a key that
+    may be missing. Pair it with `output_key` on the agent that produces the
+    value.
+  gain: >-
+    Agents pass results to each other through state without glue code, and
+    the instruction always shows the current value.
+  effort: 1
+  impact: 3
+  risk: >-
+    A missing key raises unless marked with `?`; an instruction function
+    (InstructionProvider) bypasses the placeholders.
+  when_not: >-
+    When the value needs formatting or logic: use an instruction function.
+  threshold: >-
+    Any agent whose instruction depends on earlier steps.
+  sources:
+    - https://adk.dev/agents/llm-agents/
+    - https://adk.dev/sessions/state/
+
+- id: adk.ref.memory-tools
+  intent: reference
+  topic: Sessions, state and memory
+  title: Recall past conversations with preload_memory and load_memory
+  symbol: google.adk.tools.preload_memory
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Call `memory_service.add_session_to_memory(session)` when a conversation
+    ends. Give the agent `preload_memory` (searched before every turn) or
+    `load_memory` (the model searches when it decides to).
+  gain: >-
+    Long-term memory across sessions without your own vector store and
+    retrieval prompt.
+  effort: 2
+  impact: 3
+  risk: >-
+    Memory is per user; decide what may be stored, and use
+    VertexAiMemoryBankService (1.5.0+) in production, not the in-memory one.
+  when_not: >-
+    When everything needed is in the current session's state.
+  threshold: >-
+    When users come back and expect continuity.
+  sources:
+    - https://adk.dev/sessions/memory/
+
+- id: adk.ref.sqlite-sessions
+  intent: reference
+  topic: Sessions, state and memory
+  title: Persist sessions to a local file with SqliteSessionService
+  symbol: google.adk.sessions.sqlite_session_service.SqliteSessionService
+  kind: library
+  library: google-adk
+  versions: ">=1.19.0"
+  suggestion: >-
+    Use `SqliteSessionService(db_path="sessions.db")` for single-machine
+    deployments and local development.
+  gain: >-
+    Sessions survive restarts with no database server and no SQLAlchemy;
+    events are stored as JSON, so the schema doesn't need migrations.
+  effort: 1
+  impact: 2
+  risk: >-
+    One file on one machine: not shared between replicas.
+  when_not: >-
+    With several instances: use DatabaseSessionService on PostgreSQL or
+    VertexAiSessionService.
+  threshold: >-
+    Fine for one instance; switch when you scale out.
+  sources:
+    - https://github.com/google/adk-python/blob/main/src/google/adk/sessions/sqlite_session_service.py
+
+- id: adk.ref.rewind
+  intent: reference
+  topic: Sessions, state and memory
+  title: Undo turns with Runner.rewind_async
+  symbol: google.adk.runners.Runner.rewind_async
+  kind: library
+  library: google-adk
+  versions: ">=1.17.0"
+  suggestion: >-
+    `await runner.rewind_async(user_id=..., session_id=...,
+    rewind_before_invocation_id=...)` rolls the session's events and state
+    back to before that invocation.
+  gain: >-
+    "Edit and resend" or "undo" in a chat UI without copying sessions or
+    rebuilding state by hand.
+  effort: 1
+  impact: 2
+  risk: >-
+    Side effects of the rewound turns (emails sent, rows written) are not
+    undone.
+  when_not: >-
+    When tools had external side effects that must be reversed too.
+  threshold: >-
+    Any chat UI with edit or regenerate.
+  sources:
+    - https://adk.dev/sessions/session/rewind/
+
+- id: adk.ref.artifacts
+  intent: reference
+  topic: Sessions, state and memory
+  title: Save and load files from tools as artifacts
+  symbol: google.adk.agents.callback_context.CallbackContext.save_artifact
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    In tools and callbacks, `await tool_context.save_artifact(filename,
+    types.Part(...))` stores a versioned file for the session (prefix the
+    name with `user:` to share it across the user's sessions) and
+    `load_artifact` reads it back.
+  gain: >-
+    Files the agent creates or receives stay attached to the session and
+    versioned, instead of being passed through state or written to local
+    disk.
+  effort: 1
+  impact: 2
+  risk: >-
+    Use GcsArtifactService in production; the in-memory default loses files.
+  when_not: >-
+    For small values: put them in state.
+  threshold: >-
+    Any agent that handles uploads or produces documents or images.
+  sources:
+    - https://adk.dev/artifacts/
+
+# --------------------------------------------------------------------------- callbacks and plugins
+
+- id: adk.ref.callbacks
+  intent: reference
+  topic: Callbacks and plugins
+  title: Guard and adapt model and tool calls with callbacks
+  symbol: google.adk.agents.callback_context.CallbackContext
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Set `before_model_callback`, `before_tool_callback` and their `after_`
+    pairs on an agent. A before-callback that returns an LlmResponse (or a
+    dict for tools) skips the call and uses that result; returning None lets
+    it run.
+  gain: >-
+    Guardrails, PII redaction, caching and argument checks in one place, next
+    to the agent, instead of scattered around every runner call.
+  effort: 2
+  impact: 3
+  risk: >-
+    Callbacks run on every call; keep them fast and side-effect free.
+  when_not: >-
+    When the same rule applies to every agent: use a plugin.
+  threshold: >-
+    As soon as there is a rule the model must not be trusted to follow.
+  sources:
+    - https://adk.dev/callbacks/
+    - https://adk.dev/callbacks/types-of-callbacks/
+    - https://adk.dev/callbacks/design-patterns-and-best-practices/
+
+- id: adk.ref.error-callbacks
+  intent: reference
+  topic: Callbacks and plugins
+  title: Recover from tool and model errors with on_*_error_callback
+  symbol: google.adk.agents.LlmAgent
+  kind: library
+  library: google-adk
+  versions: ">=1.19.0"
+  suggestion: >-
+    Set `on_tool_error_callback` (1.18.0+) or `on_model_error_callback`
+    (1.19.0+); return a result to replace the failed call, or None to let the
+    error propagate.
+  gain: >-
+    One handler turns a failing tool into an answer the model can work with,
+    instead of try/except in every tool.
+  effort: 1
+  impact: 2
+  risk: >-
+    Swallowing errors can hide outages; log what you replace.
+  when_not: >-
+    When the error should stop the run.
+  threshold: >-
+    Once tools call services that fail occasionally.
+  sources:
+    - https://adk.dev/callbacks/types-of-callbacks/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/agents/llm_agent.py
+
+- id: adk.ref.plugins
+  intent: reference
+  topic: Callbacks and plugins
+  title: Apply cross-cutting rules to every agent with plugins
+  symbol: google.adk.plugins.BasePlugin
+  kind: library
+  library: google-adk
+  versions: ">=1.7.0"
+  suggestion: >-
+    Subclass BasePlugin and override the hooks you need (before_model,
+    before_tool, on_event, on_user_message and more), then register it with
+    `App(plugins=[...])` (1.14.1+).
+  gain: >-
+    Logging, policy and metrics for every agent, model and tool call in the
+    app from one class. Plugin callbacks run before agent-level ones, and one
+    that returns a value skips them.
+  effort: 2
+  impact: 3
+  risk: >-
+    A plugin applies everywhere; a bug in it affects every agent.
+  when_not: >-
+    For behaviour specific to one agent: use that agent's callbacks.
+  threshold: >-
+    From the second agent that needs the same rule.
+  sources:
+    - https://adk.dev/plugins/
+
+- id: adk.ref.reflect-retry
+  intent: reference
+  topic: Callbacks and plugins
+  title: Let the model fix failed tool calls with ReflectAndRetryToolPlugin
+  symbol: google.adk.plugins.ReflectAndRetryToolPlugin
+  kind: library
+  library: google-adk
+  versions: ">=1.16.0"
+  suggestion: >-
+    Register `ReflectAndRetryToolPlugin(max_retries=3)`. When a tool raises,
+    the model sees the error with guidance to correct its arguments and tries
+    again.
+  gain: >-
+    Recovers from bad arguments (wrong formats, missing fields) without
+    custom retry code in each tool.
+  effort: 1
+  impact: 2
+  risk: >-
+    Retries cost model calls; tools with side effects must be safe to call
+    again.
+  when_not: >-
+    For transient service errors: retry the request, not the model.
+  threshold: >-
+    When tool calls fail on malformed arguments.
+  sources:
+    - https://adk.dev/integrations/reflect-and-retry/
+
+- id: adk.ref.logging-plugin
+  intent: reference
+  topic: Callbacks and plugins
+  title: Log every agent, model and tool call with LoggingPlugin
+  symbol: google.adk.plugins.LoggingPlugin
+  kind: library
+  library: google-adk
+  versions: ">=1.16.0"
+  suggestion: >-
+    Register `LoggingPlugin()` on the App while developing to print each
+    callback point: user messages, model requests and responses, tool calls.
+  gain: >-
+    Full visibility into a run without adding print statements to callbacks.
+  effort: 1
+  impact: 1
+  risk: >-
+    Logs prompts and tool arguments, which may contain personal data.
+  when_not: >-
+    In production: use OpenTelemetry tracing instead.
+  threshold: >-
+    While debugging agent behaviour.
+  sources:
+    - https://adk.dev/plugins/
+
+# --------------------------------------------------------------------------- runtime, context and apps
+
+- id: adk.ref.app
+  intent: reference
+  topic: Runtime, context and apps
+  title: Configure the whole agent app in one App object
+  symbol: google.adk.apps.App
+  kind: library
+  library: google-adk
+  versions: ">=1.14.1"
+  suggestion: >-
+    `App(name=..., root_agent=..., plugins=[...], events_compaction_config=...,
+    context_cache_config=..., resumability_config=...)`, passed to the Runner
+    as `app=`.
+  gain: >-
+    One place for app-wide settings; plugins, compaction, caching and
+    resumability are only configurable here.
+  effort: 1
+  impact: 2
+  risk: >-
+    None; the Runner still accepts agent= for simple cases.
+  when_not: >-
+    For a single agent in a script.
+  threshold: >-
+    As soon as you need any app-wide setting.
+  sources:
+    - https://adk.dev/apps/
+
+- id: adk.ref.context-cache
+  intent: reference
+  topic: Runtime, context and apps
+  title: Cache the stable part of the prompt with ContextCacheConfig
+  symbol: google.adk.agents.context_cache_config.ContextCacheConfig
+  kind: library
+  library: google-adk
+  versions: ">=1.15.1"
+  suggestion: >-
+    Set `context_cache_config=ContextCacheConfig(min_tokens=..., ttl_seconds=...,
+    cache_intervals=...)` on the App, and put fixed text in the agent's
+    `static_instruction` so it comes first and can be cached.
+  gain: >-
+    Large, unchanging instructions and documents are cached by Gemini and
+    billed at the cached-token rate, which also cuts latency.
+  effort: 1
+  impact: 3
+  risk: >-
+    Only pays off above the minimum cacheable size and with repeated calls
+    within the TTL.
+  when_not: >-
+    For short prompts or rarely used agents.
+  threshold: >-
+    When the same long instruction or document goes into most requests.
+  sources:
+    - https://adk.dev/context/caching/
+
+- id: adk.ref.resumability
+  intent: reference
+  topic: Runtime, context and apps
+  title: Resume interrupted or paused runs with ResumabilityConfig
+  symbol: google.adk.apps.ResumabilityConfig
+  kind: library
+  library: google-adk
+  versions: ">=1.16.0"
+  suggestion: >-
+    Set `resumability_config=ResumabilityConfig(is_resumable=True)` on the
+    App; call run_async with the paused or failed `invocation_id` to continue
+    from the last event.
+  gain: >-
+    Long-running tools can pause a run and a crashed run can continue,
+    instead of starting the turn over.
+  effort: 1
+  impact: 3
+  risk: >-
+    Best effort and at-least-once: resumed tool calls must be idempotent, and
+    temp: state is lost.
+  when_not: >-
+    For short turns where re-running is cheap.
+  threshold: >-
+    Once turns run long tools or approvals.
+  sources:
+    - https://adk.dev/runtime/resume/
+
+- id: adk.ref.run-config
+  intent: reference
+  topic: Runtime, context and apps
+  title: Cap model calls and stream tokens with RunConfig
+  symbol: google.adk.agents.RunConfig
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Pass `run_config=RunConfig(max_llm_calls=..., streaming_mode=StreamingMode.SSE)`
+    to run_async. max_llm_calls (default 500, or ADK_MAX_LLM_CALLS) stops a
+    run that loops; SSE streams partial text as it is generated.
+  gain: >-
+    A hard limit on runaway cost per turn, and responsive streaming UIs.
+  effort: 1
+  impact: 3
+  risk: >-
+    Too low a limit cuts off legitimate multi-tool turns.
+  when_not: >-
+    Never leave a production agent without a deliberate limit.
+  threshold: >-
+    Any production deployment.
+  sources:
+    - https://adk.dev/runtime/runconfig/
+
+- id: adk.ref.cancel
+  intent: reference
+  topic: Runtime, context and apps
+  title: Cancel a running turn with abort_signal
+  symbol: google.adk.runners.Runner.run_async
+  kind: library
+  library: google-adk
+  versions: ">=2.11.0"
+  suggestion: >-
+    Pass an `asyncio.Event` as `abort_signal=` to run_async and set it when
+    the user presses stop or a timeout fires.
+  gain: >-
+    The model call and tools stop instead of running to completion after the
+    user has gone, saving tokens and tool side effects.
+  effort: 1
+  impact: 2
+  risk: >-
+    Custom tools should check the signal to stop long work early.
+  when_not: >-
+    For turns that must finish once started.
+  threshold: >-
+    Any chat UI with a stop button.
+  sources:
+    - https://github.com/google/adk-python/blob/main/src/google/adk/runners.py
+    - https://adk.dev/runtime/cancel/
+
+- id: adk.ref.live
+  intent: reference
+  topic: Runtime, context and apps
+  title: Build voice and video agents with run_live and LiveRequestQueue
+  symbol: google.adk.agents.LiveRequestQueue
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Use `runner.run_live(...)` with a LiveRequestQueue to stream audio, video
+    or text both ways with a Gemini Live model.
+  gain: >-
+    Real-time, interruptible conversations with the same agents, tools and
+    sessions as text.
+  effort: 4
+  impact: 3
+  risk: >-
+    Needs a Live-capable model and a client that streams media.
+  when_not: >-
+    For request/response chat.
+  threshold: >-
+    When users talk to the agent rather than type.
+  sources:
+    - https://adk.dev/live/
+
+# --------------------------------------------------------------------------- models
+
+- id: adk.ref.litellm
+  intent: reference
+  topic: Models
+  title: Use OpenAI, Anthropic and other models through LiteLlm
+  symbol: google.adk.models.lite_llm.LiteLlm
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Set `model=LiteLlm(model="openai/gpt-4o")` (any LiteLLM model string) on
+    the agent; credentials come from the provider's usual environment
+    variables.
+  gain: >-
+    Mix providers per agent in one app with the same tools, sessions and
+    callbacks.
+  effort: 1
+  impact: 3
+  risk: >-
+    Needs `google-adk[extensions]`; Gemini-only features (built-in tools,
+    context caching) don't apply.
+  when_not: >-
+    For Claude, the native AnthropicLlm (1.20.0+) is also available.
+  threshold: >-
+    When a non-Gemini model is better or cheaper for a step.
+  sources:
+    - https://adk.dev/agents/models/litellm/
+
+- id: adk.ref.anthropic
+  intent: reference
+  topic: Models
+  title: Use Claude models directly with AnthropicLlm
+  symbol: google.adk.models.anthropic_llm.AnthropicLlm
+  kind: library
+  library: google-adk
+  versions: ">=1.20.0"
+  suggestion: >-
+    Set `model=AnthropicLlm(model="claude-sonnet-4-6")` with an Anthropic API
+    key, or use the `Claude` class for Claude on Vertex AI.
+  gain: >-
+    Claude with ADK's tools, sessions and callbacks, without going through
+    LiteLLM.
+  effort: 1
+  impact: 2
+  risk: >-
+    Needs the anthropic package.
+  when_not: >-
+    When all agents use Gemini.
+  threshold: >-
+    When Claude suits a step better.
+  sources:
+    - https://adk.dev/agents/models/anthropic/
+
+# --------------------------------------------------------------------------- serving and deployment
+
+- id: adk.ref.dev-ui
+  intent: reference
+  topic: Serving and deployment
+  title: Test agents in the dev UI with adk web
+  symbol: google.adk.cli.fast_api.get_fast_api_app
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Run `adk web` in the folder above your agent packages for a browser UI
+    with chat, events, state, traces and evals; `adk api_server` serves the
+    same API without the UI.
+  gain: >-
+    Inspect every event, tool call and state change of a run, and save
+    conversations as eval cases.
+  effort: 1
+  impact: 2
+  risk: >-
+    For development only; it has no authentication.
+  when_not: >-
+    In production.
+  threshold: >-
+    From the first day of building an agent.
+  sources:
+    - https://adk.dev/runtime/web-interface/
+    - https://adk.dev/runtime/api-server/
+
+- id: adk.ref.deploy-cloud-run
+  intent: reference
+  topic: Serving and deployment
+  title: Deploy to Cloud Run with adk deploy cloud_run
+  symbol: google.adk.cli.cli_deploy.to_cloud_run
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    `adk deploy cloud_run --project ... --region ... path/to/agent` builds a
+    container with the ADK API server and deploys it; pass a session service
+    URI so sessions persist.
+  gain: >-
+    A serverless HTTPS endpoint for the agent without writing a Dockerfile
+    or server.
+  effort: 2
+  impact: 3
+  risk: >-
+    Without a session and artifact service URI the container falls back to
+    in-memory services, lost when an instance is recycled.
+  when_not: >-
+    When the agent must live inside an existing service.
+  threshold: >-
+    When the agent needs a public endpoint.
+  sources:
+    - https://adk.dev/deploy/cloud-run/
+
+- id: adk.ref.deploy-agent-engine
+  intent: reference
+  topic: Serving and deployment
+  title: Deploy to Vertex AI Agent Engine with adk deploy agent_engine
+  symbol: google.adk.cli.cli_deploy.to_agent_engine
+  kind: library
+  library: google-adk
+  versions: ">=1.2.1"
+  suggestion: >-
+    `adk deploy agent_engine` packages the agent for Agent Engine, which
+    provides managed sessions (VertexAiSessionService), Memory Bank, scaling
+    and tracing.
+  gain: >-
+    Managed infrastructure for sessions, memory and scaling.
+  effort: 2
+  impact: 3
+  risk: >-
+    Ties the deployment to Google Cloud and its pricing.
+  when_not: >-
+    When you need full control of the serving stack.
+  threshold: >-
+    When you would otherwise run your own session database and memory store.
+  sources:
+    - https://adk.dev/deploy/agent-runtime/deploy/
+    - https://adk.dev/deploy/agent-runtime/
+
+# --------------------------------------------------------------------------- evaluation and observability
+
+- id: adk.ref.evaluation
+  intent: reference
+  topic: Evaluation and observability
+  title: Test agent behaviour with eval sets and AgentEvaluator
+  symbol: google.adk.evaluation.AgentEvaluator
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Save conversations as `.test.json` files or eval sets (the dev UI can
+    record them) and run them with `adk eval` or
+    `AgentEvaluator.evaluate(...)` in pytest, scoring tool trajectories and
+    final responses.
+  gain: >-
+    Catches regressions in tool choice and answers when prompts, models or
+    ADK versions change, which unit tests on code can't.
+  effort: 3
+  impact: 4
+  risk: >-
+    Needs `google-adk[eval]` on 2.x; model-graded metrics cost model calls and
+    vary between runs (num_runs averages them).
+  when_not: >-
+    For deterministic code paths: plain unit tests are cheaper.
+  threshold: >-
+    Before changing the model, the instructions or the ADK version.
+  sources:
+    - https://adk.dev/evaluate/
+    - https://adk.dev/evaluate/criteria/
+
+- id: adk.ref.tracing
+  intent: reference
+  topic: Evaluation and observability
+  title: Trace runs with OpenTelemetry
+  symbol: google.adk.cli.fast_api.get_fast_api_app
+  kind: library
+  library: google-adk
+  versions: ">=1.15.1"
+  suggestion: >-
+    ADK emits OpenTelemetry spans for agents, model calls and tools using the
+    GenAI semantic conventions. Export them over OTLP, or to Google Cloud with
+    `--otel_to_cloud` (adk CLI) or `otel_to_cloud=True` in get_fast_api_app.
+  gain: >-
+    Latency, token use and failures per step in your existing tracing
+    backend, without instrumenting the agent yourself.
+  effort: 1
+  impact: 3
+  risk: >-
+    Spans can include prompt content; check what you export.
+  when_not: >-
+    Never skip it in production.
+  threshold: >-
+    From the first production deployment.
+  sources:
+    - https://adk.dev/observability/traces/
+
+# --------------------------------------------------------------------------- upgrading
+
+- id: adk.ref.v2-upgrade
+  intent: reference
+  topic: Upgrading
+  title: What changes when upgrading to google-adk 2.x
+  symbol: google.adk.Workflow
+  kind: library
+  library: google-adk
+  versions: ">=2.0"
+  suggestion: >-
+    Before upgrading: add the extras your code needs (`mcp` for MCP tools,
+    `db` for DatabaseSessionService, `gcp` for Google Cloud services,
+    `eval`, `a2a`, `extensions`), plan the move from
+    SequentialAgent/ParallelAgent/LoopAgent to Workflow, and re-run your evals.
+    To stay on 1.x, pin `google-adk~=1.0`.
+  gain: >-
+    2.0 adds graph Workflows (routes, human input, per-node retry, dynamic
+    graphs) and a much smaller base install, since integrations moved into
+    extras.
+  effort: 3
+  impact: 4
+  risk: >-
+    Code that relied on dependencies 1.x installed by default fails at import
+    until the extras are added; Codewright flags those imports.
+  when_not: >-
+    When you can't re-run evals before releasing.
+  threshold: >-
+    Before 1.x stops receiving fixes.
+  sources:
+    - https://adk.dev/2.0/
+    - https://pypi.org/project/google-adk/

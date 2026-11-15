@@ -1,3 +1,4 @@
+import ast
 import subprocess
 import sys
 import textwrap
@@ -43,8 +44,22 @@ def test_every_adk_card_cites_sources_and_a_when_not():
         "adk.fast-api-app",
         "adk.gemini-retry-options",
     }
+    assert len({c.id for c in adk}) == len(adk), "duplicate card ids"
     for c in adk:
-        assert c.sources and c.when_not and critic.is_dotted_symbol(c.symbol), c.id
+        assert c.sources and c.when_not and c.topic, c.id
+        # Extras cards name the extra: the symbol they'd check is exactly what fails to import.
+        assert critic.is_dotted_symbol(c.symbol) or (c.extra and c.symbol == f"google-adk[{c.extra}]"), c.id
+        if c.snippet:
+            compile(c.snippet, c.id, "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)  # snippets may be fragments
+    topics = {c.topic for c in adk}
+    assert len(topics) >= 8 and len([c for c in adk if c.intent == "reference"]) >= 35
+
+
+def test_every_adk_intent_has_a_detector():
+    from codewright.intents.detectors import DETECTORS, MODULE_DETECTORS
+
+    intents = {c.intent for c in cards.load() if c.library == "google-adk"} - {cards.REFERENCE}
+    assert intents <= set(DETECTORS) | set(MODULE_DETECTORS)
 
 
 # ---------------------------------------------------------------- Runner.run in async code
@@ -106,7 +121,7 @@ def test_in_memory_sessions_flagged_only_in_a_server(tmp_path):
         tmp_path,
         {"server.py": server, "demo.py": "from google.adk.runners import InMemoryRunner\nr = InMemoryRunner()\n"},
     )
-    f = findings(tmp_path)["adk-in-memory-sessions"]
+    f = findings(tmp_path)["adk-in-memory-services"]
     assert f.file == "server.py" and f.card_id == "adk.persistent-sessions"
     assert "sqlite+aiosqlite" in f.risk + f.suggestion
 
@@ -223,7 +238,11 @@ def test_frozen_instruction_edge_cases(tmp_path, src, flagged, patchable):
 def test_symbol_needing_a_missing_extra_is_unchecked_not_a_crash(tmp_path, monkeypatch):
     """`google.adk.sessions.DatabaseSessionService` raises ImportError without SQLAlchemy installed."""
     (tmp_path / "lazy.py").write_text(
-        "def __getattr__(name):\n    raise ImportError('pip install lazy[db]')\n\nREAL = 1\n"
+        "def __getattr__(name):  # like google.adk.sessions: only the name that needs the extra raises\n"
+        "    if name == 'Service':\n"
+        "        raise ImportError('pip install lazy[db]')\n"
+        "    raise AttributeError(name)\n\n"
+        "REAL = 1\n"
     )
     monkeypatch.chdir(tmp_path)
 
@@ -256,3 +275,40 @@ def test_reading_one_runs_events_is_not_orchestration(tmp_path):
     g = graph.build(tmp_path)
     orchestrators = [m.function.qualname for m in detect(g, only={"agent-orchestrator"})]
     assert orchestrators == ["pipeline"]
+
+
+def test_symbol_in_a_module_whose_own_imports_fail_is_unchecked(tmp_path, monkeypatch):
+    """`google.adk.models.lite_llm.LiteLlm` without litellm installed exists; it is not a hallucination."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "needs_extra.py").write_text("import not_installed_dependency_xyz\nclass Thing: ...\n")
+    (pkg / "custom_error.py").write_text("raise ImportError('pip install pkg[extra]')\n")
+    monkeypatch.chdir(tmp_path)
+
+    def finding(fid, symbol):
+        return Finding(fid, "i", "f.py", 1, "fn", "t", "", "", symbol, "", "", 1, 1, "", "", "", [], "")
+
+    fs = [
+        finding("a", "pkg.needs_extra.Thing"),
+        finding("b", "pkg.custom_error.Thing"),
+        finding("c", "pkg.no_such_module.Thing"),
+        finding("d", "functools.lru_cache"),
+    ]
+    critic.check_symbols(fs, sys.executable, {f.id: f.symbol for f in fs})
+    assert [f.symbol_check for f in fs] == ["unchecked", "unchecked", "missing", "ok"]
+
+
+def test_symbol_of_a_library_missing_from_the_checking_env_is_unchecked(tmp_path, monkeypatch):
+    """Another package in the `google` namespace is installed, google-adk is not: that's no evidence."""
+    ns = tmp_path / "google" / "other"
+    ns.mkdir(parents=True)
+    (ns / "__init__.py").write_text("")
+    monkeypatch.chdir(tmp_path)
+
+    def finding(fid, symbol):
+        return Finding(fid, "i", "f.py", 1, "fn", "t", "", "", symbol, "", "", 1, 1, "", "", "", [], "")
+
+    adk, ghost = finding("a", "google.adk.Workflow"), finding("b", "google.other.Ghost")
+    critic.check_symbols([adk, ghost], sys.executable, {"a": adk.symbol, "b": ghost.symbol}, {adk.symbol: "google-adk"})
+    assert (adk.symbol_check, ghost.symbol_check) == ("unchecked", "missing")

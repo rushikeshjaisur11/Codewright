@@ -102,10 +102,12 @@ export interface Release {
   unlocks: { card: string; title: string }[];
 }
 
+export type FitStatus = "fits" | "upgrade" | "older" | "unused" | "unknown";
 export interface Card {
   id: string; intent: string; title: string; symbol: string; kind: string; library: string | null;
   versions: string; suggestion: string; gain: string; effort: number; impact: number; risk: string;
   when_not: string; threshold: string; sources: string[]; snippet: string; snippet_lang: string; autofix: boolean;
+  topic: string; reference: boolean; extra: string; fit: { status: FitStatus; detail: string };
 }
 
 export interface Settings {
@@ -188,7 +190,7 @@ export const api = {
   chat: (id: string, question: string, history: { role: string; content: string }[]) =>
     req<ChatAnswer>("POST", `${w(id)}/chat`, { question, history }),
   releases: (id: string) => req<Release[]>("GET", `${w(id)}/releases`),
-  cards: () => req<Card[]>("GET", "/api/cards"),
+  cards: (wid?: string | null) => req<Card[]>("GET", `/api/cards${wid ? `?workspace=${encodeURIComponent(wid)}` : ""}`),
   settings: (id: string) => req<Settings>("GET", `${w(id)}/settings`),
   saveSettings: (id: string, s: Partial<{ model: string; offline: boolean; constraints: string[] }>) =>
     req<Settings>("POST", `${w(id)}/settings`, s),

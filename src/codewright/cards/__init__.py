@@ -10,7 +10,9 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from ..models import Card, IntentMatch, Stack
-from ..stack import python_version
+from ..stack import LOCKFILES, python_version
+
+REFERENCE = "reference"  # intent of knowledge-only cards
 
 DATA = Path(__file__).parent / "data"
 _FIELDS = {f.name for f in fields(Card)}
@@ -60,6 +62,8 @@ def applicable(card: Card, match: IntentMatch, stack: Stack) -> tuple[bool, str,
         return False, "", ""
     if card.requires_any and not any(stack.has(r) for r in card.requires_any):
         return False, "", ""
+    if card.unless_installed and not _missing_from_lockfile(card, stack):
+        return False, "", ""
     if card.kind == "stdlib":
         py = python_version(stack)
         return version_matches(py, card.versions), "stdlib", f"{card.symbol} (Python {py})"
@@ -83,6 +87,20 @@ def applicable(card: Card, match: IntentMatch, stack: Stack) -> tuple[bool, str,
     if not card.offer_uninstalled:
         return False, "", ""
     return True, "wellknown", f"{card.symbol} ({lib} {card.versions}, not installed)"
+
+
+def _missing_from_lockfile(card: Card, stack: Stack) -> bool:
+    """True only when a lockfile lists every installed package and none of `unless_installed` is there.
+
+    A requirements file or pyproject.toml lists direct dependencies only, so a package
+    missing from it may still be installed transitively: that is not evidence.
+    """
+    dep = stack.dependencies.get(card.library or "")
+    if dep is None or dep.source not in LOCKFILES:
+        return False
+    if card.extra and card.extra in dep.extras:
+        return False
+    return not any(stack.has(name) for name in card.unless_installed)
 
 
 def _specifier_overlaps(declared: str | None, card_spec: str) -> bool:

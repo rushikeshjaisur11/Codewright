@@ -96,8 +96,13 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
             raise HTTPException(404, f"not a folder: {path}") from None
 
     @app.get("/api/cards")
-    def catalog():
-        return [asdict(c) for c in card_store.load()]
+    def catalog(workspace: str = "", q: str = "", library: str = ""):
+        """Every card (or those matching `q`), each with its fit for the workspace's installed versions."""
+        from . import knowledge
+        from . import stack as stack_mod
+
+        st = stack_mod.discover(ws(workspace).root) if workspace else None
+        return knowledge.search(q, card_store.load(), st, library=library, limit=None)
 
     # ------------------------------------------------------------------ review
     def result_payload(wid: str, w: Workspace) -> dict:
