@@ -1,5 +1,10 @@
 # Codewright
 
+[![CI](https://github.com/rushikeshjaisur11/codewright/actions/workflows/ci.yml/badge.svg)](https://github.com/rushikeshjaisur11/codewright/actions/workflows/ci.yml)
+![Python 3.11–3.13](https://img.shields.io/badge/python-3.11%E2%80%933.13-3776ab)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
+
 Codewright is a code and architecture advisor for Python repos. It reads your exact stack and library versions, finds code that rebuilds what a library, the standard library or the platform already does, and suggests the change with a diff, test-based proof and a clear "when not to".
 
 A suggestion that can't name a file, an API version and a gain is never shown.
@@ -10,7 +15,7 @@ It has three modes that share one engine:
 - **Map** shows the current architecture as live diagrams linked to the code, with findings overlaid and a code chat that cites files and lines.
 - **Design** drafts the architecture for a new project from a short interview, with capacity math in code, decision records and a starter repo. The design you choose becomes the target that Map and Review check for drift.
 
-![Review](docs/screenshots/review.png)
+![Review: findings beside the open suggestion, with its diff, proof and sources](docs/screenshots/review.png)
 
 ## Quick start
 
@@ -34,9 +39,11 @@ Everything runs locally and the code is never uploaded. A model is optional (see
 | Knowledge base | Every capability card, searchable |
 | Settings | Model, offline mode, team constraints, mute rules, MCP and CI snippets |
 
-| Overview | Map | Design |
-| --- | --- | --- |
-| ![Overview](docs/screenshots/overview.png) | ![Map](docs/screenshots/map.png) | ![Design](docs/screenshots/design.png) |
+| Overview | Map |
+| --- | --- |
+| ![Overview: findings, proof rate, acceptance rate and stack](docs/screenshots/overview.png) | ![Map: the system view generated from the code graph](docs/screenshots/map.png) |
+| **Design** | **Light theme** |
+| ![Design: three candidate architectures and the recommended one's diagram](docs/screenshots/design.png) | ![Review in the light theme](docs/screenshots/review-light.png) |
 
 ## Command line
 
@@ -126,7 +133,12 @@ Models go through LiteLLM (`pip install "codewright[llm]"`). The default is `ver
 ## Development
 
 ```bash
+.venv/bin/ruff check . && .venv/bin/ruff format --check .   # lint and format (CI runs both)
 .venv/bin/pytest -q                       # Python tests
 cd web && npm install && npm run build    # rebuilds the UI into src/codewright/web
 npm run dev                               # UI dev server, proxies /api to codewright serve on :8765
 ```
+
+CI (`.github/workflows/ci.yml`) runs ruff, the tests on Python 3.11, 3.12 and 3.13, and the UI build on every pull request.
+
+The UI follows one small design system: a near-black ground with one sky-blue accent (a white and link-blue light theme), Reddit Sans with JetBrains Mono (bundled, so nothing loads from the network), sharp corners and pill buttons. Colour marks state only (proof, diff lines, findings).

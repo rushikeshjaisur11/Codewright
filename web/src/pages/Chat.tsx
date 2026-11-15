@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
-import { Boxes, MessageSquareCode, SendHorizontal, User } from "lucide-react";
+import { MessageSquareCode, SendHorizontal, User } from "lucide-react";
 import { useApp } from "../App";
 import { api, Citation } from "../api";
 import { Empty, Spinner, useToast } from "../ui";
@@ -59,7 +59,7 @@ export default function Chat() {
         )}
         {msgs.map((m, i) => (
           <div key={i} className={`msg ${m.role === "user" ? "user" : "bot"}`}>
-            <div className="avatar">{m.role === "user" ? <User size={15} /> : <Boxes size={15} />}</div>
+            <div className="avatar">{m.role === "user" ? <User size={14} /> : <span className="mark" aria-hidden="true" />}</div>
             <div className="bubble">
               <Markdown>{m.content}</Markdown>
               {m.citations && m.citations.length > 0 && (
@@ -75,7 +75,7 @@ export default function Chat() {
             </div>
           </div>
         ))}
-        {busy && <div className="msg bot"><div className="avatar"><Boxes size={15} /></div><div className="bubble muted pulse">Searching the code graph…</div></div>}
+        {busy && <div className="msg bot"><div className="avatar"><span className="mark" aria-hidden="true" /></div><div className="bubble muted pulse">Searching the code graph…</div></div>}
       </div>
       <div className="chat-input">
         <div className="chat-box">

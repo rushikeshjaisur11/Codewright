@@ -101,7 +101,15 @@ export default function Design() {
   const answered = state.questions.filter((x) => x.id in state.session.answers);
 
   return (
-    <div className="grid" style={{ gridTemplateColumns: proposal ? "minmax(0, 1fr)" : "minmax(0, 760px)", justifyContent: "center", alignItems: "start" }}>
+    <div className="grid page" style={{ gridTemplateColumns: proposal ? "minmax(0, 1fr)" : "minmax(0, 760px)", justifyContent: "center", alignItems: "start" }}>
+      {!proposal && (
+        <div className="page-head" style={{ marginBottom: 0 }}>
+          <div>
+            <h1>Design a new system</h1>
+            <p>Answer eleven questions. Codewright drafts candidate architectures with the capacity math, exact versions, decision records and a starter repo.</p>
+          </div>
+        </div>
+      )}
       {proposal && !showInterview && (
         <div className="card card-pad row wrap" style={{ gap: 10 }}>
           <PenTool size={16} color="var(--accent)" />
@@ -127,20 +135,14 @@ export default function Design() {
           <div className="faint" style={{ fontSize: 12, marginTop: 6 }}>{state.progress.answered} of {state.progress.total} answered</div>
         </div>
         <div ref={log} style={{ overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 12, flex: 1, maxHeight: proposal ? 420 : undefined }}>
-          {!proposal && answered.length === 0 && (
-            <div className="callout" style={{ fontSize: 13 }}>
-              Describe a new system and Codewright drafts two or three candidate architectures with capacity math in code,
-              exact library versions, decision records, a diagram and a starter repo.
-            </div>
-          )}
           {answered.map((x) => (
             <div key={x.id} className="col" style={{ gap: 6 }}>
-              <div className="msg bot"><div className="avatar" style={{ width: 24, height: 24 }}><Boxes size={12} /></div><div className="bubble muted" style={{ fontSize: 13 }}>{x.text}</div></div>
-              <div className="msg user" style={{ justifyContent: "flex-end" }}><div className="bubble" style={{ fontSize: 13 }}>{fmt(state.session.answers[x.id])}</div><div className="avatar" style={{ width: 24, height: 24 }}><User size={12} /></div></div>
+              <div className="msg bot"><div className="avatar" style={{ width: 24, height: 24 }}><span className="mark" style={{ width: 12, height: 12 }} aria-hidden="true" /></div><div className="bubble muted" style={{ fontSize: 14 }}>{x.text}</div></div>
+              <div className="msg user"><div className="avatar" style={{ width: 24, height: 24 }}><User size={12} /></div><div className="bubble" style={{ fontSize: 14 }}>{fmt(state.session.answers[x.id])}</div></div>
             </div>
           ))}
           {q && (
-            <div className="msg bot"><div className="avatar"><Boxes size={15} /></div>
+            <div className="msg bot"><div className="avatar"><span className="mark" style={{ width: 14, height: 14 }} aria-hidden="true" /></div>
               <div className="bubble"><div style={{ fontWeight: 560 }}>{q.text}</div>{q.hint && <div className="faint" style={{ fontSize: 12.5, marginTop: 2 }}>{q.hint}</div>}</div>
             </div>
           )}
@@ -193,7 +195,7 @@ export default function Design() {
 
           <div className="design-grid">
             {proposal.candidates.map((c) => (
-              <div key={c.id} className={`card cand ${c.id === cand.id ? "active" : ""}`} onClick={() => setCid(c.id)}>
+              <div key={c.id} role="button" tabIndex={0} className={`card cand click-card ${c.id === cand.id ? "active" : ""}`} onClick={() => setCid(c.id)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setCid(c.id)}>
                 <div className="row">
                   <h3 className="grow">{c.name}</h3>
                   {c.recommended && <span className="badge green"><Star size={11} />Recommended</span>}

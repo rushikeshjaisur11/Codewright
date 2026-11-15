@@ -30,11 +30,11 @@ export default function Overview() {
   const upgrades = (releases ?? []).filter((x) => x.bump === "major" || x.bump === "minor");
 
   return (
-    <div className="grid">
+    <div className="grid page">
       <div className="page-head">
         <div>
           <h1>{data.name}</h1>
-          <p className="mono" style={{ fontSize: 12.5 }}>{data.root}</p>
+          <p className="mono faint" style={{ fontSize: 12.5 }}>{data.root}</p>
         </div>
       </div>
 
@@ -43,7 +43,7 @@ export default function Overview() {
           sub={`${r.intent_matches} intent matches · ${m.dropped} dropped by the critic`} />
         <Stat label="Proven by tests" icon={<ShieldCheck size={14} />} value={m.verified}
           sub={m.with_patch ? `${m.with_patch} with an auto-patch` : "no auto-patches this run"}
-          meter={m.verified_share} color="var(--green)" />
+          meter={m.verified_share} />
         <Stat label="Acceptance rate" icon={<ThumbsUp size={14} />}
           value={m.acceptance_rate == null ? "—" : `${Math.round(m.acceptance_rate * 100)}%`}
           sub={`${m.accepted} accepted · ${m.rejected} rejected · target 60%+`} meter={m.acceptance_rate}

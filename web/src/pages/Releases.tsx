@@ -15,7 +15,7 @@ export default function Releases() {
 
   const fresh = (rows ?? []).filter((r) => r.new_since_last_check);
   return (
-    <div>
+    <div className="page">
       <div className="page-head">
         <div><h1>Release watcher</h1><p>New releases of your dependencies, and the capability cards an upgrade would unlock.</p></div>
         <div className="actions"><button className="btn" onClick={load}><RefreshCw size={14} />Check PyPI</button></div>

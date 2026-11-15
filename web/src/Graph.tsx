@@ -27,9 +27,9 @@ function CWNode({ data }: NodeProps<Node<CWData>>) {
   const s = KIND_STYLE[data.kind] ?? KIND_STYLE.component;
   const horiz = data.dir === "LR";
   return (
-    <div className={`cw-node ${data.selected ? "selected" : ""}`} style={{ borderColor: data.selected ? undefined : `color-mix(in srgb, ${s.color} 45%, var(--border))` }}>
+    <div className={`cw-node ${data.selected ? "selected" : ""}`}>
       <Handle type="target" position={horiz ? Position.Left : Position.Top} style={{ opacity: 0 }} />
-      <div className="k" style={{ color: s.color }}><span className="dot" />{s.label}</div>
+      <div className="k"><span className="dot" style={{ background: s.color }} />{s.label}</div>
       <div className="l">{data.label}</div>
       {data.tech && <div className="tech">{data.tech}</div>}
       {data.detail && !data.tech && <div className="d">{data.detail}</div>}
@@ -71,7 +71,7 @@ function Inner({ nodes, edges, selected, onSelect, overlay, dir, minimap }: Prop
       id: `e${i}-${e.source}-${e.target}`, source: e.source, target: e.target, label: e.label, type: "smoothstep",
       animated: !!active,
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: active ? "var(--accent)" : "var(--border-strong)" },
-      style: { stroke: active ? "var(--accent)" : "var(--border-strong)", strokeWidth: active ? 2 : 1.4 },
+      style: { stroke: active ? "var(--accent)" : "var(--border-strong)", strokeWidth: active ? 1.8 : 1.2 },
       labelBgPadding: [6, 3] as [number, number], labelBgBorderRadius: 4,
     };
   }), [edges, selected]);
@@ -82,9 +82,9 @@ function Inner({ nodes, edges, selected, onSelect, overlay, dir, minimap }: Prop
       onNodeClick={(_, n) => onSelect?.(n.id)} onPaneClick={() => onSelect?.(null)}
       nodesConnectable={false} proOptions={{ hideAttribution: true }}
     >
-      <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="var(--border-strong)" />
+      <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="var(--border-strong)" />
       <Controls showInteractive={false} position="bottom-left" />
-      {(minimap ?? nodes.length > 10) && <MiniMap pannable zoomable position="bottom-right" nodeColor={(n) => (KIND_STYLE[(n.data as unknown as CWData).kind] ?? KIND_STYLE.component).color} maskColor="rgba(0,0,0,0.25)" />}
+      {(minimap ?? nodes.length > 10) && <MiniMap pannable zoomable position="bottom-right" nodeColor={(n) => (KIND_STYLE[(n.data as unknown as CWData).kind] ?? KIND_STYLE.component).color} maskColor="color-mix(in oklab, var(--bg) 60%, transparent)" />}
     </ReactFlow>
   );
 }

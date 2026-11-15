@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BookOpen, Boxes, Compass, FolderOpen, GitPullRequest, LayoutDashboard, MessageSquareCode, Moon, Package,
+  BookOpen, Compass, FolderOpen, GitPullRequest, LayoutDashboard, MessageSquareCode, Moon, Package,
   PenTool, Play, Settings as SettingsIcon, Sun, X,
 } from "lucide-react";
 import { api, ReviewPayload, WorkspaceInfo } from "./api";
@@ -159,8 +159,8 @@ export default function App() {
       <div className="shell">
         <aside className="sidebar">
           <div className="brand">
-            <div className="brand-mark"><Boxes size={17} /></div>
-            <div><div className="brand-name">Codewright</div><div className="brand-sub">Review · Map · Design</div></div>
+            <span className="mark" aria-hidden="true" />
+            <div className="brand-name">Codewright</div>
           </div>
           <div className="nav-label">Repository</div>
           <div className="row" style={{ padding: "0 4px 6px" }}>
@@ -183,10 +183,10 @@ export default function App() {
             </button>
           ))}
           <div className="sidebar-foot">
-            <button className="btn ghost" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+            <button className="btn ghost" style={{ justifyContent: "flex-start" }} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
               {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}{theme === "dark" ? "Light theme" : "Dark theme"}
             </button>
-            <div className="faint" style={{ fontSize: 11.5, padding: "0 4px" }}>Suggests only. Humans decide; nothing is merged automatically.</div>
+            <div className="note">Codewright suggests. You decide what merges.</div>
           </div>
         </aside>
         <div className="main">
@@ -197,7 +197,7 @@ export default function App() {
             </div>
             <div className="spacer" />
             {data && (
-              <span className="faint" style={{ fontSize: 12.5 }}>
+              <span className="status">
                 {data.running ? <span className="row"><Spinner size={13} /> Reviewing…</span> : `Last review ${timeAgo(data.last_run)}`}
               </span>
             )}

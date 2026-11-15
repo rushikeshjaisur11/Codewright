@@ -12,7 +12,7 @@ export default function Knowledge() {
   const groups = useMemo(() => list.reduce<Record<string, Card[]>>((a, c) => ({ ...a, [c.intent]: [...(a[c.intent] ?? []), c] }), {}), [list]);
 
   return (
-    <div>
+    <div className="page">
       <div className="page-head">
         <div><h1>Knowledge base</h1><p>Capability cards: what each library version offers for each intent, with gain, risk, “when not to” and sources.</p></div>
         <div className="actions">

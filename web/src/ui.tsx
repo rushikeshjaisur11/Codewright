@@ -50,7 +50,7 @@ export function Stat({ label, value, sub, icon, meter, color }: {
   label: string; value: ReactNode; sub?: ReactNode; icon?: ReactNode; meter?: number | null; color?: string;
 }) {
   return (
-    <div className="card stat">
+    <div className="stat">
       <div className="label">{icon}{label}</div>
       <div className="value" style={color ? { color } : undefined}>{value}</div>
       {sub && <div className="sub">{sub}</div>}
@@ -180,7 +180,7 @@ export function DiffView({ patch }: { patch: string }) {
   const file = /^\+\+\+ b\/(.*)$/m.exec(patch)?.[1];
   return (
     <div className="code">
-      {file && <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--border)", color: "var(--text-2)" }}>{file}</div>}
+      {file && <div className="code-head">{file}</div>}
       <div style={{ padding: "6px 0" }}>
         {rows.map((r, i) => (
           <div key={i} className={`code-line ${r.cls}`}><span className="ln">{r.ln}</span><span className="tx">{r.tx || " "}</span></div>
@@ -191,19 +191,19 @@ export function DiffView({ patch }: { patch: string }) {
 }
 
 export const KIND_STYLE: Record<string, { color: string; soft: string; label: string }> = {
-  component: { color: "var(--accent)", soft: "var(--accent-soft)", label: "Component" },
-  module: { color: "var(--accent)", soft: "var(--accent-soft)", label: "Module" },
-  service: { color: "var(--accent)", soft: "var(--accent-soft)", label: "Service" },
-  worker: { color: "var(--violet)", soft: "var(--violet-soft)", label: "Worker" },
-  function: { color: "var(--teal)", soft: "var(--teal-soft)", label: "Function" },
+  component: { color: "var(--text-2)", soft: "var(--panel-2)", label: "Component" },
+  module: { color: "var(--text-2)", soft: "var(--panel-2)", label: "Module" },
+  service: { color: "var(--text-2)", soft: "var(--panel-2)", label: "Service" },
+  worker: { color: "var(--teal)", soft: "var(--teal-soft)", label: "Worker" },
+  function: { color: "var(--text-2)", soft: "var(--panel-2)", label: "Function" },
   entry: { color: "var(--green)", soft: "var(--green-soft)", label: "Entry point" },
-  database: { color: "var(--blue)", soft: "var(--blue-soft)", label: "Database" },
-  vector: { color: "var(--blue)", soft: "var(--blue-soft)", label: "Vector index" },
+  database: { color: "var(--accent)", soft: "var(--accent-soft)", label: "Database" },
+  vector: { color: "var(--accent)", soft: "var(--accent-soft)", label: "Vector index" },
   cache: { color: "var(--red)", soft: "var(--red-soft)", label: "Cache" },
   queue: { color: "var(--amber)", soft: "var(--amber-soft)", label: "Queue" },
   scheduler: { color: "var(--amber)", soft: "var(--amber-soft)", label: "Scheduler" },
   http: { color: "var(--text-2)", soft: "var(--panel-2)", label: "External API" },
-  llm: { color: "var(--violet)", soft: "var(--violet-soft)", label: "LLM" },
+  llm: { color: "var(--rose)", soft: "var(--rose-soft)", label: "LLM" },
   ingress: { color: "var(--green)", soft: "var(--green-soft)", label: "Clients" },
   storage: { color: "var(--teal)", soft: "var(--teal-soft)", label: "Storage" },
   cloud: { color: "var(--amber)", soft: "var(--amber-soft)", label: "Cloud" },
@@ -220,4 +220,10 @@ export function timeAgo(t: number | null) {
   if (s < 3600) return `${Math.round(s / 60)} min ago`;
   if (s < 86400) return `${Math.round(s / 3600)} h ago`;
   return `${Math.round(s / 86400)} d ago`;
+}
+
+/** Renders `backtick` spans in card and finding text as inline code. */
+export function Inline({ text }: { text: string }) {
+  const parts = text.split(/(`[^`]+`)/g);
+  return <>{parts.map((p, i) => (p.length > 2 && p.startsWith("`") && p.endsWith("`") ? <code key={i}>{p.slice(1, -1)}</code> : p))}</>;
 }

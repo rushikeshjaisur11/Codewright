@@ -61,7 +61,7 @@ export default function MapPage() {
     <div className="map-wrap">
       <div className="map-canvas">
         <div className="map-toolbar">
-          <div className="card" style={{ padding: 4, display: "flex", gap: 6, alignItems: "center", boxShadow: "var(--shadow)" }}>
+          <div className="toolbar-card">
             <Tabs<Level> value={level} onChange={(l) => { setLevel(l); setTarget(""); }} options={[
               { value: "system", label: <><Compass size={13} />System</> },
               { value: "module", label: <><FileCode2 size={13} />Modules</> },
@@ -80,10 +80,10 @@ export default function MapPage() {
               ) : <span className="faint" style={{ padding: "0 8px" }}>No entry points found</span>
             )}
           </div>
-          <div className="card row" style={{ padding: "6px 10px", boxShadow: "var(--shadow)", fontSize: 12.5 }}>
+          <div className="toolbar-card text">
             <span className="faint">Overlay</span>
             {(["findings", "hotspots", "untested"] as const).map((k) => (
-              <label key={k} className="row" style={{ gap: 4, cursor: "pointer" }}>
+              <label key={k} className="check">
                 <input type="checkbox" checked={overlay[k]} onChange={(e) => setOverlay({ ...overlay, [k]: e.target.checked })} />{k}
               </label>
             ))}
