@@ -93,6 +93,20 @@ def test_starter_pyproject_is_valid_and_tests_with_httpx2(tmp_path):
     assert not any(d.startswith(("httpx2", "pytest")) for d in data["project"]["dependencies"])
     dep_lines = [ln for ln in raw.splitlines() if ln.strip().startswith('"') and "==" in ln and "dev" not in ln]
     assert {len(ln) - len(ln.lstrip()) for ln in dep_lines} == {4}  # one consistent indent
+    assert data["tool"]["setuptools"]["packages"]["find"]["include"] == ["my_service*"]  # not migrations/
+    names = {n.split("/", 1)[1] for n in z.namelist()}
+    assert {
+        "alembic.ini",
+        "migrations/env.py",
+        "migrations/versions/0001_initial.py",
+        "my_service/models.py",
+        "tests/conftest.py",
+        "tests/test_api.py",
+        "tests/test_migrations.py",
+    } <= names
+    for n in z.namelist():
+        if n.endswith(".py"):
+            compile(z.read(n), n, "exec")
 
 
 # ---------------------------------------------------------------- wall-clock timing must stay on the clock
