@@ -73,3 +73,25 @@ def test_search_knowledge_mcp_tool(tmp_path):
     hits = search_knowledge("pause a workflow for human approval", path=str(adk_repo(tmp_path, "2.14.1")))
     assert hits[0]["id"] == "adk.ref.workflow-human-input"
     assert hits[0]["fit"]["status"] == "fits" and hits[0]["sources"] and hits[0]["snippet"]
+
+
+def test_chat_adds_relevant_knowledge_and_leaves_code_questions_alone(tmp_path):
+    from codewright.service import Service
+
+    w = next(iter(Service([str(Path(__file__).parent / "fixtures" / "sample_app")]).workspaces.values()))
+    retry = w.ask("should I retry failed model calls?")
+    assert {k["id"] for k in retry["knowledge"]} >= {"adk.gemini-retry-options"}
+    assert "\n\n**From the knowledge base**" in retry["answer"] and "[K1]" in retry["answer"]
+    assert all(k["sources"] and k["fit"]["status"] == "fits" for k in retry["knowledge"])
+    assert w.ask("how are rates fetched?")["knowledge"] == []  # a code question: no cards
+
+
+def test_extras_card_does_not_fit_when_the_package_is_installed(tmp_path):
+    lock = (
+        'version = 1\n\n[[package]]\nname = "google-adk"\nversion = "2.14.1"\n\n'
+        '[[package]]\nname = "sqlalchemy"\nversion = "2.1.8"\n'
+    )
+    (tmp_path / "uv.lock").write_text(lock)
+    by_id = {c.id: c for c in cards.load()}
+    fit = knowledge.fit(by_id["adk.extra-db"], stack.discover(tmp_path))
+    assert fit == {"status": "unused", "detail": "sqlalchemy is already installed"}

@@ -94,7 +94,11 @@ export interface ModulePage {
 }
 
 export interface Citation { n: number; id: string; file: string; line: number; end: number; title: string; score: number }
-export interface ChatAnswer { answer: string; citations: Citation[]; mode: "llm" | "extractive" }
+export interface KnowledgeCite {
+  n: string; id: string; title: string; symbol: string; library: string; versions: string;
+  suggestion: string; when_not: string; sources: string[]; fit: { status: FitStatus; detail: string };
+}
+export interface ChatAnswer { answer: string; citations: Citation[]; knowledge?: KnowledgeCite[]; mode: "llm" | "extractive" }
 
 export interface Release {
   name: string; installed: string | null; latest: string | null; released?: string;

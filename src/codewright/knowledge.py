@@ -34,6 +34,9 @@ def fit(card: Card, stack: Stack | None) -> dict:
     lib = card.library or ""
     if not stack.has(lib):
         return {"status": "unused", "detail": f"{lib} is not a dependency"}
+    present = [p for p in card.unless_installed if stack.has(p)]
+    if present:  # e.g. "install google-adk[db]" when SQLAlchemy is already locked
+        return {"status": "unused", "detail": f"{', '.join(present)} is already installed"}
     installed = stack.version_of(lib)
     if installed is None:
         return {"status": "unknown", "detail": f"{lib} is declared but not locked"}
@@ -87,6 +90,7 @@ def search(
     if only_fitting and stack is not None:
         pool = [c for c in pool if fit(c, stack)["status"] == "fits"]
     q = tokens(query)
+    score_of: dict[int, float] = {}
     if not q:
         ranked = pool
     else:
@@ -106,7 +110,13 @@ def search(
                 scores.append((s, c))
         scores.sort(key=lambda x: -x[0])
         ranked = [c for _, c in scores]
+        score_of = {id(c): s for s, c in scores}
     if stack is not None:  # what the repo can use now first, then what an upgrade unlocks
         order = {"fits": 0, "upgrade": 1, "unknown": 2, "older": 3, "unused": 4}
         ranked = sorted(ranked, key=lambda c: order[fit(c, stack)["status"]])
-    return [card_dict(c, stack) for c in (ranked if limit is None else ranked[:limit])]
+    out = []
+    for c in ranked if limit is None else ranked[:limit]:
+        d = card_dict(c, stack)
+        d["score"] = round(score_of.get(id(c), 0.0), 2)
+        out.append(d)
+    return out

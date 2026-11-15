@@ -91,7 +91,10 @@ class Workspace:
     def ask(self, question: str, history: list[dict] | None = None) -> dict:
         self.ensure()
         cfg = LLMConfig.load(self.root)
-        return answer(self.index, question, history, cfg if llm_status(cfg)["available"] else None)
+        from . import cards as card_store
+
+        llm = cfg if llm_status(cfg)["available"] else None
+        return answer(self.index, question, history, llm, cards=card_store.load(), stack=self.result.stack)
 
     def source(self, path: str) -> dict:
         p = (self.root / path).resolve()
