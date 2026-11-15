@@ -80,6 +80,7 @@ on: pull_request
 permissions:
   contents: read
   security-events: write   # to upload code-scanning alerts
+  actions: read            # needed by the upload in private repositories
 jobs:
   codewright:
     runs-on: ubuntu-latest
