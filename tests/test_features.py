@@ -348,7 +348,7 @@ def test_web_api(tmp_path):
     from codewright.server import create_app
 
     repo = write_repo(tmp_path, {"m.py": ASYNC_SRC, "requirements.txt": "pydantic==2.9.0\n"})
-    client = TestClient(create_app([str(repo)]))
+    client = TestClient(create_app([str(repo)]), base_url="http://localhost")
     wid = client.get("/api/status").json()["workspaces"][0]["id"]
     client.post(f"/api/w/{wid}/review", json={"proof": False, "base": ""})
     for _ in range(100):
@@ -424,7 +424,7 @@ def test_switcher_api_recent_and_folders(tmp_path):
     b = write_repo(tmp_path / "b", {"requirements.txt": "", "m.py": "y = 2\n"})
     (b / ".git").mkdir()
     (b / ".git" / "HEAD").write_text("ref: refs/heads/feature/x\n")
-    client = TestClient(create_app([str(a)]))
+    client = TestClient(create_app([str(a)]), base_url="http://localhost")
 
     listing = client.get("/api/fs", params={"path": str(tmp_path)}).json()
     assert {d["name"]: (d["git"], d["python"]) for d in listing["dirs"]} == {"a": (False, True), "b": (True, True)}
@@ -457,3 +457,26 @@ def test_imports_resolve_through_src_and_namespace_layouts(tmp_path):
     m = ArchMap(graph.build(tmp_path))
     edges = {(e.source, e.target) for e in m.system().edges}
     assert ("c:app", "c:core") in edges
+
+
+def test_server_refuses_other_hosts_and_cross_origin_requests(tmp_path):
+    """DNS rebinding sends a hostile Host; a page on another site sends its Origin. Both are refused."""
+    from fastapi.testclient import TestClient
+
+    from codewright.server import create_app
+
+    app = create_app([str(tmp_path)])
+    assert TestClient(app, base_url="http://localhost").get("/api/status").status_code == 200
+    assert TestClient(app, base_url="http://127.0.0.1:8765").get("/api/status").status_code == 200
+    assert TestClient(app, base_url="http://evil.example").get("/api/status").status_code == 400
+    local = TestClient(app, base_url="http://localhost")
+    assert (
+        local.post(
+            "/api/workspaces", json={"path": str(tmp_path)}, headers={"Origin": "https://evil.example"}
+        ).status_code
+        == 403
+    )
+    assert local.get("/api/status", headers={"Origin": "http://localhost:5173"}).status_code == 200  # vite dev server
+    # Binding elsewhere on purpose: the names given are accepted too.
+    lan = create_app([str(tmp_path)], allowed_hosts=["localhost", "devbox.lan"])
+    assert TestClient(lan, base_url="http://devbox.lan").get("/api/status").status_code == 200

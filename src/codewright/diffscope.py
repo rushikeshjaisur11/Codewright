@@ -20,7 +20,8 @@ def changed_lines(root: str | Path, base: str) -> dict[str, set[int]]:
         text=True,
     )
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or f"git diff {base} failed")
+        detail = proc.stderr.strip().removeprefix("fatal: ")
+        raise RuntimeError(f"can't compare with git ref {base!r}: {detail or 'git diff failed'}")
     out: dict[str, set[int]] = {}
     current = None
     for line in proc.stdout.splitlines():

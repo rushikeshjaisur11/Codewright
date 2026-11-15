@@ -6,7 +6,10 @@ one server can answer for any repo on the machine.
 
 from __future__ import annotations
 
+import functools
+
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from .report import to_markdown
 from .service import Service
@@ -23,10 +26,29 @@ svc = Service()
 
 
 def _ws(path: str):
-    return svc.open(path)[1]
+    try:
+        return svc.open(path)[1]
+    except FileNotFoundError:
+        raise ToolError(f"not a folder: {path}. Pass the repository's absolute path.") from None
 
 
-@server.tool()
+def _tool(fn):
+    """Register a tool whose anticipated failures reach the agent as a message, not "Error executing tool"."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except ToolError:
+            raise
+        except (FileNotFoundError, KeyError, ValueError, RuntimeError) as exc:
+            msg = exc.args[0] if isinstance(exc, KeyError) and exc.args else str(exc)
+            raise ToolError(f"{type(exc).__name__}: {msg}") from None
+
+    return server.tool()(wrapper)
+
+
+@_tool
 def review(path: str, base: str = "", proof: bool = False, top: int = 10) -> dict:
     """Ranked 'instead of X, use Y' findings for the repo at `path`.
 
@@ -42,14 +64,14 @@ def review(path: str, base: str = "", proof: bool = False, top: int = 10) -> dic
     }
 
 
-@server.tool()
+@_tool
 def review_markdown(path: str, base: str = "") -> str:
     """The same review as a Markdown report, ready to paste into a PR or an issue."""
     ws = _ws(path)
     return to_markdown(ws.run_review(proof=False, base=base or None))
 
 
-@server.tool()
+@_tool
 def explain_finding(path: str, finding_id: str) -> dict:
     """Full detail for one finding: evidence, suggested API and version, gain, risk, when-not, patch, sources."""
     f = _ws(path).finding(finding_id)
@@ -58,51 +80,46 @@ def explain_finding(path: str, finding_id: str) -> dict:
     return f.to_dict()
 
 
-@server.tool()
+@_tool
 def record_feedback(path: str, finding_id: str, status: str, reason: str = "") -> dict:
     """Mark a finding accepted, rejected or muted (tunes future ranking). status: accepted|rejected|muted|clear."""
     return _ws(path).feedback(finding_id, status, reason)
 
 
-@server.tool()
+@_tool
 def architecture_map(path: str, level: str = "system", target: str = "") -> dict:
     """Architecture diagram data. level: system | module (target = component) | flow (target = entry point id).
 
     Returns nodes (with files and lines), edges, and Mermaid text.
     """
     m = _ws(path).amap()
-    if level == "module":
-        view = m.module(target or m.components()[0])
-    elif level == "flow":
-        eps = m.entry_points()
-        if not eps:
-            return {"error": "no entry points found"}
-        view = m.flow(target or eps[0]["id"])
-    else:
-        view = m.system()
+    try:
+        view = m.view(level, target)
+    except ValueError as exc:
+        raise ToolError(str(exc)) from None
     return {**view.to_dict(), "mermaid": view.mermaid(), "entry_points": m.entry_points(), "components": m.components()}
 
 
-@server.tool()
+@_tool
 def ask_code(path: str, question: str) -> dict:
     """Answer a question about the code, with citations to files and lines."""
     return _ws(path).ask(question)
 
 
-@server.tool()
+@_tool
 def check_drift(path: str) -> dict:
     """Compare the intended architecture (.codewright/design.json from Design mode) with the code."""
     d = _ws(path).drift()
     return d or {"error": "no intended architecture saved; create one in Design mode"}
 
 
-@server.tool()
+@_tool
 def dependency_releases(path: str) -> list[dict]:
     """Newer releases of the repo's dependencies, and which capability cards an upgrade would unlock."""
     return _ws(path).releases()
 
 
-@server.tool()
+@_tool
 def search_knowledge(query: str, path: str = "", library: str = "", limit: int = 8) -> list[dict]:
     """Search Codewright's knowledge base: what each library version offers, with when-not-to and sources.
 

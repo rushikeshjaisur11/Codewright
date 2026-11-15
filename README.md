@@ -26,6 +26,8 @@ uv venv && uv pip install -e ".[dev]"      # add [llm] for model-written chat an
 
 Everything runs locally and the code is never uploaded. A model is optional (see [Models](#models)).
 
+The web app only answers requests addressed to `localhost`, and refuses requests sent from other websites, so a page you have open can't read your code through it. To reach it from another machine, bind it with `--host 0.0.0.0` and name each host it's reached by with `--allow-host`.
+
 ## Web app
 
 | Page | What it does |

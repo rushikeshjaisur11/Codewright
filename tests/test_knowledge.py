@@ -54,7 +54,7 @@ def test_cards_api_returns_fit_for_a_workspace(tmp_path):
     from codewright.server import create_app
 
     repo = adk_repo(tmp_path, "2.14.1")
-    client = TestClient(create_app([str(repo)]))
+    client = TestClient(create_app([str(repo)]), base_url="http://localhost")
     wid = client.get("/api/workspaces").json()[0]["id"]
     rows = client.get("/api/cards", params={"workspace": wid}).json()
     by_id = {r["id"]: r for r in rows}

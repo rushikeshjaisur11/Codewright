@@ -8,10 +8,12 @@ import subprocess
 import threading
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, design
 from . import cards as card_store
@@ -25,10 +27,33 @@ from .service import Service, Workspace, browse, forget, git_branch, load_recent
 STATIC = Path(__file__).parent / "web"
 
 
-def create_app(roots: list[str] | None = None) -> FastAPI:
+def _origin_host(origin: str) -> str:
+    host = urlsplit(origin).hostname or ""
+    return f"[{host}]" if ":" in host else host
+
+
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1", "[::1]")
+
+
+def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None = None) -> FastAPI:
+    """The web app. Only requests addressed to `allowed_hosts` (default: loopback names) are served.
+
+    The server can read source files, browse folders and apply patches, so a page on another
+    site must not reach it: the Host check stops DNS rebinding (a hostile domain re-pointed at
+    127.0.0.1), and the Origin check stops cross-site requests from a page the user has open.
+    """
     svc = Service(roots or [])
     app = FastAPI(title="Codewright", version=__version__)
     app.state.svc = svc
+    hosts = list(allowed_hosts or LOOPBACK_HOSTS)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
+
+    @app.middleware("http")
+    async def same_origin_only(request: Request, call_next):
+        origin = request.headers.get("origin")
+        if origin and "*" not in hosts and _origin_host(origin) not in hosts:
+            return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
+        return await call_next(request)
 
     def ws(wid: str) -> Workspace:
         try:
@@ -231,20 +256,12 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
     @app.get("/api/w/{wid}/map/{level}")
     def map_view(wid: str, level: str, target: str = ""):
         m = ws(wid).amap()
-        if level == "system":
-            view = m.system()
-        elif level == "module":
-            comps = m.components()
-            if not comps:
-                raise HTTPException(404, "no components") from None
-            view = m.module(target or comps[0])
-        elif level == "flow":
-            eps = m.entry_points()
-            if not eps:
-                raise HTTPException(404, "no entry points found") from None
-            view = m.flow(target or eps[0]["id"])
-        else:
-            raise HTTPException(400, "level must be system, module or flow") from None
+        if level not in ("system", "module", "flow"):
+            raise HTTPException(400, "level must be system, module or flow")
+        try:
+            view = m.view(level, target)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
         return {**view.to_dict(), "mermaid": view.mermaid()}
 
     @app.get("/api/w/{wid}/module")

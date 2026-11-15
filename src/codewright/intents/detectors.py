@@ -91,6 +91,13 @@ def snippet(pf: ParsedFile, start: int, end: int, limit: int = 12) -> str:
 
 
 def module_level_names(pf: ParsedFile) -> set[str]:
+    """Names assigned at module scope. Computed once per file: detectors call it for every function."""
+    if "module_level_names" not in pf.cache:
+        pf.cache["module_level_names"] = _module_level_names(pf)
+    return pf.cache["module_level_names"]  # type: ignore[return-value]
+
+
+def _module_level_names(pf: ParsedFile) -> set[str]:
     names = set()
     for child in pf.root.children:
         if child.type == "expression_statement" and child.named_children:

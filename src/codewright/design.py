@@ -360,6 +360,7 @@ FALLBACK_VERSIONS = {
     "google-genai": "2.34.0",  # newest google-adk 2.14.1 accepts (<3)
     "pgvector": "0.5.1",
     "pytest": "9.2.0",
+    "httpx2": "2.16.0",
     "alembic": "1.20.1",
     "litellm": "1.109.1",
     "boto3": "1.44.3",
@@ -378,6 +379,7 @@ def libraries(s: Session) -> list[str]:
         "httpx",
         "tenacity",
         "pytest",
+        "httpx2",  # Starlette's TestClient prefers it; plain httpx is deprecated there
     ]
     w = s.workload()
     cap_needs_cache = _needs_cache(s, capacity(s))
@@ -1051,25 +1053,19 @@ def starter_repo(s: Session, proposal: dict, cid: str) -> bytes:
     name = re.sub(r"[^a-z0-9-]+", "-", str(s.value("name")).lower()).strip("-") or "my-service"
     pkg = name.replace("-", "_")
     ids = {x.id for x in cand.components}
-    deps = [f"{lib}=={v[lib]}" if v.get(lib) else lib for lib in v if lib != "pytest"]
+    dev_libs = ("pytest", "httpx2")
+    deps = [f"{lib}=={v[lib]}" if v.get(lib) else lib for lib in v if lib not in dev_libs]
+    dev = [f"{lib}=={v.get(lib) or FALLBACK_VERSIONS[lib]}" for lib in dev_libs]
     deps = [d.replace("psycopg==", "psycopg[binary]==") if d.startswith("psycopg==") else d for d in deps]
     deps = [d.replace("uvicorn==", "uvicorn[standard]==") if d.startswith("uvicorn==") else d for d in deps]
     files: dict[str, str] = {}
-    files["pyproject.toml"] = textwrap.dedent(f"""\
-        [project]
-        name = "{name}"
-        version = "0.1.0"
-        requires-python = ">=3.12"
-        dependencies = [
-        {chr(10).join(f'    "{d}",' for d in deps)}
-        ]
-
-        [project.optional-dependencies]
-        dev = ["pytest=={v.get("pytest", FALLBACK_VERSIONS["pytest"])}"]
-
-        [tool.pytest.ini_options]
-        testpaths = ["tests"]
-        """)
+    dep_lines = "\n".join(f'    "{d}",' for d in deps)  # outside dedent: it would skew the indentation
+    files["pyproject.toml"] = (
+        f'[project]\nname = "{name}"\nversion = "0.1.0"\nrequires-python = ">=3.12"\n'
+        f"dependencies = [\n{dep_lines}\n]\n\n"
+        f"[project.optional-dependencies]\ndev = [{', '.join(repr(d).replace(chr(39), chr(34)) for d in dev)}]\n\n"
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+    )
     files[f"{pkg}/__init__.py"] = ""
     files[f"{pkg}/settings.py"] = textwrap.dedent("""\
         from pydantic_settings import BaseSettings, SettingsConfigDict

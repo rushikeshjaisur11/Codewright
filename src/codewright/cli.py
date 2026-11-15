@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from enum import Enum
 from pathlib import Path
@@ -24,6 +25,16 @@ class Format(str, Enum):
     pr = "pr"
 
 
+@contextlib.contextmanager
+def _clean_errors():
+    """Expected failures (a bad git ref, a missing folder) print one line and exit 2, not a traceback."""
+    try:
+        yield
+    except (RuntimeError, FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(2) from None
+
+
 @app.command()
 def review(
     path: Path = typer.Argument(Path("."), exists=True, file_okay=False, help="Repository to review."),
@@ -42,7 +53,7 @@ def review(
     from .engine import review as run_review
     from .report import print_terminal, to_json, to_markdown, to_pr_comment
 
-    with console.status("Scanning..."):
+    with console.status("Scanning..."), _clean_errors():
         result = run_review(
             path,
             run_proof=proof,
@@ -110,14 +121,23 @@ def serve(
     path: Path = typer.Argument(Path("."), exists=True, file_okay=False, help="Repository to open first."),
     host: str = typer.Option("127.0.0.1", help="Interface to bind. Keep 127.0.0.1 unless you trust the network."),
     port: int = typer.Option(8765, help="Port."),
+    allow_host: list[str] = typer.Option(
+        [], "--allow-host", help="Host name the browser may use to reach the app (repeatable). Default: localhost only."
+    ),
 ) -> None:
     """Start the web app: Review, Map, Design and code chat in the browser."""
     import uvicorn
 
-    from .server import create_app
+    from .server import LOOPBACK_HOSTS, create_app
 
+    hosts = list(LOOPBACK_HOSTS) + list(allow_host)
+    if host not in ("127.0.0.1", "localhost", "::1") and not allow_host:
+        console.print(
+            f"[yellow]Bound to {host}: only requests addressed to localhost are served. "
+            "Pass --allow-host <name> for each name other machines use to reach it.[/]"
+        )
     console.print(f"Codewright on [bold]http://{host}:{port}[/]  (repo: {path.resolve()})")
-    uvicorn.run(create_app([str(path)]), host=host, port=port, log_level="warning")
+    uvicorn.run(create_app([str(path)], allowed_hosts=hosts), host=host, port=port, log_level="warning")
 
 
 @app.command()
@@ -186,16 +206,11 @@ def map_cmd(
     from .archmap import ArchMap
 
     m = ArchMap(graph_mod.build(path))
-    if level == "module":
-        view = m.module(target or m.components()[0])
-    elif level == "flow":
-        eps = m.entry_points()
-        if not eps:
-            console.print("No entry points found.")
-            raise typer.Exit(1)
-        view = m.flow(target or eps[0]["id"])
-    else:
-        view = m.system()
+    try:
+        view = m.view(level, target)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1) from None
     print(view.mermaid())
 
 
