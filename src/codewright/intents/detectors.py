@@ -21,6 +21,10 @@ from ..models import Function, IntentMatch
 Detector = Callable[[ParsedFile, Function, Node, CodeGraph], list[IntentMatch]]
 ModuleDetector = Callable[[ParsedFile], list[IntentMatch]]
 DETECTORS: dict[str, Detector] = {}
+# Words a function's source must contain for a detector to possibly match (any one of them).
+# Functions without them are skipped before any tree walking: most functions never mention
+# sleep, utcnow or os.system, and on large repos this skips the large majority of the work.
+TRIGGERS: dict[str, tuple[bytes, ...]] = {}
 MODULE_DETECTORS: dict[str, ModuleDetector] = {}  # run once per file, for code at module scope
 
 SLEEP_CALLS = {"time.sleep", "asyncio.sleep", "trio.sleep", "anyio.sleep"}
@@ -43,9 +47,14 @@ ROUTE_SUFFIXES = (".get", ".post", ".put", ".patch", ".delete", ".api_route", ".
 ADK_DEPRECATED = ("SequentialAgent", "ParallelAgent", "LoopAgent")
 
 
-def detector(intent: str):
+def detector(intent: str, triggers: tuple[str, ...] = ()):
+    """Register a function-level detector. `triggers` must be necessary: a function whose source
+    contains none of them (nor a name imported from something containing them) can't match."""
+
     def wrap(fn: Detector) -> Detector:
         DETECTORS[intent] = fn
+        if triggers:
+            TRIGGERS[intent] = tuple(t.encode() for t in triggers)
         return fn
 
     return wrap
@@ -112,7 +121,7 @@ def _module_level_names(pf: ParsedFile) -> set[str]:
 # --------------------------------------------------------------------------- retry
 
 
-@detector("retry")
+@detector("retry", triggers=("sleep",))
 def detect_retry(pf, fn, node, graph):
     body = node.child_by_field_name("body")
     if body is None:
@@ -146,7 +155,7 @@ def detect_retry(pf, fn, node, graph):
 # --------------------------------------------------------------------------- memo cache
 
 
-@detector("memo-cache")
+@detector("memo-cache", triggers=(" in ",))
 def detect_memo_cache(pf, fn, node, graph):
     """`if key in CACHE: return CACHE[key]` ... `CACHE[key] = value` on a module-level dict."""
     body = node.child_by_field_name("body")
@@ -198,7 +207,7 @@ def detect_memo_cache(pf, fn, node, graph):
 # --------------------------------------------------------------------------- polling queue
 
 
-@detector("poll-queue")
+@detector("poll-queue", triggers=("sleep",))
 def detect_poll_queue(pf, fn, node, graph):
     body = node.child_by_field_name("body")
     if body is None:
@@ -345,16 +354,38 @@ def is_test_file(path: str) -> bool:
     )
 
 
+def _file_triggers(pf: ParsedFile) -> dict[str, tuple[bytes, ...]]:
+    """Each detector's trigger words, plus local names this file imports from something matching them
+    (`from time import sleep as pause` makes `pause` a trigger for the sleep detectors)."""
+    out = {}
+    for intent, words in TRIGGERS.items():
+        aliases = tuple(
+            alias.encode()
+            for alias, target in pf.module.imports.items()
+            if any(w.decode() in target for w in words) and alias.encode() not in words
+        )
+        out[intent] = words + aliases
+    return out
+
+
 def detect(graph: CodeGraph, only: set[str] | None = None) -> list[IntentMatch]:
     matches: list[IntentMatch] = []
+    file_triggers: dict[str, dict[str, tuple[bytes, ...]]] = {}
     for pf, fn in graph.functions():
         if is_test_file(pf.path):
             continue
         node = pf.nodes.get(fn.qualname)
         if node is None:
             continue
+        if pf.path not in file_triggers:
+            file_triggers[pf.path] = _file_triggers(pf)
+        triggers = file_triggers[pf.path]
+        source = pf.source[node.start_byte : node.end_byte]
         for intent, det in DETECTORS.items():
             if only and intent not in only:
+                continue
+            words = triggers.get(intent)
+            if words is not None and not any(w in source for w in words):
                 continue
             matches.extend(det(pf, fn, node, graph))
     for pf in graph.files.values():

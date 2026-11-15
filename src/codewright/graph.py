@@ -10,7 +10,7 @@ to matching a method name, and never for names that builtin types already define
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -131,8 +131,30 @@ def iter_python_files(root: Path):
         yield path
 
 
-def parse_file(path: Path, root: Path) -> ParsedFile:
+# Parsed files by absolute path, reused while a file's bytes are unchanged. Long-running hosts
+# (the web app, the MCP server, watch mode) re-review the same repo; only edited files re-parse.
+# Everything cached on a ParsedFile is derived from its own source, so reuse is safe.
+_PARSED: OrderedDict[str, ParsedFile] = OrderedDict()
+PARSE_CACHE_SIZE = 50_000
+
+
+def parse_cached(path: Path, root: Path) -> ParsedFile:
     source = path.read_bytes()
+    key = str(path.resolve())
+    hit = _PARSED.get(key)
+    rel = str(path.relative_to(root))
+    if hit is not None and hit.source == source and hit.path == rel:
+        _PARSED.move_to_end(key)
+        return hit
+    pf = parse_file(path, root, source)
+    _PARSED[key] = pf
+    while len(_PARSED) > PARSE_CACHE_SIZE:
+        _PARSED.popitem(last=False)
+    return pf
+
+
+def parse_file(path: Path, root: Path, source: bytes | None = None) -> ParsedFile:
+    source = path.read_bytes() if source is None else source
     tree = _PARSER.parse(source)
     rel = str(path.relative_to(root))
     module = Module(file=rel)
@@ -252,7 +274,7 @@ def build(root: str | Path) -> CodeGraph:
     graph = CodeGraph(root=str(root))
     for path in iter_python_files(root):
         try:
-            pf = parse_file(path, root)
+            pf = parse_cached(path, root)
         except (OSError, ValueError):
             continue
         graph.files[pf.path] = pf

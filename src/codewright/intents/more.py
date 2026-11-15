@@ -40,7 +40,7 @@ def _in_await(call: Node) -> bool:
 # --------------------------------------------------------------------------- async hygiene
 
 
-@detector("blocking-sleep-in-async")
+@detector("blocking-sleep-in-async", triggers=("sleep",))
 def detect_sync_sleep_in_async(pf, fn, node, graph):
     if not fn.is_async or (body := _body(node)) is None:
         return []
@@ -64,7 +64,7 @@ def detect_sync_sleep_in_async(pf, fn, node, graph):
     ]
 
 
-@detector("blocking-http-in-async")
+@detector("blocking-http-in-async", triggers=("requests", "urlopen"))
 def detect_blocking_http_in_async(pf, fn, node, graph):
     if not fn.is_async or (body := _body(node)) is None:
         return []
@@ -85,7 +85,7 @@ def detect_blocking_http_in_async(pf, fn, node, graph):
 # --------------------------------------------------------------------------- timing
 
 
-@detector("wall-clock-timing")
+@detector("wall-clock-timing", triggers=("time",))
 def detect_wall_clock_timing(pf, fn, node, graph):
     """`start = time.time()` ... `time.time() - start` measures durations with the wall clock.
 
@@ -183,7 +183,7 @@ def _clock_only(body: Node, calls: list[Node]) -> bool:
 # --------------------------------------------------------------------------- deprecated APIs
 
 
-@detector("datetime-utcnow")
+@detector("datetime-utcnow", triggers=("utcnow",))
 def detect_utcnow(pf, fn, node, graph):
     if (body := _body(node)) is None:
         return []
@@ -288,7 +288,7 @@ def detect_on_event(pf, fn, node, graph):
     return []
 
 
-@detector("sqlalchemy-legacy-query")
+@detector("sqlalchemy-legacy-query", triggers=("query",))
 def detect_legacy_query(pf, fn, node, graph):
     if not any(v.startswith("sqlalchemy") for v in pf.module.imports.values()):
         return []
@@ -312,7 +312,7 @@ def detect_legacy_query(pf, fn, node, graph):
 # --------------------------------------------------------------------------- stdlib reinventions
 
 
-@detector("manual-counter")
+@detector("manual-counter", triggers=(" in ",))
 def detect_manual_counter(pf, fn, node, graph):
     """if k in d: d[k] += 1  else: d[k] = 1   ->  collections.Counter"""
     if (body := _body(node)) is None:
@@ -338,7 +338,7 @@ def detect_manual_counter(pf, fn, node, graph):
     return []
 
 
-@detector("manual-defaultdict")
+@detector("manual-defaultdict", triggers=(" not in ",))
 def detect_manual_defaultdict(pf, fn, node, graph):
     """if k not in d: d[k] = []  then d[k].append(v)   ->  collections.defaultdict(list)"""
     if (body := _body(node)) is None:
@@ -365,7 +365,7 @@ def detect_manual_defaultdict(pf, fn, node, graph):
     return []
 
 
-@detector("manual-thread-fanout")
+@detector("manual-thread-fanout", triggers=("Thread",))
 def detect_thread_fanout(pf, fn, node, graph):
     if (body := _body(node)) is None:
         return []
@@ -380,7 +380,7 @@ def detect_thread_fanout(pf, fn, node, graph):
     return []
 
 
-@detector("os-system")
+@detector("os-system", triggers=("system",))
 def detect_os_system(pf, fn, node, graph):
     if (body := _body(node)) is None:
         return []
@@ -392,7 +392,7 @@ def detect_os_system(pf, fn, node, graph):
     return []
 
 
-@detector("string-concat-loop")
+@detector("string-concat-loop", triggers=("+=",))
 def detect_string_concat_loop(pf, fn, node, graph):
     if (body := _body(node)) is None:
         return []

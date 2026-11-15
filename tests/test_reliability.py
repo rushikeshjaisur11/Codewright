@@ -19,7 +19,8 @@ FIXTURE = Path(__file__).parent / "fixtures" / "sample_app"
 
 def test_detection_stays_linear_on_a_file_with_many_functions(tmp_path):
     """module_level_names() used to rescan the whole file per function: 72s for 30k functions."""
-    (tmp_path / "gen.py").write_text("".join(f"def f{i}(x):\n    return x + {i}\n" for i in range(4000)))
+    body = "".join(f"def f{i}(x):\n    if x in D:\n        return D[x]\n    return x + {i}\n" for i in range(4000))
+    (tmp_path / "gen.py").write_text("D = {}\n" + body)  # `if x in D` makes the memo-cache detector run
     g = graph.build(tmp_path)
     t = time.perf_counter()
     detect(g)
@@ -184,3 +185,26 @@ def test_tests_that_call_git_work_in_the_sandbox(tmp_path):
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
     f = next(f for f in review(tmp_path, python=sys.executable, top=None).findings if f.intent == "wall-clock-timing")
     assert f.proof.value == "verified", f.proof_detail
+
+
+# ---------------------------------------------------------------- speed: triggers and the parse cache
+
+
+def test_parse_cache_reuses_unchanged_files_and_reparses_edits(tmp_path):
+    (tmp_path / "a.py").write_text("def f():\n    return 1\n")
+    (tmp_path / "b.py").write_text("def g():\n    return 2\n")
+    first = graph.build(tmp_path)
+    (tmp_path / "b.py").write_text("def g():\n    return 3\n\ndef h():\n    return 4\n")
+    second = graph.build(tmp_path)
+    assert second.files["a.py"] is first.files["a.py"]  # unchanged: reused
+    assert second.files["b.py"] is not first.files["b.py"]
+    assert [fn.name for fn in second.files["b.py"].module.functions] == ["g", "h"]
+
+
+def test_trigger_words_include_names_imported_under_another_name(tmp_path):
+    (tmp_path / "m.py").write_text(
+        "from time import sleep as pause\n\ndef call(fn):\n"
+        "    for attempt in range(3):\n        try:\n            return fn()\n"
+        "        except OSError:\n            pause(1)\n"
+    )
+    assert any(m.intent == "retry" for m in detect(graph.build(tmp_path)))
