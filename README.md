@@ -64,6 +64,7 @@ codewright feedback <finding-id> rejected --reason "not worth the churn"
 codewright stack .                          # what versions it thinks you run
 codewright graph .                          # functions, call edges and entry points
 codewright mcp                              # MCP server on stdio for coding agents
+codewright cards verify --python .venv/bin/python --links   # every card's API exists in the installed version; sources resolve
 ```
 
 ### In CI
@@ -118,6 +119,8 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 | `+=` string building in a loop | `"".join()` | |
 
 Add your own cards: put YAML files in a folder and pass `--cards that/folder`. Each card needs `sources` and a `when_not`, or the critic drops its findings.
+
+`codewright cards verify` checks every card: required fields, a detector for its intent, and examples that compile. With `--python` it also checks each card's API exists in an interpreter that has the library installed, and with `--links` that its sources still resolve. CI runs it weekly against the latest google-adk (`.github/workflows/cards.yml`), so a renamed API or a dead link turns the job red.
 
 ### Google ADK
 

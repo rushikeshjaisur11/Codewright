@@ -41,7 +41,7 @@
         retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         reraise=True,
     )
-    def call_service(...):
+    def call_service(url: str) -> bytes:
         ...
 
 - id: postgres.skip-locked-queue

@@ -244,6 +244,34 @@ def feedback(
     console.print(f"Recorded. Acceptance rate: {'-' if rate is None else f'{rate:.0%}'}")
 
 
+cards_app = typer.Typer(help="Inspect and verify the knowledge base (capability and reference cards).")
+app.add_typer(cards_app, name="cards")
+
+
+@cards_app.command("verify")
+def cards_verify(
+    python: str | None = typer.Option(
+        None, "--python", help="Interpreter with the libraries installed: each card's symbol must exist there."
+    ),
+    library: str = typer.Option("", "--library", help="Only cards for this library (e.g. google-adk)."),
+    links: bool = typer.Option(False, "--links", help="Also check that every source URL resolves."),
+    cards: list[Path] = typer.Option([], "--cards", help="Extra directory of card YAML files to include."),
+) -> None:
+    """Check every card's shape, and optionally its symbol against an installed library and its links."""
+    from .cardcheck import verify
+
+    with console.status("Verifying cards..."):
+        report = verify(extra_dirs=cards or None, library=library, python=python, links=links)
+    for line in report.skipped:
+        console.print(f"[dim]skip[/] {line}")
+    for line in report.problems:
+        console.print(f"[red]FAIL[/] {line}")
+    summary = f"{report.checked} cards checked, {len(report.problems)} problem(s), {len(report.skipped)} skipped"
+    console.print(("[green]OK[/] " if report.ok else "[red]FAILED[/] ") + summary)
+    if not report.ok:
+        raise typer.Exit(1)
+
+
 @app.command()
 def version() -> None:
     """Print the Codewright version."""
