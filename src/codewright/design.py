@@ -1351,6 +1351,108 @@ def test_failed_jobs_back_off_then_give_up():
 """
 
 
+TEST_WORKER_POSTGRES = """\
+\"\"\"The worker against a real Postgres: claiming, retries with backoff, failures, no double processing.
+
+Skipped unless TEST_DATABASE_URL is set, e.g. with `docker compose up -d db`:
+    TEST_DATABASE_URL=postgresql+psycopg://app:app@localhost:5432/app pytest
+\"\"\"
+
+import collections
+import json
+import os
+import threading
+
+import pytest
+from sqlalchemy import create_engine, text
+
+URL = os.environ.get("TEST_DATABASE_URL")
+pytestmark = pytest.mark.skipif(not URL, reason="set TEST_DATABASE_URL to a Postgres database to run")
+
+
+@pytest.fixture()
+def pg(monkeypatch):
+    from alembic import command
+    from alembic.config import Config
+
+    from {pkg} import worker
+
+    engine = create_engine(URL)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS jobs, alembic_version"))
+    cfg = Config(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "..", "migrations"))
+    cfg.set_main_option("sqlalchemy.url", URL)
+    command.upgrade(cfg, "head")
+    monkeypatch.setattr(worker, "engine", engine)
+    monkeypatch.setattr(worker, "HANDLERS", {{}})
+    yield worker, engine
+    engine.dispose()
+
+
+def enqueue(engine, kind, payload):
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO jobs (kind, payload) VALUES (:k, CAST(:p AS jsonb))"),
+            {{"k": kind, "p": json.dumps(payload)}},
+        )
+
+
+def status(engine, kind):
+    with engine.connect() as conn:
+        query = text("SELECT status, attempts, last_error, run_after > now() FROM jobs WHERE kind = :k")
+        return conn.execute(query, {{"k": kind}}).one()
+
+
+def test_failed_jobs_retry_later_then_fail(pg):
+    worker, engine = pg
+    calls = []
+
+    @worker.handler("flaky")
+    def flaky(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            raise ConnectionError("the first try fails")
+
+    enqueue(engine, "flaky", {{}})
+    enqueue(engine, "unknown", {{}})
+    worker.run_once()
+    assert status(engine, "flaky")[:2] == ("pending", 1) and status(engine, "flaky")[3]  # retried later
+    for _ in range(worker.MAX_ATTEMPTS):
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE jobs SET run_after = now() WHERE status = 'pending'"))  # skip the wait
+        worker.run_once()
+    assert status(engine, "flaky")[0] == "done"
+    failed = status(engine, "unknown")
+    assert failed[0] == "failed" and failed[1] == worker.MAX_ATTEMPTS and "no handler" in failed[2]
+
+
+def test_two_workers_never_process_a_job_twice(pg):
+    worker, engine = pg
+    seen = collections.Counter()
+    lock = threading.Lock()
+
+    def count(payload):
+        with lock:
+            seen[payload["n"]] += 1
+
+    worker.handler("count")(count)
+    for n in range(40):
+        enqueue(engine, "count", {{"n": n}})
+
+    def drain():
+        while worker.run_once():
+            pass
+
+    threads = [threading.Thread(target=drain) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(seen) == 40 and max(seen.values()) == 1
+"""
+
+
 def _starter_tests_and_schema(pkg: str, *, worker: bool) -> dict[str, str]:
     """Schema, its first Alembic migration, and tests that run without a database server."""
     files = {
@@ -1365,6 +1467,7 @@ def _starter_tests_and_schema(pkg: str, *, worker: bool) -> dict[str, str]:
     }
     if worker:
         files["tests/test_worker.py"] = TEST_WORKER.format(pkg=pkg)
+        files["tests/test_worker_postgres.py"] = TEST_WORKER_POSTGRES.format(pkg=pkg)
     return files
 
 
@@ -1490,7 +1593,14 @@ def starter_repo(s: Session, proposal: dict, cid: str) -> bytes:
         f"See docs/design.md and docs/adr/.\n\n```bash\ndocker compose up -d db\n"
         f"alembic upgrade head          # create the schema\ndocker compose up\n```\n\n"
         "Tests run against SQLite, so they need no database server:\n\n"
-        '```bash\npip install -e ".[dev]" && pytest\n```\n'
+        '```bash\npip install -e ".[dev]" && pytest\n```\n\n'
+        + (
+            "The worker's Postgres tests (claiming, retries, no double processing) run when a database is given:\n\n"
+            "```bash\ndocker compose up -d db\n"
+            "TEST_DATABASE_URL=postgresql+psycopg://app:app@localhost:5432/app pytest\n```\n"
+            if "worker" in ids or "queue" in ids
+            else ""
+        )
     )
     files["docs/design.md"] = design_doc(s, proposal, cid)
     for d in decisions_for(s, proposal, cid):

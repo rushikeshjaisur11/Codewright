@@ -1,0 +1,22 @@
+name: Codewright
+
+# Codewright reviews its own pull requests with the Action in this repository (uses: ./),
+# so every PR exercises the Action end to end: install, review changed lines, SARIF upload.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  review:
+    name: Review changed lines
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./
+        with:
+          upload-sarif: ${{ github.event.pull_request.head.repo.full_name == github.repository }}  # forks can't upload
