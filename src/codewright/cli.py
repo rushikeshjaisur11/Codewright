@@ -334,6 +334,79 @@ def cards_verify(
         raise typer.Exit(1)
 
 
+index_app = typer.Typer(
+    help="The package index for release lookups and environment builds: PyPI by default, or your own "
+    "(Artifactory, Nexus, devpi...).",
+    invoke_without_command=True,
+)
+app.add_typer(index_app, name="index")
+REPO_OPT = typer.Option(
+    None, "--repo", help="Save for this repo (committed, so no credentials) instead of this machine."
+)
+
+
+@index_app.callback()
+def index_show(ctx: typer.Context, path: Path = typer.Option(Path("."), "--path", help="Repo to resolve for.")) -> None:
+    """Show which index Codewright uses here, and where that setting comes from."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import index as idx
+
+    current = idx.resolve(path)
+    console.print(f"{current.display}  [dim]({current.source})[/]")
+
+
+@index_app.command("set")
+def index_set(
+    url: str = typer.Argument(
+        ..., help="Simple API URL, e.g. https://artifactory.example.com/artifactory/api/pypi/pypi/simple"
+    ),
+    repo: Path | None = REPO_OPT,
+    test: bool = typer.Option(True, help="Look a package up on the index before saving."),
+) -> None:
+    """Use your own index. Credentials: in the URL (machine setting only), ~/.netrc, or CODEWRIGHT_INDEX_TOKEN."""
+    from . import index as idx
+
+    if err := idx.validate(url):
+        console.print(f"[red]{err}[/]")
+        raise typer.Exit(2)
+    if test:
+        result = idx.check(idx.PackageIndex(url, "new"))
+        console.print(("[green]OK[/] " if result["ok"] else "[red]FAILED[/] ") + result["detail"])
+        if not result["ok"]:
+            console.print("Not saved. Fix the URL or credentials, or pass --no-test to save anyway.")
+            raise typer.Exit(1)
+    try:
+        idx.save(url, root=repo)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(2) from None
+    console.print(f"Saved for {'repo ' + str(repo) if repo else 'this machine'}: {idx.redact(url)}")
+
+
+@index_app.command("reset")
+def index_reset(repo: Path | None = REPO_OPT) -> None:
+    """Remove the setting (for this machine, or a repo with --repo); with none left, PyPI is used."""
+    from . import index as idx
+
+    idx.save("", root=repo)
+    console.print(f"Now using {idx.resolve(repo).display} ({idx.resolve(repo).source})")
+
+
+@index_app.command("test")
+def index_test(
+    package: str = typer.Argument("pip", help="Package to look up."),
+    path: Path = typer.Option(Path("."), "--path", help="Repo to resolve the index for."),
+) -> None:
+    """Check that Codewright can read the configured index."""
+    from . import index as idx
+
+    result = idx.check(idx.resolve(path), package)
+    console.print(("[green]OK[/] " if result["ok"] else "[red]FAILED[/] ") + result["detail"])
+    if not result["ok"]:
+        raise typer.Exit(1)
+
+
 @app.command()
 def version() -> None:
     """Print the Codewright version."""

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import critic
+from .index import resolve as resolve_index
 
 BUILD_TIMEOUT = 900
 RECIPE = "2"  # bump when the way environments are built changes, so cached ones are rebuilt
@@ -69,7 +70,8 @@ def _build(root: Path, uv: str) -> tuple[Path | None, str]:
         return python, ""
     shutil.rmtree(env, ignore_errors=True)
     env.parent.mkdir(parents=True, exist_ok=True)
-    run_env = dict(os.environ, UV_PROJECT_ENVIRONMENT=str(env))
+    index = resolve_index(root)
+    run_env = dict(os.environ, UV_PROJECT_ENVIRONMENT=str(env), **index.uv_env())
     if uv_lock.exists():
         # Dependencies only (--no-install-workspace): the repo's own packages are imported from
         # the patched copy, and building them could write egg-info or build output into the repo.
@@ -93,6 +95,7 @@ def _build(root: Path, uv: str) -> tuple[Path | None, str]:
                 capture_output=True,
                 timeout=BUILD_TIMEOUT,
                 check=True,
+                env=run_env,  # same index as the dependencies: a locked-down network may have no PyPI
             )
     except (OSError, subprocess.SubprocessError) as exc:
         return None, f"building the environment failed: {exc}"

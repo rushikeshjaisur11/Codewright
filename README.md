@@ -214,8 +214,32 @@ Codewright keeps its state in `.codewright/`:
 | --- | --- | --- |
 | `feedback.json` | Accepted, rejected and muted findings, mute rules, team constraints | yes, so the team shares it |
 | `design.json` | The intended architecture from Design mode, checked by `codewright check` | yes |
-| `config.json` | Model and offline mode | yes |
-| `snapshots/`, `releases.json` | Map history and PyPI cache | no (ignored automatically) |
+| `config.json` | Model, offline mode and the repo's package index (never credentials) | yes |
+| `snapshots/`, `releases.json` | Map history and the package index cache | no (ignored automatically) |
+
+## Package index (Artifactory, Nexus, devpi...)
+
+Codewright uses PyPI unless you point it at your own index. The index is used for release lookups (the Releases page, `codewright watch`, upgrade previews), for Design's pinned versions, and for the environments proof builds with uv. Use the Simple API URL your pip or uv already uses:
+
+```bash
+codewright index set https://artifactory.example.com/artifactory/api/pypi/pypi-virtual/simple   # this machine
+codewright index set https://nexus.example.com/repository/pypi/simple --repo .                  # this repo, shared via git
+codewright index            # which index is used here, and where that comes from
+codewright index test fastapi
+codewright index reset      # back to the next source, PyPI if none
+```
+
+Or use the **Package index** card in Settings (with a Test button). If nothing is set, Codewright picks up what your tools already use. First match wins:
+
+1. `CODEWRIGHT_INDEX_URL`
+2. the repo's `.codewright/config.json`
+3. this machine's `~/.codewright/config.json`
+4. `UV_DEFAULT_INDEX`, `UV_INDEX_URL`, `PIP_INDEX_URL`
+5. the repo's `pyproject.toml` (`[[tool.uv.index]]` with `default = true`, or `[tool.uv] index-url`)
+6. `uv.toml`, then `pip.conf`
+7. PyPI
+
+Credentials go in `~/.netrc` (pip and uv read it too), in `CODEWRIGHT_INDEX_TOKEN` (sent as a bearer token), or in the URL for the machine setting only. Codewright refuses a password in the repo setting because that file is committed. Credentials never appear in the UI, the CLI or the release cache. Custom indexes are read through the standard Simple API (PEP 691 JSON, or PEP 503 HTML), so Artifactory, Nexus, devpi, GitLab and CodeArtifact all work. A Design starter repo gets the index (without credentials) as its `[[tool.uv.index]]`.
 
 ## Models
 

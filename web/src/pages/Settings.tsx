@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { BellOff, Bot, CheckCircle2, Plug, Save, ShieldOff, Trash2, XCircle } from "lucide-react";
+import { BellOff, Bot, CheckCircle2, Package, Plug, RotateCcw, Save, ShieldOff, Trash2, Wifi, XCircle } from "lucide-react";
 import { useApp } from "../App";
-import { api, Settings } from "../api";
+import { api, IndexState, Settings } from "../api";
 import { CopyButton, Spinner, intentLabel, useToast } from "../ui";
 
 export default function SettingsPage() {
@@ -10,11 +10,31 @@ export default function SettingsPage() {
   const [s, setS] = useState<Settings | null>(null);
   const [model, setModel] = useState("");
   const [constraints, setConstraints] = useState("");
+  const [idx, setIdx] = useState<IndexState | null>(null);
+  const [indexUrl, setIndexUrl] = useState("");
+  const [scope, setScope] = useState<"machine" | "repo">("machine");
+  const [probe, setProbe] = useState<{ ok: boolean; detail: string } | null>(null);
+  const [probing, setProbing] = useState(false);
 
   useEffect(() => {
     if (!wid) return;
     api.settings(wid).then((x) => { setS(x); setModel(x.model); setConstraints(x.constraints.join("\n")); });
+    api.index(wid).then(setIdx).catch(() => setIdx(null));
   }, [wid]);
+
+  async function testIndex(url: string) {
+    setProbing(true); setProbe(null);
+    try { setProbe(await api.testIndex(wid!, url)); } catch (e) { setProbe({ ok: false, detail: (e as Error).message }); }
+    finally { setProbing(false); }
+  }
+
+  async function saveIndex(url: string, where: "machine" | "repo") {
+    try {
+      setIdx(await api.saveIndex(wid!, url, where));
+      setIndexUrl(""); setProbe(null);
+      toast(url ? `Index saved for ${where === "repo" ? "this repo" : "this machine"}` : `Removed the ${where === "repo" ? "repo" : "machine"} setting`);
+    } catch (e) { toast((e as Error).message, "error"); }
+  }
 
   if (!s || !wid) return <Spinner />;
 
@@ -56,6 +76,51 @@ export default function SettingsPage() {
             <input type="checkbox" checked={s.offline} onChange={(e) => save({ offline: e.target.checked })} />
             <ShieldOff size={14} /><span><b>Offline mode</b> <span className="muted">— never call a model; no code leaves this machine.</span></span>
           </label>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-head"><h2><Package size={16} />Package index</h2>
+          <div className="right">{idx && (idx.is_pypi ? <span className="badge outline">PyPI</span> : <span className="badge blue">custom</span>)}</div>
+        </div>
+        <div className="card-pad col" style={{ gap: 12 }}>
+          <div className="muted" style={{ fontSize: 13 }}>
+            Where Releases, upgrade previews and Design look up versions, and where proof environments install from. PyPI unless you set your own, such as Artifactory or Nexus.
+          </div>
+          {idx && (
+            <div className="row wrap" style={{ gap: 8 }}>
+              <span className="mono" style={{ fontSize: 13 }}>{idx.url}</span>
+              <span className="faint" style={{ fontSize: 12.5 }}>from {idx.source}</span>
+              <button className="btn sm ghost" disabled={probing} onClick={() => testIndex("")}><Wifi size={13} />Test</button>
+            </div>
+          )}
+          {idx?.env_override && <div className="faint" style={{ fontSize: 12.5 }}><code>CODEWRIGHT_INDEX_URL</code> is set in the environment and wins over the settings below.</div>}
+          <div className="row wrap">
+            <input className="input mono grow" value={indexUrl} onChange={(e) => setIndexUrl(e.target.value)}
+              placeholder="https://artifactory.example.com/artifactory/api/pypi/pypi-virtual/simple" />
+            <select className="input" style={{ width: "auto" }} value={scope} onChange={(e) => setScope(e.target.value as "machine" | "repo")}>
+              <option value="machine">This machine</option>
+              <option value="repo">This repo (shared via git)</option>
+            </select>
+            <button className="btn" disabled={!indexUrl.trim() || probing} onClick={() => testIndex(indexUrl)}><Wifi size={14} />Test</button>
+            <button className="btn primary" disabled={!indexUrl.trim()} onClick={() => saveIndex(indexUrl, scope)}><Save size={14} />Save</button>
+          </div>
+          {probing && <div className="row muted" style={{ fontSize: 13 }}><Spinner />Looking a package up…</div>}
+          {probe && (
+            <div className="row" style={{ fontSize: 13, color: probe.ok ? "var(--green)" : "var(--red)" }}>
+              {probe.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}{probe.detail}
+            </div>
+          )}
+          {idx && (idx.machine || idx.repo) && (
+            <div className="row wrap" style={{ gap: 8 }}>
+              {idx.repo && <button className="btn sm ghost" onClick={() => saveIndex("", "repo")}><RotateCcw size={13} />Remove repo setting ({idx.repo})</button>}
+              {idx.machine && <button className="btn sm ghost" onClick={() => saveIndex("", "machine")}><RotateCcw size={13} />Remove machine setting ({idx.machine})</button>}
+            </div>
+          )}
+          <div className="faint" style={{ fontSize: 12.5 }}>
+            Use the Simple API URL your pip or uv uses. Without a setting, Codewright also picks up <code>UV_DEFAULT_INDEX</code>, <code>UV_INDEX_URL</code>, <code>PIP_INDEX_URL</code>, the repo's <code>[tool.uv.index]</code>, <code>uv.toml</code> and <code>pip.conf</code>.
+            Credentials: <code>~/.netrc</code>, <code>CODEWRIGHT_INDEX_TOKEN</code>, or in the URL for the machine setting only. They are never shown here.
+          </div>
         </div>
       </div>
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import subprocess
 import threading
 from dataclasses import asdict
@@ -344,6 +345,61 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
             fb.constraints = [c.strip() for c in constraints if c.strip()]
             fb.save(w.root)
         return get_settings(wid)
+
+    # ------------------------------------------------------------------ package index
+    def index_state(root: str) -> dict:
+        from . import index as idx
+
+        current = idx.resolve(root)
+        repo = idx._read_json(idx.repo_config_path(root)).get("index_url")
+        machine = idx._read_json(idx.machine_config_path()).get("index_url")
+        return {
+            "url": current.display,
+            "source": current.source,
+            "is_pypi": current.is_pypi,
+            "repo": idx.redact(repo) if repo else None,
+            "machine": idx.redact(machine) if machine else None,
+            "env_override": bool(os.environ.get("CODEWRIGHT_INDEX_URL")),
+        }
+
+    @app.get("/api/w/{wid}/index")
+    def get_index(wid: str):
+        return index_state(ws(wid).root)
+
+    @app.post("/api/w/{wid}/index")
+    def set_index(
+        wid: str,
+        url: Annotated[str, Body(embed=True)],
+        scope: Annotated[str, Body(embed=True)] = "machine",
+    ):
+        """Set the index for this repo or this machine; an empty url resets that scope (to PyPI)."""
+        from . import index as idx
+
+        if scope not in ("repo", "machine"):
+            raise HTTPException(400, "scope is 'repo' or 'machine'") from None
+        w = ws(wid)
+        try:
+            idx.save(url, root=w.root if scope == "repo" else None)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return index_state(w.root)
+
+    @app.post("/api/w/{wid}/index/test")
+    def test_index(wid: str, url: Annotated[str, Body(embed=True)] = ""):
+        """Look one of the repo's dependencies up on the index (the saved one, or `url` before saving)."""
+        from . import index as idx
+
+        w = ws(wid)
+        if url.strip():
+            if err := idx.validate(url):
+                raise HTTPException(400, err) from None
+            target = idx.PackageIndex(url.strip(), "unsaved")
+        else:
+            target = idx.resolve(w.root)
+        from .stack import discover
+
+        locked = sorted(d.name for d in discover(w.root).dependencies.values() if d.version)
+        return idx.check(target, locked[0] if locked else "pip")
 
     # ------------------------------------------------------------------ design
     def design_state(s: design.Session) -> dict:

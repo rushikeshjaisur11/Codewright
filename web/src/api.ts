@@ -127,6 +127,10 @@ export interface Settings {
   constraints: string[]; mutes: { intent: string; path: string; reason: string }[];
 }
 
+export interface IndexState {
+  url: string; source: string; is_pypi: boolean; repo: string | null; machine: string | null; env_override: boolean;
+}
+
 // ---- design
 export interface Question {
   id: string; text: string; kind: "text" | "number" | "size" | "choice" | "multi"; options: string[];
@@ -153,7 +157,7 @@ export interface Proposal {
     assumptions: { key: string; value: number; default: number; meaning: string; overridden: boolean }[];
     peak_rps: number; instances: number; data_gb_y3: number;
   };
-  versions: Record<string, string>; version_source: Record<string, string>;
+  versions: Record<string, string>; version_source: Record<string, string>; index?: string | null;
   candidates: Candidate[]; recommended: string; decisions: Decision[];
   data_model: { entities: { name: string; fields: string[] }[]; endpoints: { method: string; path: string; summary: string }[]; source: string };
 }
@@ -208,6 +212,9 @@ export const api = {
   settings: (id: string) => req<Settings>("GET", `${w(id)}/settings`),
   saveSettings: (id: string, s: Partial<{ model: string; offline: boolean; constraints: string[] }>) =>
     req<Settings>("POST", `${w(id)}/settings`, s),
+  index: (id: string) => req<IndexState>("GET", `${w(id)}/index`),
+  saveIndex: (id: string, url: string, scope: "repo" | "machine") => req<IndexState>("POST", `${w(id)}/index`, { url, scope }),
+  testIndex: (id: string, url = "") => req<{ ok: boolean; detail: string }>("POST", `${w(id)}/index/test`, { url }),
   newDesign: () => req<DesignState>("POST", "/api/design"),
   answer: (sid: string, qid: string, value: unknown) => req<DesignState>("POST", `/api/design/${sid}/answer`, { qid, value }),
   propose: (sid: string, workspace = "") => req<Proposal>("POST", `/api/design/${sid}/propose`, { workspace }),

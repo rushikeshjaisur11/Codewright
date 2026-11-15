@@ -947,8 +947,10 @@ def data_model(s: Session, cfg: LLMConfig | None) -> dict:
 def propose(
     s: Session, cfg: LLMConfig | None = None, root: str | Path | None = None, live_versions: bool = True
 ) -> dict:
+    from .index import resolve as resolve_index
     from .watcher import latest_versions
 
+    index = resolve_index(root)
     libs = libraries(s)
     versions = (
         latest_versions(libs, FALLBACK_VERSIONS, root)
@@ -956,7 +958,9 @@ def propose(
         else {lib: FALLBACK_VERSIONS.get(lib, "") for lib in libs}
     )
     version_source = {
-        lib: "pypi" if live_versions and versions.get(lib) not in (None, "", FALLBACK_VERSIONS.get(lib)) else "fallback"
+        lib: ("pypi" if index.is_pypi else index.display)
+        if live_versions and versions.get(lib) not in (None, "", FALLBACK_VERSIONS.get(lib))
+        else "fallback"
         for lib in libs
     }
     cap = capacity(s)
@@ -967,6 +971,8 @@ def propose(
         "capacity": cap,
         "versions": versions,
         "version_source": version_source,
+        # A custom index (never its credentials) goes into the starter repo, so it installs from there too.
+        "index": None if index.is_pypi else index.base,
         "candidates": [c.to_dict() for c in cands],
         "recommended": chosen.id,
         "decisions": decisions(s, chosen, cap),
@@ -1491,6 +1497,10 @@ def starter_repo(s: Session, proposal: dict, cid: str) -> bytes:
         f'[tool.setuptools.packages.find]\ninclude = ["{pkg}*"]  # not migrations/ or tests/\n\n'
         '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
     )
+    if proposal.get("index"):  # install from the same index Codewright looked the versions up on
+        index_url = proposal["index"]
+        files["pyproject.toml"] += f'\n[[tool.uv.index]]\nname = "default"\nurl = "{index_url}"\ndefault = true\n'
+
     files[f"{pkg}/__init__.py"] = ""
     files[f"{pkg}/settings.py"] = textwrap.dedent("""\
         from pydantic_settings import BaseSettings, SettingsConfigDict

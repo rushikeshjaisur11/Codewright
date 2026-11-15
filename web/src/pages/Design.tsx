@@ -327,7 +327,7 @@ export default function Design() {
           </div>
 
           <div className="card">
-            <div className="card-head"><h2>Pinned versions</h2><div className="right faint" style={{ fontSize: 12.5 }}>latest from PyPI at design time</div></div>
+            <div className="card-head"><h2>Pinned versions</h2><div className="right faint" style={{ fontSize: 12.5 }}>latest from {proposal.index ?? "PyPI"} at design time</div></div>
             <div className="card-pad chips">
               {Object.entries(proposal.versions).map(([k, v]) => (
                 <span key={k} className="badge outline mono" title={proposal.version_source[k]}>{k}=={v}{proposal.version_source[k] === "fallback" ? " *" : ""}</span>
