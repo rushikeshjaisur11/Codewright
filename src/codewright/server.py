@@ -155,6 +155,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
                 "entry_points": len(r.graph.entry_points),
                 "intent_matches": r.total_matches,
                 "seconds": r.seconds,
+                "test_env": r.test_env,
                 "base": r.base,
                 "findings": findings,
                 "rejected": [f.to_dict() for f in r.rejected],

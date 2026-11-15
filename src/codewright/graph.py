@@ -65,6 +65,27 @@ class CodeGraph:
     files: dict[str, ParsedFile] = field(default_factory=dict)
     edges: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # caller -> callees
     entry_points: set[str] = field(default_factory=set)
+    resolver: Resolver | None = None  # set by build(): resolves names and imports across the repo
+
+    def importers_of(self, path: str) -> set[str]:
+        """Files that import `path`, directly or through other modules of the repo."""
+        if self.resolver is None:
+            return set()
+        if "importers" not in self.__dict__:
+            back: dict[str, set[str]] = defaultdict(set)
+            for pf in self.files.values():
+                for target in self.resolver.imported_files(pf):
+                    if target != pf.path:
+                        back[target].add(pf.path)
+            self.__dict__["importers"] = back
+        back = self.__dict__["importers"]
+        seen, stack = set(), [path]
+        while stack:
+            for importer in back.get(stack.pop(), ()):
+                if importer not in seen:
+                    seen.add(importer)
+                    stack.append(importer)
+        return seen
 
     def functions(self):
         for pf in self.files.values():
@@ -236,7 +257,7 @@ def build(root: str | Path) -> CodeGraph:
             continue
         graph.files[pf.path] = pf
 
-    resolver = Resolver(graph)
+    resolver = graph.resolver = Resolver(graph)
     for pf, fn in graph.functions():
         caller = graph.key(fn)
         for call in fn.calls:

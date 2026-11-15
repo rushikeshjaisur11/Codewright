@@ -87,7 +87,13 @@ def detect_blocking_http_in_async(pf, fn, node, graph):
 
 @detector("wall-clock-timing")
 def detect_wall_clock_timing(pf, fn, node, graph):
-    """`start = time.time()` ... `time.time() - start` measures durations with the wall clock."""
+    """`start = time.time()` ... `time.time() - start` measures durations with the wall clock.
+
+    Only when every time.time() value stays "on the clock": stored in a local name, offset by a
+    duration, and subtracted from or compared with other time.time() values. A value that meets
+    anything else (a file's st_mtime, a timestamp from elsewhere, a return or an attribute) is a
+    real point in time, and perf_counter() would break it.
+    """
     if (body := _body(node)) is None:
         return []
     calls = [
@@ -95,16 +101,10 @@ def detect_wall_clock_timing(pf, fn, node, graph):
         for c, name in calls_in(body, pf)
         if name == "time.time" and not c.child_by_field_name("arguments").named_children
     ]
-    if len(calls) < 2:
-        return []
-    in_subtraction = any(
-        c.parent is not None and c.parent.type == "binary_operator" and "-" in text(c.parent) for c in calls
-    )
-    if not in_subtraction:
-        return []
-    callee_text = text(_callee(calls[0]))
-    if callee_text != "time.time":
+    if len(calls) < 2 or text(_callee(calls[0])) != "time.time":
         return []  # `from time import time` style: leave to a human
+    if not _clock_only(body, calls):
+        return []
     edits = [(c.start_byte, c.end_byte, "time.perf_counter()") for c in calls]
     return [
         IntentMatch(
@@ -115,6 +115,69 @@ def detect_wall_clock_timing(pf, fn, node, graph):
             {"edits": edits, "imports": []},
         )
     ]
+
+
+def _up(n: Node) -> Node | None:
+    p = n.parent
+    while p is not None and p.type == "parenthesized_expression":
+        p = p.parent
+    return p
+
+
+def _clock_only(body: Node, calls: list[Node]) -> bool:
+    """True when every time.time() value is only compared or subtracted with other time.time() values."""
+    call_ids = {c.start_byte for c in calls}
+
+    def assigned_name(expr: Node) -> str | None:
+        """`name = <expr>` or `name = <expr> + duration`: the local name the clock value goes into."""
+        p = _up(expr)
+        if p is not None and p.type == "binary_operator" and text(p.child_by_field_name("operator")) == "+":
+            p = _up(p)
+        if p is not None and p.type == "assignment":
+            left = p.child_by_field_name("left")
+            if left is not None and left.type == "identifier":
+                return text(left)
+        return None
+
+    names = {n for c in calls if (n := assigned_name(c))}
+
+    def on_clock(n: Node | None) -> bool:
+        while n is not None and n.type == "parenthesized_expression":
+            n = n.named_children[0] if n.named_children else None
+        if n is None:
+            return False
+        return (n.type == "call" and n.start_byte in call_ids) or (n.type == "identifier" and text(n) in names)
+
+    def ok_use(n: Node) -> bool:
+        p = _up(n)
+        if p is None:
+            return False
+        if p.type == "binary_operator" and text(p.child_by_field_name("operator")) == "-":
+            other = (
+                p.child_by_field_name("right") if p.child_by_field_name("left") == n else p.child_by_field_name("left")
+            )
+            return on_clock(other)
+        if p.type == "comparison_operator":
+            return all(on_clock(o) for o in p.named_children if o.start_byte != n.start_byte)
+        return assigned_name(n) is not None
+
+    subtracted = False
+    for c in calls:
+        if not ok_use(c):
+            return False
+    for ident in walk(body):
+        if ident.type != "identifier" or text(ident) not in names:
+            continue
+        p = _up(ident)
+        if p is not None and p.type == "assignment" and p.child_by_field_name("left") == ident:
+            continue  # the assignment itself
+        if not ok_use(ident):
+            return False
+    for c in calls:
+        p = _up(c)
+        if p is not None and p.type == "binary_operator" and text(p.child_by_field_name("operator")) == "-":
+            subtracted = True
+    return subtracted
 
 
 # --------------------------------------------------------------------------- deprecated APIs

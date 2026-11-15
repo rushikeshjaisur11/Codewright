@@ -24,6 +24,7 @@ def to_json(result: ReviewResult) -> str:
             "dependencies": {k: d.version or d.specifier for k, d in sorted(result.stack.dependencies.items())},
             "files_scanned": len(result.graph.files),
             "intent_matches": result.total_matches,
+            "test_env": result.test_env or None,
             "findings": [f.to_dict() for f in result.findings],
             "rejected": [
                 {"id": f.id, "title": f.title, "file": f.file, "reason": f.rejected_reason} for f in result.rejected
@@ -39,6 +40,8 @@ def to_markdown(result: ReviewResult) -> str:
         f"{len(result.findings)} findings from {len(result.graph.files)} files "
         f"({result.total_matches} intent matches, {len(result.rejected)} dropped by the critic).\n",
     ]
+    if result.test_env:
+        out.append(f"Proof ran the tests with {result.test_env}.\n")
     for i, f in enumerate(result.findings, 1):
         out.append(f"## {i}. {f.title}\n")
         out.append(
@@ -72,7 +75,8 @@ def print_terminal(result: ReviewResult, console: Console | None = None) -> None
             f"Python {result.stack.python or 'unknown'} · {len(result.stack.dependencies)} dependencies"
             f"{' · ' + deps if deps else ''}\n"
             f"{len(result.graph.files)} files · {result.total_matches} intent matches · "
-            f"{len(result.findings)} shown · {len(result.rejected)} dropped by the critic",
+            f"{len(result.findings)} shown · {len(result.rejected)} dropped by the critic"
+            + (f"\nTests ran with {result.test_env}" if result.test_env else ""),
             title="Codewright review",
         )
     )

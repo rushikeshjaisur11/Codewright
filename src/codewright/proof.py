@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import tempfile
@@ -28,6 +29,21 @@ from pathlib import Path
 from .models import Finding, ProofStatus
 
 IGNORE = shutil.ignore_patterns(".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache")
+GIT_COPY_LIMIT = 200 * 1024 * 1024  # copy .git into the sandbox below this size, so tests that call git work
+
+
+def _copy_git(root: Path, dest: Path) -> bool:
+    """Give the sandbox its own copy of .git (never a link: tests may write to it)."""
+    git = root / ".git"
+    if not git.is_dir():
+        return False
+    size = sum(p.stat().st_size for p in git.rglob("*") if p.is_file() and not p.is_symlink())
+    if size > GIT_COPY_LIMIT:
+        return False
+    shutil.copytree(git, dest / ".git", symlinks=True)
+    return True
+
+
 COLLECTION = "<collection>"  # functions called while pytest imports test modules, outside any test
 PLUGIN = "_codewright_trace"
 
@@ -114,6 +130,39 @@ class TestRun:
     ok: bool
     seconds: float
     output: str
+    code: int | None = None  # pytest's exit code; None for a timeout or a failure to start
+    selection: list[str] = field(default_factory=list)  # test files run; empty = the whole suite
+
+
+_NO_MODULE = re.compile(r"ModuleNotFoundError: No module named '([^']+)'")
+_FAILED = re.compile(r"^FAILED (\S+)", re.M)
+
+
+def diagnose(run: TestRun, python_label: str) -> str:
+    """Why a baseline run failed, in words that point at the real cause."""
+    out = run.output
+    if run.code is None:
+        return f"the tests didn't finish: {out.strip()[:200]}"
+    if "No module named pytest" in out:
+        return f"pytest isn't installed in {python_label}"
+    missing = _NO_MODULE.search(out)
+    if missing and run.code in (1, 2):
+        advice = (
+            "check that the lockfile is current, or pass --python with the repo's interpreter"
+            if "built from" in python_label
+            else "give Codewright the repo's environment: create a .venv, add a uv.lock, or pass --python"
+        )
+        return f"the tests can't import `{missing.group(1)}` with {python_label}, so they never ran; {advice}"
+    if run.code == 1:
+        first = _FAILED.search(out)
+        return "the test suite already fails before the change" + (f" (`{first.group(1)}`)" if first else "")
+    if run.code == 2:
+        return f"pytest stopped while collecting the tests (with {python_label}); run it yourself to see the error"
+    if run.code == 4:
+        return "pytest rejected its command line or configuration"
+    if run.code == 5:
+        return "pytest found no tests to run"
+    return f"pytest exited with code {run.code}"
 
 
 @dataclass
@@ -158,8 +207,9 @@ def run_tests(
     *,
     trace_out: Path | None = None,
     original: Path | None = None,
+    selection: list[str] | None = None,
 ) -> TestRun:
-    cmd = [python, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider"]
+    cmd = [python, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", *(selection or [])]
     env = dict(os.environ)
     paths = _src_dirs(workdir)
     if trace_out is not None:
@@ -178,14 +228,15 @@ def run_tests(
     if paths:
         env["PYTHONPATH"] = os.pathsep.join(paths)
     start = time.perf_counter()
+    code: int | None = None
     try:
         proc = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout, env=env)
-        ok, out = proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-1000:]
+        code, out = proc.returncode, proc.stdout[-4000:] + proc.stderr[-2000:]
     except subprocess.TimeoutExpired:
-        ok, out = False, f"timed out after {timeout}s"
+        out = f"timed out after {timeout}s"
     except OSError as exc:
-        ok, out = False, str(exc)
-    return TestRun(ok, time.perf_counter() - start, out)
+        out = str(exc)
+    return TestRun(code == 0, time.perf_counter() - start, out, code, list(selection or []))
 
 
 def read_trace(out: Path) -> Trace | None:
@@ -238,13 +289,30 @@ def _reached_detail(f: Finding, trace: Trace | None) -> str:
     return f"tests that run `{f.function}` ({shown})"
 
 
+def select_tests(f: Finding, trace: Trace | None, importers: dict[str, list[str]]) -> list[str]:
+    """Test files for `f`'s patch: those that ran the function, plus those importing its module.
+
+    Empty means "run the whole suite" (no trace, or nothing points at a test file).
+    """
+    if trace is None:
+        return []
+    files = {t.split("::", 1)[0] for t in trace.tests_for(f) if t != COLLECTION}
+    files |= set(importers.get(f.file, []))
+    return sorted(files)
+
+
 def prove(
     findings: list[Finding],
     root: str | Path,
     python: str,
     timeout: int = 300,
     jobs: int | None = None,
+    *,
+    python_label: str = "",
+    importers: dict[str, list[str]] | None = None,
+    full_suite: bool = False,
 ) -> TestRun | None:
+    """importers maps a source file to the test files that import it, directly or through other modules."""
     root = Path(root)
     with_patch = [f for f in findings if f.patch]
     for f in findings:
@@ -261,10 +329,12 @@ def prove(
         tmp = Path(tmp_name)
         base = tmp / "base"
         shutil.copytree(root, base, ignore=IGNORE, symlinks=True)
+        _copy_git(root, base)
         baseline = run_tests(base, python, timeout, trace_out=tmp / "trace", original=root.resolve())
         if not baseline.ok:
+            reason = diagnose(baseline, python_label or python)
             for f in with_patch:
-                f.proof_detail = "test suite already fails before the change"
+                f.proof_detail = reason
             return baseline
 
         trace = read_trace(tmp / "trace")
@@ -286,7 +356,8 @@ def prove(
             try:
                 if not apply_patch(work, f.patch):
                     return None
-                run = run_tests(work, python, timeout)
+                selection = [] if full_suite else select_tests(f, trace, importers or {})
+                run = run_tests(work, python, timeout, selection=selection)
                 if not apply_patch(work, f.patch, reverse=True):
                     shutil.rmtree(work, ignore_errors=True)
                     shutil.copytree(base, work, symlinks=True)
@@ -311,13 +382,18 @@ def prove(
                 f.proof_detail = "patch did not apply cleanly"
             elif after.ok and f.covered:
                 f.proof = ProofStatus.VERIFIED
+                scope = (
+                    f"; after the change ran the {len(after.selection)} test file(s) that run or import it"
+                    if after.selection
+                    else ""
+                )
                 f.proof_detail = (
                     f"{_reached_detail(f, trace)} pass before ({baseline.seconds:.1f}s) "
-                    f"and after ({after.seconds:.1f}s) the change"
+                    f"and after ({after.seconds:.1f}s) the change{scope}"
                 )
             elif after.ok:
                 f.proof_detail = (
-                    f"the suite still passes after the change, but no test reaches `{f.function}`, "
+                    f"the tests still pass after the change, but no test reaches `{f.function}`, "
                     "so this proves only that nothing else broke; add a test to verify it"
                 )
                 if trace is not None and trace.outside:

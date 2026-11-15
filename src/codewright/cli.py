@@ -48,6 +48,14 @@ def review(
     jobs: int | None = typer.Option(
         None, "--jobs", "-j", min=1, help="Patched test runs to run at once (default: CPUs, at most 4)."
     ),
+    full_suite: bool = typer.Option(
+        False, "--full-suite", help="Run every test for each patch, not just the files that run or import it."
+    ),
+    build_env: bool = typer.Option(
+        True,
+        "--build-env/--no-build-env",
+        help="Without a repo .venv, build (and cache) an environment from uv.lock or requirements to run the tests.",
+    ),
 ) -> None:
     """Review a repo: ranked, proven 'instead of X, use Y' findings."""
     from .engine import review as run_review
@@ -62,6 +70,8 @@ def review(
             extra_cards=cards or None,
             base=base,
             proof_jobs=jobs,
+            full_suite=full_suite,
+            build_env=build_env,
         )
     if fmt is Format.terminal and output is None:
         print_terminal(result, console)
