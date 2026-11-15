@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import subprocess
 import threading
 from dataclasses import asdict
 from pathlib import Path
+from typing import Annotated
+from urllib.parse import urlsplit
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, design
 from . import cards as card_store
@@ -25,10 +29,33 @@ from .service import Service, Workspace, browse, forget, git_branch, load_recent
 STATIC = Path(__file__).parent / "web"
 
 
-def create_app(roots: list[str] | None = None) -> FastAPI:
+def _origin_host(origin: str) -> str:
+    host = urlsplit(origin).hostname or ""
+    return f"[{host}]" if ":" in host else host
+
+
+LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1", "[::1]")
+
+
+def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None = None) -> FastAPI:
+    """The web app. Only requests addressed to `allowed_hosts` (default: loopback names) are served.
+
+    The server can read source files, browse folders and apply patches, so a page on another
+    site must not reach it: the Host check stops DNS rebinding (a hostile domain re-pointed at
+    127.0.0.1), and the Origin check stops cross-site requests from a page the user has open.
+    """
     svc = Service(roots or [])
     app = FastAPI(title="Codewright", version=__version__)
     app.state.svc = svc
+    hosts = list(allowed_hosts or LOOPBACK_HOSTS)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
+
+    @app.middleware("http")
+    async def same_origin_only(request: Request, call_next):
+        origin = request.headers.get("origin")
+        if origin and "*" not in hosts and _origin_host(origin) not in hosts:
+            return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
+        return await call_next(request)
 
     def ws(wid: str) -> Workspace:
         try:
@@ -49,6 +76,8 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
             "findings": len(w.result.findings) if w.result else None,
             "verified": sum(1 for f in w.result.findings if f.proof.value == "verified") if w.result else None,
             "files": len(w.result.graph.files) if w.result else None,
+            "watching": w.watching,
+            "revision": w.revision,
         }
 
     # ------------------------------------------------------------------ meta
@@ -65,7 +94,7 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
         return [ws_summary(k, v) for k, v in svc.workspaces.items()]
 
     @app.post("/api/workspaces")
-    def open_workspace(path: str = Body(..., embed=True)):
+    def open_workspace(path: Annotated[str, Body(embed=True)]):
         try:
             wid, w = svc.open(path)
         except FileNotFoundError:
@@ -96,8 +125,13 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
             raise HTTPException(404, f"not a folder: {path}") from None
 
     @app.get("/api/cards")
-    def catalog():
-        return [asdict(c) for c in card_store.load()]
+    def catalog(workspace: str = "", q: str = "", library: str = ""):
+        """Every card (or those matching `q`), each with its fit for the workspace's installed versions."""
+        from . import knowledge
+        from . import stack as stack_mod
+
+        st = stack_mod.discover(ws(workspace).root) if workspace else None
+        return knowledge.search(q, card_store.load(), st, library=library, limit=None)
 
     # ------------------------------------------------------------------ review
     def result_payload(wid: str, w: Workspace) -> dict:
@@ -125,6 +159,7 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
                 "entry_points": len(r.graph.entry_points),
                 "intent_matches": r.total_matches,
                 "seconds": r.seconds,
+                "test_env": r.test_env,
                 "base": r.base,
                 "findings": findings,
                 "rejected": [f.to_dict() for f in r.rejected],
@@ -142,7 +177,9 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
         }
 
     @app.post("/api/w/{wid}/review")
-    def start_review(wid: str, proof: bool = Body(True, embed=True), base: str = Body("", embed=True)):
+    def start_review(
+        wid: str, proof: Annotated[bool, Body(embed=True)] = True, base: Annotated[str, Body(embed=True)] = ""
+    ):
         w = ws(wid)
         if w.running:
             return ws_summary(wid, w)
@@ -155,12 +192,27 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
         threading.Thread(target=run, daemon=True).start()
         return ws_summary(wid, w)
 
+    @app.post("/api/w/{wid}/watch")
+    def watch(wid: str, on: Annotated[bool, Body(embed=True)]):
+        """Turn live re-review on save on or off for this workspace."""
+        w = ws(wid)
+        w.start_watch() if on else w.stop_watch()
+        return ws_summary(wid, w)
+
+    @app.get("/api/w/{wid}/revision")
+    def revision(wid: str):
+        """Tiny status for polling: has the result changed, and what did the last re-review change?"""
+        w = ws(wid)
+        return {"revision": w.revision, "running": w.running, "watching": w.watching, "last_change": w.last_change}
+
     @app.get("/api/w/{wid}/review")
     def get_review(wid: str):
         return result_payload(wid, ws(wid))
 
     @app.post("/api/w/{wid}/findings/{fid}/feedback")
-    def feedback(wid: str, fid: str, status: str = Body(..., embed=True), reason: str = Body("", embed=True)):
+    def feedback(
+        wid: str, fid: str, status: Annotated[str, Body(embed=True)], reason: Annotated[str, Body(embed=True)] = ""
+    ):
         try:
             return ws(wid).feedback(fid, status, reason)
         except KeyError:
@@ -171,10 +223,10 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
     @app.post("/api/w/{wid}/mute")
     def mute(
         wid: str,
-        intent: str = Body(..., embed=True),
-        path: str = Body("", embed=True),
-        reason: str = Body("", embed=True),
-        undo: bool = Body(False, embed=True),
+        intent: Annotated[str, Body(embed=True)],
+        path: Annotated[str, Body(embed=True)] = "",
+        reason: Annotated[str, Body(embed=True)] = "",
+        undo: Annotated[bool, Body(embed=True)] = False,
     ):
         return ws(wid).mute(intent, path, reason, undo)
 
@@ -226,20 +278,12 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
     @app.get("/api/w/{wid}/map/{level}")
     def map_view(wid: str, level: str, target: str = ""):
         m = ws(wid).amap()
-        if level == "system":
-            view = m.system()
-        elif level == "module":
-            comps = m.components()
-            if not comps:
-                raise HTTPException(404, "no components") from None
-            view = m.module(target or comps[0])
-        elif level == "flow":
-            eps = m.entry_points()
-            if not eps:
-                raise HTTPException(404, "no entry points found") from None
-            view = m.flow(target or eps[0]["id"])
-        else:
-            raise HTTPException(400, "level must be system, module or flow") from None
+        if level not in ("system", "module", "flow"):
+            raise HTTPException(400, "level must be system, module or flow")
+        try:
+            view = m.view(level, target)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
         return {**view.to_dict(), "mermaid": view.mermaid()}
 
     @app.get("/api/w/{wid}/module")
@@ -257,7 +301,7 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
             raise HTTPException(404, "file not found") from None
 
     @app.post("/api/w/{wid}/chat")
-    def chat(wid: str, question: str = Body(..., embed=True), history: list[dict] = Body([], embed=True)):
+    def chat(wid: str, question: Annotated[str, Body(embed=True)], history: list[dict] = Body([], embed=True)):
         return ws(wid).ask(question, history)
 
     @app.get("/api/w/{wid}/drift")
@@ -285,9 +329,9 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
     @app.post("/api/w/{wid}/settings")
     def set_settings(
         wid: str,
-        model: str = Body(None, embed=True),
-        offline: bool = Body(None, embed=True),
-        constraints: list[str] = Body(None, embed=True),
+        model: Annotated[str | None, Body(embed=True)] = None,
+        offline: Annotated[bool | None, Body(embed=True)] = None,
+        constraints: Annotated[list[str] | None, Body(embed=True)] = None,
     ):
         w = ws(wid)
         cfg = LLMConfig.load(w.root)
@@ -301,6 +345,61 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
             fb.constraints = [c.strip() for c in constraints if c.strip()]
             fb.save(w.root)
         return get_settings(wid)
+
+    # ------------------------------------------------------------------ package index
+    def index_state(root: str) -> dict:
+        from . import index as idx
+
+        current = idx.resolve(root)
+        repo = idx._read_json(idx.repo_config_path(root)).get("index_url")
+        machine = idx._read_json(idx.machine_config_path()).get("index_url")
+        return {
+            "url": current.display,
+            "source": current.source,
+            "is_pypi": current.is_pypi,
+            "repo": idx.redact(repo) if repo else None,
+            "machine": idx.redact(machine) if machine else None,
+            "env_override": bool(os.environ.get("CODEWRIGHT_INDEX_URL")),
+        }
+
+    @app.get("/api/w/{wid}/index")
+    def get_index(wid: str):
+        return index_state(ws(wid).root)
+
+    @app.post("/api/w/{wid}/index")
+    def set_index(
+        wid: str,
+        url: Annotated[str, Body(embed=True)],
+        scope: Annotated[str, Body(embed=True)] = "machine",
+    ):
+        """Set the index for this repo or this machine; an empty url resets that scope (to PyPI)."""
+        from . import index as idx
+
+        if scope not in ("repo", "machine"):
+            raise HTTPException(400, "scope is 'repo' or 'machine'") from None
+        w = ws(wid)
+        try:
+            idx.save(url, root=w.root if scope == "repo" else None)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return index_state(w.root)
+
+    @app.post("/api/w/{wid}/index/test")
+    def test_index(wid: str, url: Annotated[str, Body(embed=True)] = ""):
+        """Look one of the repo's dependencies up on the index (the saved one, or `url` before saving)."""
+        from . import index as idx
+
+        w = ws(wid)
+        if url.strip():
+            if err := idx.validate(url):
+                raise HTTPException(400, err) from None
+            target = idx.PackageIndex(url.strip(), "unsaved")
+        else:
+            target = idx.resolve(w.root)
+        from .stack import discover
+
+        locked = sorted(d.name for d in discover(w.root).dependencies.values() if d.version)
+        return idx.check(target, locked[0] if locked else "pip")
 
     # ------------------------------------------------------------------ design
     def design_state(s: design.Session) -> dict:
@@ -325,7 +424,7 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
             raise HTTPException(404, "unknown design session") from None
 
     @app.post("/api/design/{sid}/answer")
-    def design_answer(sid: str, qid: str = Body(..., embed=True), value=Body(..., embed=True)):
+    def design_answer(sid: str, qid: Annotated[str, Body(embed=True)], value=Body(..., embed=True)):
         s = svc.design_session(sid)
         try:
             s.answer(qid, value)
@@ -334,7 +433,7 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
         return design_state(s)
 
     @app.post("/api/design/{sid}/assumptions")
-    def design_assumptions(sid: str, overrides: dict = Body(..., embed=True)):
+    def design_assumptions(sid: str, overrides: Annotated[dict, Body(embed=True)]):
         s = svc.design_session(sid)
         for k, v in overrides.items():
             if k not in design.ASSUMPTIONS:
@@ -346,7 +445,7 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
         return svc.propose(sid)
 
     @app.post("/api/design/{sid}/propose")
-    def design_propose(sid: str, workspace: str = Body("", embed=True)):
+    def design_propose(sid: str, workspace: Annotated[str, Body(embed=True)] = ""):
         root = svc.workspaces[workspace].root if workspace in svc.workspaces else None
         return svc.propose(sid, root)
 
@@ -377,7 +476,9 @@ def create_app(roots: list[str] | None = None) -> FastAPI:
         )
 
     @app.post("/api/design/{sid}/save")
-    def design_save(sid: str, workspace: str = Body(..., embed=True), candidate: str = Body("", embed=True)):
+    def design_save(
+        sid: str, workspace: Annotated[str, Body(embed=True)], candidate: Annotated[str, Body(embed=True)] = ""
+    ):
         w = ws(workspace)
         p = _proposal(sid)
         path = design.save_intended(w.root, design.intended(svc.design_session(sid), p, candidate or p["recommended"]))

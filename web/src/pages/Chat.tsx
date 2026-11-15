@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { MessageSquareCode, SendHorizontal, User } from "lucide-react";
 import { useApp } from "../App";
-import { api, Citation } from "../api";
-import { Empty, Spinner, useToast } from "../ui";
+import { api, Citation, KnowledgeCite } from "../api";
+import { Empty, Source, Spinner, useToast } from "../ui";
 
-interface Msg { role: "user" | "assistant"; content: string; citations?: Citation[]; mode?: string }
+interface Msg { role: "user" | "assistant"; content: string; citations?: Citation[]; knowledge?: KnowledgeCite[]; mode?: string }
 
 const SUGGESTIONS = [
   "How does a request flow through this repo?",
@@ -32,7 +32,7 @@ export default function Chat() {
     setBusy(true);
     try {
       const a = await api.chat(wid, q, history);
-      setMsgs((x) => [...x, { role: "assistant", content: a.answer, citations: a.citations, mode: a.mode }]);
+      setMsgs((x) => [...x, { role: "assistant", content: a.answer, citations: a.citations, knowledge: a.knowledge, mode: a.mode }]);
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
@@ -68,6 +68,21 @@ export default function Chat() {
                     <button key={c.n} className="cite" onClick={() => openCode(c.file, c.line, [c.line, c.end])}>
                       <b>[{c.n}]</b>{c.file}:{c.line}
                     </button>
+                  ))}
+                </div>
+              )}
+              {m.knowledge && m.knowledge.length > 0 && (
+                <div className="col" style={{ gap: 8, marginTop: 10 }}>
+                  {m.knowledge.map((k) => (
+                    <div key={k.n} className="card" style={{ padding: "10px 12px" }}>
+                      <div className="row" style={{ gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+                        <b>[{k.n}]</b><span style={{ fontWeight: 600 }}>{k.title}</span>
+                        <span className="mono faint" style={{ fontSize: 11.5 }}>{k.library} {k.versions}</span>
+                      </div>
+                      <div className="mono faint" style={{ fontSize: 11.5, margin: "2px 0 6px" }}>{k.symbol}</div>
+                      <div className="muted" style={{ fontSize: 13 }}>When not to: {k.when_not}</div>
+                      <div className="col sources" style={{ gap: 2, marginTop: 6 }}>{k.sources.map((s) => <Source key={s} url={s} />)}</div>
+                    </div>
                   ))}
                 </div>
               )}

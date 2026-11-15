@@ -13,62 +13,9 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 
-from .graph import CodeGraph
-from .intents.detectors import is_test_file
+from .graph import CodeGraph, is_test_file
 from .llm import LLMConfig, complete
-
-_WORD = re.compile(r"[A-Za-z][a-z0-9]*|[A-Z]+(?![a-z])|\d+")
-STOP = {
-    "the",
-    "a",
-    "an",
-    "is",
-    "are",
-    "how",
-    "does",
-    "do",
-    "what",
-    "where",
-    "which",
-    "this",
-    "that",
-    "in",
-    "of",
-    "to",
-    "and",
-    "or",
-    "for",
-    "it",
-    "on",
-    "with",
-    "repo",
-    "code",
-    "self",
-    "return",
-    "def",
-    "import",
-    "from",
-    "none",
-    "true",
-    "false",
-    "if",
-    "else",
-    "as",
-    "by",
-    "be",
-    "i",
-    "my",
-    "we",
-    "can",
-    "when",
-}
-
-
-def tokens(s: str) -> list[str]:
-    out = []
-    for part in re.split(r"[^A-Za-z0-9]+", s):
-        out.extend(w.lower() for w in _WORD.findall(part))
-    return [t for t in out if t not in STOP and len(t) > 1]
+from .words import STOP, tokens
 
 
 @dataclass
@@ -123,37 +70,110 @@ class CodeIndex:
 SYSTEM = (
     "You answer questions about a codebase. Use only the numbered passages given. "
     "Cite every claim with the passage number in square brackets, like [2]. "
+    "Passages numbered [K1], [K2]... are Codewright's version-checked knowledge about the libraries this repo "
+    "uses: cite them the same way when you recommend an API, and keep their 'when not to'. "
     "If the passages don't contain the answer, say what is missing. Be concise: short paragraphs or bullets."
 )
+KNOWLEDGE_MIN_SCORE = 6.0  # BM25; relevant questions score 7-15, unrelated ones 2-4
+KNOWLEDGE_RATIO = 0.6  # and within this share of the best hit
 
 
-def answer(index: CodeIndex, question: str, history: list[dict] | None = None, cfg: LLMConfig | None = None) -> dict:
+def knowledge_hits(question: str, cards: list | None, stack) -> list[dict]:
+    """Up to three knowledge cards clearly about the question and usable with the repo's versions."""
+    if not cards:
+        return []
+    from .knowledge import search
+
+    hits = [h for h in search(question, cards, stack, limit=6) if h["fit"]["status"] in ("fits", "unknown")]
+    if not hits or hits[0]["score"] < KNOWLEDGE_MIN_SCORE:
+        return []
+    best = hits[0]["score"]
+    keep = [h for h in hits if h["score"] >= max(KNOWLEDGE_MIN_SCORE, best * KNOWLEDGE_RATIO)][:3]
+    return [
+        {
+            "n": f"K{i + 1}",
+            "id": h["id"],
+            "title": h["title"],
+            "symbol": h["symbol"],
+            "library": h["library"] or "python",
+            "versions": h["versions"],
+            "suggestion": h["suggestion"],
+            "when_not": h["when_not"],
+            "sources": h["sources"],
+            "fit": h["fit"],
+        }
+        for i, h in enumerate(keep)
+    ]
+
+
+def _knowledge_section(kn: list[dict]) -> str:
+    lines = ["", "", "**From the knowledge base** (version-checked for this repo):", ""]  # blank lines: own paragraph
+    for k in kn:
+        first = k["suggestion"].split(". ")[0].rstrip(".")
+        lines.append(f"- **{k['title']}**: {first}. `{k['symbol']}`, {k['library']} {k['versions']} [{k['n']}]")
+    return "\n".join(lines)
+
+
+def answer(
+    index: CodeIndex,
+    question: str,
+    history: list[dict] | None = None,
+    cfg: LLMConfig | None = None,
+    *,
+    cards: list | None = None,
+    stack=None,
+) -> dict:
+    out = _answer(index, question, history, cfg, knowledge_hits(question, cards, stack))
+    return out
+
+
+def _answer(index: CodeIndex, question: str, history, cfg, kn: list[dict]) -> dict:
+    extra = {"knowledge": kn}
     hits = index.search(question)
     citations = [
         {"n": i + 1, "id": p.id, "file": p.file, "line": p.line, "end": p.end, "title": p.title, "score": round(s, 2)}
         for i, (p, s) in enumerate(hits)
     ]
     if not hits and cfg is None and (topical := _topical(index, question)):
-        return {"answer": topical[0], "citations": topical[1], "mode": "extractive"}
-    if not hits:
+        return {
+            "answer": topical[0] + (_knowledge_section(kn) if kn else ""),
+            "citations": topical[1],
+            "mode": "extractive",
+            **extra,
+        }
+    if not hits and kn and cfg is None:
+        return {
+            "answer": "No code in this repo matches that yet." + _knowledge_section(kn),
+            "citations": [],
+            "mode": "extractive",
+            **extra,
+        }
+    if not hits and not kn:
         return {
             "answer": "I couldn't find code matching that question. Try naming a function, module, route or library.",
             "citations": [],
             "mode": "extractive",
+            **extra,
         }
     if cfg is not None:
         context = "\n\n".join(
-            f"[{i + 1}] {p.file}:{p.line}-{p.end} ({p.title})\n{p.text[:1800]}" for i, (p, _) in enumerate(hits)
+            [f"[{i + 1}] {p.file}:{p.line}-{p.end} ({p.title})\n{p.text[:1800]}" for i, (p, _) in enumerate(hits)]
+            + [
+                f"[{k['n']}] {k['title']}: {k['symbol']} ({k['library']} {k['versions']}). {k['suggestion']} "
+                f"When not to: {k['when_not']}"
+                for k in kn
+            ]
         )
         msgs = [*list(history or [])[-6:], {"role": "user", "content": f"Passages:\n{context}\n\nQuestion: {question}"}]
         text = complete(cfg, SYSTEM, msgs)
         if text:
-            return {"answer": text, "citations": citations, "mode": "llm"}
+            return {"answer": text, "citations": citations, "mode": "llm", **extra}
+    section = _knowledge_section(kn) if kn else ""
     topical = _topical(index, question)
     if topical:
         text, cites = topical
-        return {"answer": text, "citations": cites, "mode": "extractive"}
-    return {"answer": _extractive(index, hits), "citations": citations, "mode": "extractive"}
+        return {"answer": text + section, "citations": cites, "mode": "extractive", **extra}
+    return {"answer": _extractive(index, hits) + section, "citations": citations, "mode": "extractive", **extra}
 
 
 TOPICS = [

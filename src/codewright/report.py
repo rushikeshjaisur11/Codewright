@@ -24,6 +24,7 @@ def to_json(result: ReviewResult) -> str:
             "dependencies": {k: d.version or d.specifier for k, d in sorted(result.stack.dependencies.items())},
             "files_scanned": len(result.graph.files),
             "intent_matches": result.total_matches,
+            "test_env": result.test_env or None,
             "findings": [f.to_dict() for f in result.findings],
             "rejected": [
                 {"id": f.id, "title": f.title, "file": f.file, "reason": f.rejected_reason} for f in result.rejected
@@ -39,6 +40,8 @@ def to_markdown(result: ReviewResult) -> str:
         f"{len(result.findings)} findings from {len(result.graph.files)} files "
         f"({result.total_matches} intent matches, {len(result.rejected)} dropped by the critic).\n",
     ]
+    if result.test_env:
+        out.append(f"Proof ran the tests with {result.test_env}.\n")
     for i, f in enumerate(result.findings, 1):
         out.append(f"## {i}. {f.title}\n")
         out.append(
@@ -72,7 +75,8 @@ def print_terminal(result: ReviewResult, console: Console | None = None) -> None
             f"Python {result.stack.python or 'unknown'} · {len(result.stack.dependencies)} dependencies"
             f"{' · ' + deps if deps else ''}\n"
             f"{len(result.graph.files)} files · {result.total_matches} intent matches · "
-            f"{len(result.findings)} shown · {len(result.rejected)} dropped by the critic",
+            f"{len(result.findings)} shown · {len(result.rejected)} dropped by the critic"
+            + (f"\nTests ran with {result.test_env}" if result.test_env else ""),
             title="Codewright review",
         )
     )
@@ -139,3 +143,69 @@ def to_pr_comment(result: ReviewResult) -> str:
         out.append("</details>\n")
     out.append("<sub>Codewright suggests; humans decide. Nothing is merged automatically.</sub>")
     return "\n".join(out)
+
+
+def to_sarif(result: ReviewResult) -> str:
+    """SARIF 2.1.0 for GitHub code scanning (and other SARIF viewers): one rule per card, one result per finding."""
+    from . import __version__
+
+    rules: dict[str, dict] = {}
+    results = []
+    for f in result.findings:
+        rule_id = f.card_id or f.intent
+        if rule_id not in rules:
+            rules[rule_id] = {
+                "id": rule_id,
+                "name": "".join(w.capitalize() for w in f.intent.replace("-", " ").split()),
+                "shortDescription": {"text": f.title},
+                "fullDescription": {"text": f"{f.suggestion} When not to: {f.when_not}"},
+                "help": {
+                    "text": f"{f.suggestion}\n\nGain: {f.gain}\nRisk: {f.risk}\nWhen not to: {f.when_not}",
+                    "markdown": (
+                        f"{f.suggestion}\n\n**Gain:** {f.gain}\n\n**Risk:** {f.risk}\n\n**When not to:** {f.when_not}"
+                        + "".join(f"\n- <{s}>" for s in f.sources)
+                    ),
+                },
+                **({"helpUri": f.sources[0]} if f.sources else {}),
+                "properties": {"tags": ["codewright", f.intent], "precision": "high"},
+            }
+        results.append(
+            {
+                "ruleId": rule_id,
+                "level": "warning" if (f.hot_path or f.impact >= 4) else "note",
+                "message": {"text": f"{f.evidence}. Instead: {f.title} ({f.api}). Proof: {f.proof.value}."},
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {"uri": f.file, "uriBaseId": "%SRCROOT%"},
+                            "region": {"startLine": max(f.line, 1)},
+                        }
+                    }
+                ],
+                "partialFingerprints": {"codewrightFindingId": f.id},
+                "properties": {
+                    "proof": f.proof.value,
+                    "score": f.score,
+                    "autoPatch": bool(f.patch),
+                    "function": f.function,
+                },
+            }
+        )
+    sarif = {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "Codewright",
+                        "version": __version__,
+                        "informationUri": "https://github.com/rushikeshjaisur11/codewright",
+                        "rules": list(rules.values()),
+                    }
+                },
+                "results": results,
+            }
+        ],
+    }
+    return json.dumps(sarif, indent=2)

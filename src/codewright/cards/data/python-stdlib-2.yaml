@@ -139,8 +139,12 @@
   symbol: subprocess.run
   kind: stdlib
   library: null
+  autofix: true  # only for a literal command without shell syntax whose result is unused
   versions: ">=3.5"
-  suggestion: Call subprocess.run([...], check=True) with the command as a list, so no shell parses it.
+  suggestion: >-
+    Call subprocess.run([...]) with the command as a list, so no shell parses it. The
+    patch uses check=False, which keeps os.system's behaviour (a failing command doesn't
+    raise); switch to check=True when a failure should stop the program.
   gain: >-
     No shell injection through interpolated values, a real exit-code check with
     check=True, and access to stdout/stderr through capture_output.

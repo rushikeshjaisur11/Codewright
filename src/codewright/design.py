@@ -348,22 +348,23 @@ CLOUD = {
 
 # Bundled fallbacks, used only when PyPI can't be reached. Shown as "fallback" in the UI.
 FALLBACK_VERSIONS = {
-    "fastapi": "0.115.0",
-    "uvicorn": "0.30.6",
-    "sqlalchemy": "2.0.36",
-    "psycopg": "3.2.3",
-    "pydantic-settings": "2.6.0",
-    "redis": "5.2.0",
-    "httpx": "0.27.2",
-    "tenacity": "9.0.0",
-    "google-adk": "1.0.0",
-    "google-genai": "1.0.0",
-    "pgvector": "0.3.6",
-    "pytest": "8.3.3",
-    "alembic": "1.14.0",
-    "litellm": "1.50.0",
-    "boto3": "1.35.0",
-    "google-cloud-tasks": "2.17.0",
+    "fastapi": "0.163.0",
+    "uvicorn": "0.54.0",
+    "sqlalchemy": "2.1.8",
+    "psycopg": "3.3.9",
+    "pydantic-settings": "2.16.3",
+    "redis": "8.1.0",
+    "httpx": "0.28.1",
+    "tenacity": "9.2.1",
+    "google-adk": "2.14.1",
+    "google-genai": "2.34.0",  # newest google-adk 2.14.1 accepts (<3)
+    "pgvector": "0.5.1",
+    "pytest": "9.2.0",
+    "httpx2": "2.16.0",
+    "alembic": "1.20.1",
+    "litellm": "1.109.1",
+    "boto3": "1.44.3",
+    "google-cloud-tasks": "2.26.0",
 }
 
 
@@ -378,6 +379,7 @@ def libraries(s: Session) -> list[str]:
         "httpx",
         "tenacity",
         "pytest",
+        "httpx2",  # Starlette's TestClient prefers it; plain httpx is deprecated there
     ]
     w = s.workload()
     cap_needs_cache = _needs_cache(s, capacity(s))
@@ -945,8 +947,10 @@ def data_model(s: Session, cfg: LLMConfig | None) -> dict:
 def propose(
     s: Session, cfg: LLMConfig | None = None, root: str | Path | None = None, live_versions: bool = True
 ) -> dict:
+    from .index import resolve as resolve_index
     from .watcher import latest_versions
 
+    index = resolve_index(root)
     libs = libraries(s)
     versions = (
         latest_versions(libs, FALLBACK_VERSIONS, root)
@@ -954,7 +958,9 @@ def propose(
         else {lib: FALLBACK_VERSIONS.get(lib, "") for lib in libs}
     )
     version_source = {
-        lib: "pypi" if live_versions and versions.get(lib) not in (None, "", FALLBACK_VERSIONS.get(lib)) else "fallback"
+        lib: ("pypi" if index.is_pypi else index.display)
+        if live_versions and versions.get(lib) not in (None, "", FALLBACK_VERSIONS.get(lib))
+        else "fallback"
         for lib in libs
     }
     cap = capacity(s)
@@ -965,6 +971,8 @@ def propose(
         "capacity": cap,
         "versions": versions,
         "version_source": version_source,
+        # A custom index (never its credentials) goes into the starter repo, so it installs from there too.
+        "index": None if index.is_pypi else index.base,
         "candidates": [c.to_dict() for c in cands],
         "recommended": chosen.id,
         "decisions": decisions(s, chosen, cap),
@@ -1045,31 +1053,454 @@ def mermaid(cand: Candidate) -> str:
 # --------------------------------------------------------------------------- starter repo
 
 
+WORKER_PY = '''\
+"""Job worker: claims jobs with FOR UPDATE SKIP LOCKED so several workers never double-process.
+
+Register a handler per job kind with @handler("kind"). A job that raises is retried with
+exponential backoff (run_after moves later each time) and marked failed after MAX_ATTEMPTS,
+with the error kept in last_error; one bad job never stops the worker.
+"""
+
+import logging
+import time
+from collections.abc import Callable
+
+from sqlalchemy import text
+
+from .db import engine
+
+log = logging.getLogger(__name__)
+MAX_ATTEMPTS = 5
+BASE_DELAY_SECONDS = 10
+HANDLERS: dict[str, Callable[[dict], None]] = {}
+
+CLAIM = text("""
+    UPDATE jobs SET status = 'running', attempts = attempts + 1
+    WHERE id IN (
+        SELECT id FROM jobs
+        WHERE status = 'pending' AND run_after <= now()
+        ORDER BY id
+        FOR UPDATE SKIP LOCKED
+        LIMIT 10
+    )
+    RETURNING id, kind, payload, attempts
+""")
+DONE = text("UPDATE jobs SET status = 'done', last_error = NULL WHERE id = :id")
+RETRY = text(
+    "UPDATE jobs SET status = 'pending', run_after = now() + make_interval(secs => :delay), last_error = :error "
+    "WHERE id = :id"
+)
+FAILED = text("UPDATE jobs SET status = 'failed', last_error = :error WHERE id = :id")
+
+
+def handler(kind: str):
+    """Register the function that processes jobs of this kind."""
+
+    def register(fn: Callable[[dict], None]) -> Callable[[dict], None]:
+        HANDLERS[kind] = fn
+        return fn
+
+    return register
+
+
+def process(kind: str, payload: dict) -> None:
+    if kind not in HANDLERS:
+        raise LookupError(f"no handler registered for job kind {kind!r}")
+    HANDLERS[kind](payload)
+
+
+def outcome(attempts: int, error: BaseException | None) -> tuple[str, float]:
+    """(status, retry delay in seconds) after an attempt."""
+    if error is None:
+        return "done", 0.0
+    if attempts >= MAX_ATTEMPTS:
+        return "failed", 0.0
+    return "pending", float(BASE_DELAY_SECONDS * 2 ** (attempts - 1))
+
+
+def run_once() -> int:
+    """Claim and process one batch; returns how many jobs it handled."""
+    with engine.begin() as conn:
+        jobs = conn.execute(CLAIM).fetchall()
+    for job in jobs:
+        try:
+            process(job.kind, job.payload)
+            error = None
+        except Exception as exc:  # one job's failure must not stop the worker
+            log.exception("job %s (%s) failed on attempt %s", job.id, job.kind, job.attempts)
+            error = exc
+        status, delay = outcome(job.attempts, error)
+        params = {"id": job.id, "error": repr(error)[:2000] if error else None, "delay": delay}
+        with engine.begin() as conn:
+            conn.execute({"done": DONE, "pending": RETRY, "failed": FAILED}[status], params)
+    return len(jobs)
+
+
+def run_forever(idle_seconds: float = 2.0) -> None:
+    while True:
+        if not run_once():
+            time.sleep(idle_seconds)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    run_forever()
+'''
+
+MODELS_HEAD = '''\
+"""Database schema. Change it here, then add an Alembic migration (alembic revision -m "...")."""
+
+from sqlalchemy import JSON, BigInteger, Column, DateTime, Index, Integer, MetaData, String, Table, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
+
+metadata = MetaData()
+'''
+
+MODELS_JOBS = """
+jobs = Table(
+    "jobs",
+    metadata,
+    Column("id", BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True),
+    Column("kind", String(100), nullable=False),
+    Column("payload", JSON().with_variant(JSONB, "postgresql"), nullable=False, server_default="{}"),
+    Column("status", String(20), nullable=False, server_default="pending"),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("run_after", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("last_error", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Index("jobs_ready", "status", "run_after"),
+)
+"""
+
+ALEMBIC_INI = """\
+[alembic]
+script_location = migrations
+
+[loggers]
+keys = root
+
+[handlers]
+keys = console
+
+[formatters]
+keys = generic
+
+[logger_root]
+level = WARNING
+handlers = console
+
+[handler_console]
+class = StreamHandler
+args = (sys.stderr,)
+formatter = generic
+
+[formatter_generic]
+format = %(levelname)s %(name)s %(message)s
+"""
+
+ENV_PY = """\
+from alembic import context
+from sqlalchemy import create_engine
+
+from {pkg}.models import metadata
+from {pkg}.settings import settings
+
+
+def run() -> None:
+    url = context.config.get_main_option("sqlalchemy.url") or settings.database_url
+    if context.is_offline_mode():
+        context.configure(url=url, target_metadata=metadata, literal_binds=True)
+        with context.begin_transaction():
+            context.run_migrations()
+        return
+    with create_engine(url).connect() as conn:
+        context.configure(connection=conn, target_metadata=metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+run()
+"""
+
+SCRIPT_MAKO = '''\
+"""${message}"""
+
+import sqlalchemy as sa
+from alembic import op
+
+revision = ${repr(up_revision)}
+down_revision = ${repr(down_revision)}
+
+
+def upgrade() -> None:
+    ${upgrades if upgrades else "pass"}
+
+
+def downgrade() -> None:
+    ${downgrades if downgrades else "pass"}
+'''
+
+MIGRATION_JOBS = '''\
+"""Initial schema: the jobs table the worker claims from."""
+
+import sqlalchemy as sa
+from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
+
+revision = "0001"
+down_revision = None
+
+
+def upgrade() -> None:
+    op.create_table(
+        "jobs",
+        sa.Column("id", sa.BigInteger().with_variant(sa.Integer, "sqlite"), primary_key=True, autoincrement=True),
+        sa.Column("kind", sa.String(100), nullable=False),
+        sa.Column("payload", sa.JSON().with_variant(JSONB, "postgresql"), nullable=False, server_default="{}"),
+        sa.Column("status", sa.String(20), nullable=False, server_default="pending"),
+        sa.Column("attempts", sa.Integer, nullable=False, server_default="0"),
+        sa.Column("run_after", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column("last_error", sa.Text),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+    )
+    op.create_index("jobs_ready", "jobs", ["status", "run_after"])
+
+
+def downgrade() -> None:
+    op.drop_index("jobs_ready", table_name="jobs")
+    op.drop_table("jobs")
+'''
+
+MIGRATION_EMPTY = '''\
+"""Initial schema (no tables yet: add them to models.py and generate a migration)."""
+
+revision = "0001"
+down_revision = None
+
+
+def upgrade() -> None:
+    pass
+
+
+def downgrade() -> None:
+    pass
+'''
+
+CONFTEST = """\
+import os
+
+# Tests use SQLite in memory, so they need no database server. Set before the app is imported.
+os.environ.setdefault("DATABASE_URL", "sqlite://")
+"""
+
+TEST_API = """\
+from fastapi.testclient import TestClient
+
+from {pkg}.main import app
+
+
+def test_healthz():
+    assert TestClient(app).get("/healthz").json() == {{"status": "ok"}}
+
+
+def test_readyz_checks_the_database():
+    response = TestClient(app).get("/readyz")
+    assert response.status_code == 200 and response.json() == {{"status": "ready"}}
+"""
+
+TEST_MIGRATIONS = """\
+from pathlib import Path
+
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, inspect
+
+from {pkg}.models import metadata
+
+ROOT = Path(__file__).parent.parent
+
+
+def test_migrations_create_the_schema_the_code_expects(tmp_path):
+    url = f"sqlite:///{{tmp_path / 'db.sqlite'}}"
+    cfg = Config(str(ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(ROOT / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", url)
+    command.upgrade(cfg, "head")
+    tables = set(inspect(create_engine(url)).get_table_names()) - {{"alembic_version"}}
+    assert tables == set(metadata.tables)
+"""
+
+TEST_WORKER = """\
+import pytest
+
+from {pkg} import worker
+
+
+def test_registered_handlers_receive_the_payload():
+    seen = []
+    worker.handler("send_email")(seen.append)
+    worker.process("send_email", {{"to": "a@example.com"}})
+    assert seen == [{{"to": "a@example.com"}}]
+
+
+def test_unknown_job_kind_fails_loudly():
+    with pytest.raises(LookupError, match="no handler"):
+        worker.process("no-such-kind", {{}})
+
+
+def test_failed_jobs_back_off_then_give_up():
+    boom = RuntimeError("boom")
+    assert worker.outcome(1, None) == ("done", 0.0)
+    assert worker.outcome(1, boom) == ("pending", worker.BASE_DELAY_SECONDS)
+    assert worker.outcome(3, boom) == ("pending", worker.BASE_DELAY_SECONDS * 4)
+    assert worker.outcome(worker.MAX_ATTEMPTS, boom) == ("failed", 0.0)
+"""
+
+
+TEST_WORKER_POSTGRES = """\
+\"\"\"The worker against a real Postgres: claiming, retries with backoff, failures, no double processing.
+
+Skipped unless TEST_DATABASE_URL is set, e.g. with `docker compose up -d db`:
+    TEST_DATABASE_URL=postgresql+psycopg://app:app@localhost:5432/app pytest
+\"\"\"
+
+import collections
+import json
+import os
+import threading
+
+import pytest
+from sqlalchemy import create_engine, text
+
+URL = os.environ.get("TEST_DATABASE_URL")
+pytestmark = pytest.mark.skipif(not URL, reason="set TEST_DATABASE_URL to a Postgres database to run")
+
+
+@pytest.fixture()
+def pg(monkeypatch):
+    from alembic import command
+    from alembic.config import Config
+
+    from {pkg} import worker
+
+    engine = create_engine(URL)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS jobs, alembic_version"))
+    cfg = Config(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "..", "migrations"))
+    cfg.set_main_option("sqlalchemy.url", URL)
+    command.upgrade(cfg, "head")
+    monkeypatch.setattr(worker, "engine", engine)
+    monkeypatch.setattr(worker, "HANDLERS", {{}})
+    yield worker, engine
+    engine.dispose()
+
+
+def enqueue(engine, kind, payload):
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO jobs (kind, payload) VALUES (:k, CAST(:p AS jsonb))"),
+            {{"k": kind, "p": json.dumps(payload)}},
+        )
+
+
+def status(engine, kind):
+    with engine.connect() as conn:
+        query = text("SELECT status, attempts, last_error, run_after > now() FROM jobs WHERE kind = :k")
+        return conn.execute(query, {{"k": kind}}).one()
+
+
+def test_failed_jobs_retry_later_then_fail(pg):
+    worker, engine = pg
+    calls = []
+
+    @worker.handler("flaky")
+    def flaky(payload):
+        calls.append(payload)
+        if len(calls) == 1:
+            raise ConnectionError("the first try fails")
+
+    enqueue(engine, "flaky", {{}})
+    enqueue(engine, "unknown", {{}})
+    worker.run_once()
+    assert status(engine, "flaky")[:2] == ("pending", 1) and status(engine, "flaky")[3]  # retried later
+    for _ in range(worker.MAX_ATTEMPTS):
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE jobs SET run_after = now() WHERE status = 'pending'"))  # skip the wait
+        worker.run_once()
+    assert status(engine, "flaky")[0] == "done"
+    failed = status(engine, "unknown")
+    assert failed[0] == "failed" and failed[1] == worker.MAX_ATTEMPTS and "no handler" in failed[2]
+
+
+def test_two_workers_never_process_a_job_twice(pg):
+    worker, engine = pg
+    seen = collections.Counter()
+    lock = threading.Lock()
+
+    def count(payload):
+        with lock:
+            seen[payload["n"]] += 1
+
+    worker.handler("count")(count)
+    for n in range(40):
+        enqueue(engine, "count", {{"n": n}})
+
+    def drain():
+        while worker.run_once():
+            pass
+
+    threads = [threading.Thread(target=drain) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(seen) == 40 and max(seen.values()) == 1
+"""
+
+
+def _starter_tests_and_schema(pkg: str, *, worker: bool) -> dict[str, str]:
+    """Schema, its first Alembic migration, and tests that run without a database server."""
+    files = {
+        f"{pkg}/models.py": MODELS_HEAD + (MODELS_JOBS if worker else ""),
+        "alembic.ini": ALEMBIC_INI,
+        "migrations/env.py": ENV_PY.format(pkg=pkg),
+        "migrations/script.py.mako": SCRIPT_MAKO,
+        "migrations/versions/0001_initial.py": MIGRATION_JOBS if worker else MIGRATION_EMPTY,
+        "tests/conftest.py": CONFTEST,
+        "tests/test_api.py": TEST_API.format(pkg=pkg),
+        "tests/test_migrations.py": TEST_MIGRATIONS.format(pkg=pkg),
+    }
+    if worker:
+        files["tests/test_worker.py"] = TEST_WORKER.format(pkg=pkg)
+        files["tests/test_worker_postgres.py"] = TEST_WORKER_POSTGRES.format(pkg=pkg)
+    return files
+
+
 def starter_repo(s: Session, proposal: dict, cid: str) -> bytes:
     cand = _candidate(proposal, cid)
     v = proposal["versions"]
     name = re.sub(r"[^a-z0-9-]+", "-", str(s.value("name")).lower()).strip("-") or "my-service"
     pkg = name.replace("-", "_")
     ids = {x.id for x in cand.components}
-    deps = [f"{lib}=={v[lib]}" if v.get(lib) else lib for lib in v if lib != "pytest"]
+    dev_libs = ("pytest", "httpx2")
+    deps = [f"{lib}=={v[lib]}" if v.get(lib) else lib for lib in v if lib not in dev_libs]
+    dev = [f"{lib}=={v.get(lib) or FALLBACK_VERSIONS[lib]}" for lib in dev_libs]
     deps = [d.replace("psycopg==", "psycopg[binary]==") if d.startswith("psycopg==") else d for d in deps]
     deps = [d.replace("uvicorn==", "uvicorn[standard]==") if d.startswith("uvicorn==") else d for d in deps]
     files: dict[str, str] = {}
-    files["pyproject.toml"] = textwrap.dedent(f"""\
-        [project]
-        name = "{name}"
-        version = "0.1.0"
-        requires-python = ">=3.12"
-        dependencies = [
-        {chr(10).join(f'    "{d}",' for d in deps)}
-        ]
+    dep_lines = "\n".join(f'    "{d}",' for d in deps)  # outside dedent: it would skew the indentation
+    files["pyproject.toml"] = (
+        f'[project]\nname = "{name}"\nversion = "0.1.0"\nrequires-python = ">=3.12"\n'
+        f"dependencies = [\n{dep_lines}\n]\n\n"
+        f"[project.optional-dependencies]\ndev = [{', '.join(repr(d).replace(chr(39), chr(34)) for d in dev)}]\n\n"
+        f'[tool.setuptools.packages.find]\ninclude = ["{pkg}*"]  # not migrations/ or tests/\n\n'
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n'
+    )
+    if proposal.get("index"):  # install from the same index Codewright looked the versions up on
+        index_url = proposal["index"]
+        files["pyproject.toml"] += f'\n[[tool.uv.index]]\nname = "default"\nurl = "{index_url}"\ndefault = true\n'
 
-        [project.optional-dependencies]
-        dev = ["pytest=={v.get("pytest", FALLBACK_VERSIONS["pytest"])}"]
-
-        [tool.pytest.ini_options]
-        testpaths = ["tests"]
-        """)
     files[f"{pkg}/__init__.py"] = ""
     files[f"{pkg}/settings.py"] = textwrap.dedent("""\
         from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -1140,61 +1571,14 @@ def starter_repo(s: Session, proposal: dict, cid: str) -> bytes:
     ]
     files[f"{pkg}/main.py"] = "\n".join(main)
     if "worker" in ids or "queue" in ids:
-        files[f"{pkg}/worker.py"] = textwrap.dedent("""\
-            \"\"\"Job worker: claims jobs with FOR UPDATE SKIP LOCKED so several workers never double-process.\"\"\"
-
-            import time
-
-            from sqlalchemy import text
-
-            from .db import engine
-
-            CLAIM = text(\"\"\"
-                UPDATE jobs SET status = 'running', attempts = attempts + 1
-                WHERE id IN (
-                    SELECT id FROM jobs
-                    WHERE status = 'pending' AND run_after <= now()
-                    ORDER BY id
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT 10
-                )
-                RETURNING id, kind, payload
-            \"\"\")
-
-
-            def handle(kind: str, payload: dict) -> None:
-                raise NotImplementedError(kind)
-
-
-            def run_forever(idle_seconds: float = 2.0) -> None:
-                while True:
-                    with engine.begin() as conn:
-                        jobs = conn.execute(CLAIM).fetchall()
-                    for job in jobs:
-                        handle(job.kind, job.payload)
-                        with engine.begin() as conn:
-                            conn.execute(text("UPDATE jobs SET status = 'done' WHERE id = :id"), {"id": job.id})
-                    if not jobs:
-                        time.sleep(idle_seconds)
-
-
-            if __name__ == "__main__":
-                run_forever()
-            """)
-    files["tests/test_health.py"] = textwrap.dedent(f"""\
-        from fastapi.testclient import TestClient
-
-        from {pkg}.main import app
-
-
-        def test_healthz():
-            assert TestClient(app).get("/healthz").json() == {{"status": "ok"}}
-        """)
+        files[f"{pkg}/worker.py"] = WORKER_PY
+    files.update(_starter_tests_and_schema(pkg, worker="worker" in ids or "queue" in ids))
     files["Dockerfile"] = textwrap.dedent(f"""\
         FROM python:3.12-slim
         WORKDIR /app
-        COPY pyproject.toml .
+        COPY pyproject.toml alembic.ini ./
         COPY {pkg} {pkg}
+        COPY migrations migrations
         RUN pip install --no-cache-dir .
         CMD ["uvicorn", "{pkg}.main:app", "--host", "0.0.0.0", "--port", "8080"]
         """)
@@ -1216,7 +1600,17 @@ def starter_repo(s: Session, proposal: dict, cid: str) -> bytes:
     files["docker-compose.yml"] = "services:\n" + "\n".join(services) + "\n"
     files["README.md"] = (
         f"# {s.value('name')}\n\n{s.value('idea')}\n\nGenerated by Codewright Design mode. "
-        f"See docs/design.md and docs/adr/.\n\n```bash\ndocker compose up\n```\n"
+        f"See docs/design.md and docs/adr/.\n\n```bash\ndocker compose up -d db\n"
+        f"alembic upgrade head          # create the schema\ndocker compose up\n```\n\n"
+        "Tests run against SQLite, so they need no database server:\n\n"
+        '```bash\npip install -e ".[dev]" && pytest\n```\n\n'
+        + (
+            "The worker's Postgres tests (claiming, retries, no double processing) run when a database is given:\n\n"
+            "```bash\ndocker compose up -d db\n"
+            "TEST_DATABASE_URL=postgresql+psycopg://app:app@localhost:5432/app pytest\n```\n"
+            if "worker" in ids or "queue" in ids
+            else ""
+        )
     )
     files["docs/design.md"] = design_doc(s, proposal, cid)
     for d in decisions_for(s, proposal, cid):

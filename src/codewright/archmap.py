@@ -17,8 +17,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .graph import CodeGraph
-from .intents.detectors import is_test_file
+from .graph import CodeGraph, is_test_file
 from .models import Finding
 
 # import prefix -> (external system label, kind)
@@ -428,6 +427,27 @@ class ArchMap:
                 nodes.setdefault(nid, Node(nid, label, kind, detail=kind))
                 edges.append(Edge(key, nid, "uses"))
         return View("flow", f"Request flow: {entry.partition('::')[2]}", list(nodes.values()), edges)
+
+    def view(self, level: str, target: str = "") -> View:
+        """The system, module or flow view, defaulting the target. Raises ValueError with what is available."""
+        if level == "system":
+            return self.system()
+        if level == "module":
+            comps = self.components()
+            if not comps:
+                raise ValueError("no components: the repo has no Python modules outside tests")
+            if target and target not in comps:
+                raise ValueError(f"unknown component {target!r}; available: {', '.join(comps)}")
+            return self.module(target or comps[0])
+        if level == "flow":
+            eps = self.entry_points()
+            if not eps:
+                raise ValueError("no entry points found (web routes, CLI commands or __main__ blocks)")
+            ids = [e["id"] for e in eps]
+            if target and target not in ids:
+                raise ValueError(f"unknown entry point {target!r}; available: {', '.join(ids[:20])}")
+            return self.flow(target or ids[0])
+        raise ValueError("level must be system, module or flow")
 
     def entry_points(self) -> list[dict]:
         out = []

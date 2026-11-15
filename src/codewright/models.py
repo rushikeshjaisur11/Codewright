@@ -13,6 +13,7 @@ class Dependency:
     version: str | None  # exact installed/locked version when known
     specifier: str | None = None  # declared range, e.g. ">=2.0"
     source: str = ""  # file it was read from
+    extras: set[str] = field(default_factory=set)  # requested extras, e.g. {"mcp"} for google-adk[mcp]
 
 
 @dataclass
@@ -76,6 +77,9 @@ class IntentMatch:
 
 @dataclass
 class Card:
+    """What a library version offers for an intent. intent "reference" marks a knowledge-only entry:
+    no detector produces it, so it is never a finding, but it is searchable and feeds release "unlocks"."""
+
     id: str
     intent: str
     title: str
@@ -97,6 +101,10 @@ class Card:
     match: dict[str, Any] = field(default_factory=dict)  # constraints on IntentMatch.data (None = absent)
     offer_uninstalled: bool = False  # may be suggested as a new dependency
     autofix: bool = False  # apply the detector's byte-span edits as the patch
+    topic: str = ""  # feature area the Knowledge base groups by, e.g. "Sessions, state and memory"
+    # Applies only when none of these is in the lockfile (e.g. an extra's package that was never installed).
+    unless_installed: list[str] = field(default_factory=list)
+    extra: str = ""  # with unless_installed: the `library[extra]` that would install them
 
 
 @dataclass
@@ -132,7 +140,8 @@ class Finding:
     span: tuple[int, int] = (0, 0)  # enclosing function's first and last line
     status: str | None = None  # feedback: accepted | rejected | muted
     card_id: str = ""
-    covered: bool = False  # some test reaches this function through the call graph
+    covered: bool = False  # a test reaches this function: run during proof, else by the call graph
+    reached_by: list[str] = field(default_factory=list)  # test ids that ran it during proof (first few)
 
     def to_dict(self) -> dict[str, Any]:
         from dataclasses import asdict

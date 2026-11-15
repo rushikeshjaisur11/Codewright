@@ -4,6 +4,7 @@
 
 - id: tenacity.retry
   intent: retry
+  topic: Retries
   title: Replace the hand-written retry loop with tenacity
   symbol: tenacity.retry
   kind: library
@@ -41,7 +42,7 @@
         retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         reraise=True,
     )
-    def call_service(...):
+    def call_service(url: str) -> bytes:
         ...
 
 - id: postgres.skip-locked-queue
@@ -85,6 +86,7 @@
 
 - id: sqlalchemy.engine-once
   intent: connection-per-request
+  topic: SQLAlchemy
   title: Create the SQLAlchemy engine once and reuse its connection pool
   symbol: sqlalchemy.create_engine
   kind: library
@@ -172,6 +174,7 @@
 
 - id: httpx.shared-client
   intent: connection-per-request
+  topic: HTTP clients
   title: Share one httpx client across requests
   symbol: httpx.AsyncClient
   kind: library
@@ -199,6 +202,7 @@
 
 - id: requests.shared-session
   intent: connection-per-request
+  topic: HTTP clients
   title: Reuse one requests.Session instead of creating one per request
   symbol: requests.Session
   kind: library
@@ -220,62 +224,3 @@
     Under heavy concurrency, tune the HTTPAdapter pool_maxsize.
   sources:
     - https://requests.readthedocs.io/en/latest/user/advanced/#session-objects
-
-- id: adk.workflow
-  intent: agent-orchestrator
-  title: Move fixed agent orchestration to an ADK 2.0 graph workflow
-  symbol: "google-adk Workflow (graph workflows)"
-  kind: library
-  library: google-adk
-  versions: ">=2.0"
-  suggestion: >-
-    Express the agent sequence, parallel branches or loop as an ADK 2.0 graph
-    workflow instead of SequentialAgent/ParallelAgent/LoopAgent or a hand-written
-    driver loop.
-  gain: >-
-    SequentialAgent, ParallelAgent and LoopAgent are deprecated from ADK 2.0 in
-    favour of graph workflows, which add routing between nodes, human input and
-    resumability checkpoints (v2.6.0+).
-  effort: 3
-  impact: 4
-  risk: >-
-    Migration changes how state and events flow between steps; re-run your agent
-    evals and compare traces before switching.
-  when_not: >-
-    When the order of steps is decided by the model at run time; keep an LLM
-    agent with sub-agents or tools for that.
-  threshold: >-
-    Worth it as soon as there are two or more fixed steps or any branch, retry or
-    human approval step.
-  sources:
-    - https://developers.googleblog.com/en/why-we-built-adk-20/
-    - https://ecorpit.com/adk-2-0-workflows-vs-autonomous-agents-guide-2026/
-    - https://newreleases.io/project/github/google/adk-python/release/v2.6.0
-
-- id: adk.sequential-agent
-  intent: agent-orchestrator
-  title: Replace the hand-written agent loop with SequentialAgent
-  symbol: google.adk.agents.SequentialAgent
-  kind: library
-  library: google-adk
-  versions: ">=1.0,<2.0"
-  match:
-    deprecated_class: null
-  suggestion: >-
-    On ADK 1.x, wrap the agents in a SequentialAgent (or LoopAgent for repeats)
-    and pass data between them through session state with output_key.
-  gain: >-
-    One runner call instead of a driver loop; events, state and tracing flow
-    through ADK so the steps show up in the dev UI and evals.
-  effort: 2
-  impact: 3
-  risk: >-
-    These classes are deprecated in ADK 2.0; plan the move to graph workflows
-    when you upgrade.
-  when_not: >-
-    When the next step depends on the model's decision; use an LLM agent with
-    sub-agents instead.
-  threshold: >-
-    Once there are branches or human approval steps, upgrade to ADK 2.0 workflows.
-  sources:
-    - https://google.github.io/adk-docs/agents/workflow-agents/sequential-agents/

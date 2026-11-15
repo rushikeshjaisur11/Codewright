@@ -1,0 +1,82 @@
+# requests and httpx. Checked in requests 2.20.1 / 2.34.2 and httpx 0.23.3 / 0.28.1.
+
+- id: requests.timeout
+  intent: requests-no-timeout
+  topic: HTTP clients
+  title: Always pass a timeout to requests
+  symbol: requests.Session.request
+  kind: library
+  library: requests
+  versions: ">=2.20"
+  suggestion: >-
+    Pass `timeout=(connect, read)` on every call, for example `timeout=(3.05, 30)`, or
+    set it once on a shared Session wrapper.
+  gain: >-
+    requests has no default timeout (the parameter defaults to None): a server that
+    accepts the connection and never answers holds the thread, request or job forever,
+    and enough of them exhaust the worker pool.
+  effort: 1
+  impact: 4
+  risk: >-
+    Calls that legitimately take long (large downloads) now fail; give those a longer
+    read timeout or stream them.
+  when_not: >-
+    Never in production code; only in throwaway scripts you watch.
+  threshold: >-
+    Any call to a service you don't control.
+  sources:
+    - https://requests.readthedocs.io/en/latest/user/advanced/#timeouts
+    - https://requests.readthedocs.io/en/latest/user/quickstart/#timeouts
+
+- id: httpx.ref.timeouts-limits
+  intent: reference
+  topic: HTTP clients
+  title: Set httpx timeouts and connection limits per client
+  symbol: httpx.Limits
+  kind: library
+  library: httpx
+  versions: ">=0.23"
+  suggestion: >-
+    Configure the shared client once:
+    `httpx.Client(timeout=httpx.Timeout(10.0, connect=3.0), limits=httpx.Limits(max_connections=100, max_keepalive_connections=20))`.
+  gain: >-
+    httpx times out after 5 seconds by default, which is often too short for slow APIs
+    and too long for health checks; explicit timeouts and pool limits make both
+    deliberate, and limits stop one slow upstream from opening unbounded connections.
+  effort: 1
+  impact: 3
+  risk: >-
+    A pool that is too small queues requests (PoolTimeout); size it to your concurrency.
+  when_not: >-
+    For one-off calls where the defaults are fine.
+  threshold: >-
+    Any service making more than a handful of concurrent outbound calls.
+  sources:
+    - https://www.python-httpx.org/advanced/timeouts/
+    - https://www.python-httpx.org/advanced/resource-limits/
+
+- id: httpx.ref.transport-retries
+  intent: reference
+  topic: HTTP clients
+  title: Retry failed connections with HTTPTransport(retries=...)
+  symbol: httpx.HTTPTransport
+  kind: library
+  library: httpx
+  versions: ">=0.23"
+  suggestion: >-
+    `httpx.Client(transport=httpx.HTTPTransport(retries=3))` (or AsyncHTTPTransport)
+    retries connection failures.
+  gain: >-
+    Transient connect errors and resets during connection setup are retried without a
+    hand-written loop.
+  effort: 1
+  impact: 2
+  risk: >-
+    It retries only connection errors (ConnectError, ConnectTimeout), not HTTP 5xx or read
+    timeouts; use tenacity for those.
+  when_not: >-
+    When you need retries on HTTP status codes.
+  threshold: >-
+    Calls over flaky networks or to services that restart often.
+  sources:
+    - https://www.python-httpx.org/advanced/transports/

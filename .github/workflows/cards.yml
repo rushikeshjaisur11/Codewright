@@ -1,0 +1,33 @@
+name: Knowledge base
+
+# Libraries release often; check every card against the latest google-adk weekly, and whenever
+# cards or detectors change. A renamed or removed API, or a dead source, fails the job.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/codewright/cards/**"
+      - "src/codewright/intents/**"
+      - "src/codewright/cardcheck.py"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify cards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          activate-environment: true
+      - run: uv pip install -e .
+      - name: Latest google-adk with its extras, in its own environment
+        run: |
+          uv venv /tmp/libs --python 3.13
+          uv pip install --python /tmp/libs/bin/python "google-adk[a2a,db,mcp,eval,extensions]"
+      - run: codewright cards verify --python /tmp/libs/bin/python --links

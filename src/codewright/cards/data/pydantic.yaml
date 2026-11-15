@@ -1,0 +1,270 @@
+# Pydantic 2. Every symbol and behaviour below was checked in pydantic 2.0.3 and 2.14.3
+# (pydantic-settings 2.0.x and 2.16.3).
+
+- id: pydantic.field-validator
+  intent: pydantic-v1-validator
+  topic: Pydantic
+  title: Replace @validator / @root_validator with @field_validator / @model_validator
+  symbol: pydantic.field_validator
+  kind: library
+  library: pydantic
+  autofix: true  # only (cls, value) validators with plain field names
+  versions: ">=2.0"
+  suggestion: >-
+    Use `@field_validator("x")` (a classmethod taking the value) for one field and
+    `@model_validator(mode="after")` (a method on the built model) for checks across
+    fields.
+  gain: >-
+    `@validator` and `@root_validator` emit PydanticDeprecatedSince20 on every import
+    and are slated for removal; the v2 decorators are faster and have explicit modes
+    (before, after, wrap).
+  effort: 2
+  impact: 2
+  risk: >-
+    The signatures differ: `values` is replaced by `info.data`, `pre=True` becomes
+    `mode="before"`, and `each_item` is gone. Check each validator, don't rename blindly.
+  when_not: >-
+    In code that must still run on Pydantic 1.
+  threshold: >-
+    Before the release that removes the v1 decorators, or as soon as deprecation
+    warnings are treated as errors in tests.
+  sources:
+    - https://docs.pydantic.dev/latest/concepts/validators/
+    - https://docs.pydantic.dev/latest/migration/
+  snippet: |
+    from pydantic import BaseModel, field_validator, model_validator
+
+    class Booking(BaseModel):
+        start: int
+        end: int
+
+        @field_validator("start")
+        @classmethod
+        def not_negative(cls, v: int) -> int:
+            if v < 0:
+                raise ValueError("start must be >= 0")
+            return v
+
+        @model_validator(mode="after")
+        def ordered(self) -> "Booking":
+            if self.end < self.start:
+                raise ValueError("end before start")
+            return self
+
+- id: pydantic.config-dict
+  intent: pydantic-class-config
+  topic: Pydantic
+  title: Configure models with model_config = ConfigDict(...), not class Config
+  symbol: pydantic.ConfigDict
+  kind: library
+  library: pydantic
+  autofix: true  # only when every option is already a Pydantic 2 name: the same settings, moved
+  versions: ">=2.0"
+  suggestion: >-
+    Replace the nested `class Config:` with `model_config = ConfigDict(...)`. Several
+    options were renamed: `orm_mode` is `from_attributes`, `allow_population_by_field_name`
+    is `populate_by_name`, `schema_extra` is `json_schema_extra`.
+  gain: >-
+    Class-based config is deprecated in Pydantic 2 and warns for every model;
+    ConfigDict is typed, so a misspelt option is caught by the type checker.
+  effort: 1
+  impact: 2
+  risk: >-
+    Renamed options keep working silently only under their new names; an old name in
+    ConfigDict is ignored, so check each one.
+  when_not: >-
+    In code that must still run on Pydantic 1.
+  threshold: >-
+    Before deprecation warnings become errors in your test run.
+  sources:
+    - https://docs.pydantic.dev/latest/concepts/config/
+    - https://docs.pydantic.dev/latest/migration/
+  snippet: |
+    from pydantic import BaseModel, ConfigDict
+
+    class User(BaseModel):
+        model_config = ConfigDict(from_attributes=True, frozen=True)
+
+        id: int
+        name: str
+
+- id: pydantic.settings-package
+  intent: pydantic-basesettings-import
+  topic: Pydantic
+  title: Import BaseSettings from pydantic-settings
+  symbol: pydantic_settings.BaseSettings
+  kind: library
+  library: pydantic
+  versions: ">=2.0"
+  suggestion: >-
+    Add the `pydantic-settings` package and use
+    `from pydantic_settings import BaseSettings, SettingsConfigDict`.
+  gain: >-
+    On Pydantic 2, `from pydantic import BaseSettings` raises PydanticImportError
+    ("BaseSettings has been moved to the pydantic-settings package"): the module fails
+    to import.
+  effort: 1
+  impact: 5
+  risk: >-
+    Settings configuration moves to `model_config = SettingsConfigDict(env_file=...)`,
+    and environment parsing of complex types differs slightly; test the settings once.
+  when_not: >-
+    Never on Pydantic 2: the import fails.
+  threshold: >-
+    Immediately: this is an import error.
+  sources:
+    - https://docs.pydantic.dev/latest/concepts/pydantic_settings/
+    - https://docs.pydantic.dev/latest/migration/
+  snippet: |
+    from pydantic_settings import BaseSettings, SettingsConfigDict
+
+    class Settings(BaseSettings):
+        model_config = SettingsConfigDict(env_file=".env")
+
+        database_url: str
+
+- id: pydantic.ref.type-adapter
+  intent: reference
+  topic: Pydantic
+  title: Validate lists, dicts and other non-model types with TypeAdapter
+  symbol: pydantic.TypeAdapter
+  kind: library
+  library: pydantic
+  versions: ">=2.0"
+  suggestion: >-
+    `TypeAdapter(list[Item]).validate_python(data)` (or `validate_json`) validates and
+    converts any type, not just BaseModel subclasses; build the adapter once and reuse it.
+  gain: >-
+    No wrapper model just to validate a list or a union, and the same fast Rust
+    validator as models, plus `dump_python` and `json_schema` for that type.
+  effort: 1
+  impact: 2
+  risk: >-
+    Building an adapter compiles a validator; doing it per call wastes time.
+  when_not: >-
+    When the data already is a model.
+  threshold: >-
+    Any endpoint or job that parses a list or mapping of models.
+  sources:
+    - https://docs.pydantic.dev/latest/concepts/type_adapter/
+
+- id: pydantic.ref.computed-field
+  intent: reference
+  topic: Pydantic
+  title: Include derived values in output with @computed_field
+  symbol: pydantic.computed_field
+  kind: library
+  library: pydantic
+  versions: ">=2.0"
+  suggestion: >-
+    Decorate a property with `@computed_field` so `model_dump()`, `model_dump_json()`
+    and the JSON schema include it.
+  gain: >-
+    Derived values (totals, display names) appear in API responses without being stored
+    or recomputed by hand in every serializer.
+  effort: 1
+  impact: 1
+  risk: >-
+    It runs on every dump; keep it cheap.
+  when_not: >-
+    When the value is expensive or needs I/O: compute it explicitly.
+  threshold: >-
+    When the same derived value is added to responses in several places.
+  sources:
+    - https://docs.pydantic.dev/latest/concepts/fields/
+
+- id: pydantic.ignored-config
+  intent: pydantic-ignored-config
+  topic: Pydantic
+  title: Pydantic 1 config names are ignored on Pydantic 2
+  symbol: pydantic.ConfigDict
+  kind: library
+  library: pydantic
+  versions: ">=2.0"
+  suggestion: >-
+    Rename the options to their Pydantic 2 names (orm_mode is from_attributes,
+    anystr_strip_whitespace is str_strip_whitespace, max_anystr_length is str_max_length,
+    allow_population_by_field_name is populate_by_name, schema_extra is
+    json_schema_extra, validate_all is validate_default) and move them to
+    `model_config = ConfigDict(...)`. Then run the tests: the model starts doing what the
+    config always said.
+  gain: >-
+    Pydantic 2 only warns ("Valid config keys have changed in V2") and ignores these
+    names, so today the model doesn't strip whitespace, enforce lengths, read from ORM
+    objects or populate by field name, whatever the config says. Checked in Pydantic
+    2.0.3 and 2.14.3.
+  effort: 2
+  impact: 5
+  risk: >-
+    This changes behaviour on purpose: input that was accepted unstripped or too long
+    starts being stripped or rejected. Review callers and tests before shipping.
+  when_not: >-
+    Never leave them: either rename them, or delete them if the behaviour isn't wanted.
+  threshold: >-
+    Immediately: the model's actual behaviour differs from its declared configuration.
+  sources:
+    - https://docs.pydantic.dev/latest/migration/
+    - https://docs.pydantic.dev/latest/concepts/config/
+
+- id: pydantic.annotated-field
+  intent: pydantic-annotated-field
+  topic: Pydantic
+  title: Declare required constrained fields with Annotated
+  symbol: pydantic.Field
+  kind: library
+  library: pydantic
+  versions: ">=2.0"
+  autofix: true
+  suggestion: >-
+    Write a required field as `qty: Annotated[int, Field(gt=0)]` instead of
+    `qty: int = Field(gt=0)`, and `name: str` instead of `name: str = Field(...)`. Fields
+    with a default, default_factory or alias keep the assignment form; for those Codewright
+    only drops a `...` default.
+  gain: >-
+    The Pydantic docs: the `f: <type> = Field(...)` form "might trick users into thinking f
+    has a default value, while in reality it is still required", and the ellipsis form "is
+    discouraged as it doesn't play well with static type checkers". The model is the
+    same: identical fields, validation and JSON schema (checked in Pydantic 2.0.3 and
+    2.14.3).
+  effort: 1
+  impact: 2
+  risk: >-
+    None at runtime. On Python 3.8, import Annotated from typing_extensions instead of
+    typing.
+  when_not: >-
+    Pydantic dataclasses, where a field without an assigned value must come before fields
+    with defaults (Codewright only rewrites BaseModel and BaseSettings subclasses).
+  threshold: >-
+    Any required field written with `= Field(...)`.
+  sources:
+    - https://docs.pydantic.dev/latest/concepts/fields/#the-annotated-pattern
+    - https://docs.pydantic.dev/latest/concepts/fields/#default-values
+
+- id: pydantic.reusable-annotated
+  intent: pydantic-repeated-constraints
+  topic: Pydantic
+  title: Name a constrained type once and reuse it
+  symbol: pydantic.Field
+  kind: library
+  library: pydantic
+  versions: ">=2.0"
+  suggestion: >-
+    Define the constrained type once, for example `Quantity = Annotated[int, Field(gt=0, le=1000)]`,
+    and use `qty: Quantity` wherever the same rule applies. Each field keeps its own default
+    and description.
+  gain: >-
+    The rule lives in one place: changing a limit changes it everywhere, and fields that
+    are meant to agree can't drift apart. The Pydantic docs list reusable types as an
+    advantage of the annotated pattern.
+  effort: 2
+  impact: 2
+  risk: >-
+    Fields that only share a limit by coincidence would then change together; name the
+    type after what it means, and leave unrelated fields alone.
+  when_not: >-
+    When the repeated limits mean different things in different models.
+  threshold: >-
+    The same type and constraints on three or more fields.
+  sources:
+    - https://docs.pydantic.dev/latest/concepts/fields/#the-annotated-pattern
+    - https://docs.pydantic.dev/latest/concepts/types/

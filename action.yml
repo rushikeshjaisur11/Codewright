@@ -1,0 +1,73 @@
+name: Codewright review
+description: 'Version-aware "instead of X, use Y" findings for Python repos, as code-scanning alerts and a job summary.'
+author: rushikeshjaisur11
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  path:
+    description: "Repository folder to review."
+    default: "."
+  pr-only:
+    description: "On pull requests, report only code on lines the PR changed (needs the base branch fetched)."
+    default: "true"
+  proof:
+    description: "Run the tests before and after each auto-patch (slower; needs the repo's dependencies)."
+    default: "false"
+  upload-sarif:
+    description: "Upload findings to GitHub code scanning. Needs code scanning enabled for the repository (private repositories: GitHub Code Security) and `security-events: write`, plus `actions: read` in private repositories. Set to false otherwise; the review summary is written either way."
+    default: "true"
+  python-version:
+    description: "Python used to run Codewright."
+    default: "3.13"
+
+outputs:
+  sarif:
+    description: "Path of the SARIF file."
+    value: ${{ steps.review.outputs.sarif }}
+  summary:
+    description: "Path of the Markdown summary (also added to the job summary)."
+    value: ${{ steps.review.outputs.summary }}
+
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: Install Codewright
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: uv tool install --quiet "$ACTION_PATH"
+    - name: Review
+      id: review
+      shell: bash
+      # Inputs reach the script only through environment variables, never interpolated into it.
+      env:
+        REVIEW_PATH: ${{ inputs.path }}
+        PR_ONLY: ${{ inputs.pr-only }}
+        PROOF: ${{ inputs.proof }}
+        BASE_REF: ${{ github.base_ref }}
+        CODEWRIGHT_OFFLINE: "1"
+      run: |
+        set -euo pipefail
+        out="$RUNNER_TEMP/codewright"
+        mkdir -p "$out"
+        args=(--top 0)
+        if [[ "$PROOF" != "true" ]]; then args+=(--no-proof); fi
+        if [[ "$PR_ONLY" == "true" && -n "$BASE_REF" ]]; then
+          git -C "$REVIEW_PATH" fetch --quiet --no-tags origin "$BASE_REF"
+          args+=(--base "origin/$BASE_REF")
+        fi
+        codewright review "$REVIEW_PATH" "${args[@]}" -f pr -o "$out/summary.md" --sarif-output "$out/codewright.sarif"
+        cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+        echo "sarif=$out/codewright.sarif" >> "$GITHUB_OUTPUT"
+        echo "summary=$out/summary.md" >> "$GITHUB_OUTPUT"
+    - name: Upload to code scanning
+      if: inputs.upload-sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ steps.review.outputs.sarif }}
+        category: codewright

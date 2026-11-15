@@ -1,0 +1,156 @@
+# FastAPI. Checked in FastAPI 0.100.1 and 0.163.1 (Annotated parameters also in 0.95.0, 0.95.1, 0.105.0).
+
+- id: fastapi.annotated-params
+  intent: fastapi-annotated-params
+  topic: FastAPI
+  title: Declare parameters with Annotated
+  symbol: fastapi.Query
+  kind: library
+  library: fastapi
+  versions: ">=0.95.1"
+  autofix: true
+  suggestion: >-
+    Move the FastAPI marker into the type and keep the real default as the default:
+    `q: Annotated[str | None, Query(max_length=50)] = None` instead of
+    `q: str | None = Query(None, max_length=50)`, and `user: Annotated[User, Depends(current_user)]`
+    instead of `user: User = Depends(current_user)`. A dependency used in several routes
+    can then become one type, `CurrentUser = Annotated[User, Depends(current_user)]`.
+  gain: >-
+    The FastAPI docs recommend it ("Prefer to use the Annotated version if possible"):
+    the default is the actual default, so the function also works when called outside
+    FastAPI, and shared dependencies become reusable types. FastAPI reads both forms into
+    the same parameter: the OpenAPI schema and request handling don't change (checked in
+    FastAPI 0.95.1, 0.100.1, 0.105.0 and 0.163.1).
+  effort: 1
+  impact: 2
+  risk: >-
+    Code that calls the function directly without an argument now gets the real default
+    instead of a Query/Depends object, which is the point. A `None` default on a type that
+    isn't Optional (`model: str = Body(None)`) becomes visible to type checkers and linters
+    (ruff RUF013); Codewright keeps the type as written, because adding `| None` changes the
+    OpenAPI schema. Parameters with a mutable default (`Query([])`) are left as they are.
+    On Python 3.8, import Annotated from typing_extensions.
+  when_not: >-
+    FastAPI older than 0.95.1 (0.95.0 fails when an Annotated dependency is shared by two
+    routes), or FastAPI 0.100 to 0.104 with Pydantic 2.12 or later (fails on Annotated
+    parameters; Codewright withholds the patch and says to upgrade FastAPI first). When the
+    rewrite would put a required parameter after one with a default, a route nothing in the
+    repo calls directly gets a leading `*` (FastAPI passes arguments by name); any other
+    function is left as is.
+  threshold: >-
+    Any route or dependency declared with `= Depends(...)`, `= Query(...)` and the like.
+  sources:
+    - https://fastapi.tiangolo.com/tutorial/query-params-str-validations/#advantages-of-annotated
+    - https://fastapi.tiangolo.com/tutorial/dependencies/#share-annotated-dependencies
+    - https://fastapi.tiangolo.com/release-notes/#0950-2023-03-18
+
+- id: fastapi.ref.annotated-deps
+  intent: reference
+  topic: FastAPI
+  title: Declare dependencies with Annotated and reuse them as types
+  symbol: fastapi.Depends
+  kind: library
+  library: fastapi
+  versions: ">=0.100"
+  suggestion: >-
+    Define `SessionDep = Annotated[Session, Depends(get_session)]` once and use
+    `session: SessionDep` in every route.
+  gain: >-
+    One place defines how a dependency is built; routes read like plain type hints, and
+    the functions stay callable outside FastAPI because defaults aren't Depends objects.
+  effort: 1
+  impact: 2
+  risk: >-
+    None beyond the refactor.
+  when_not: >-
+    For a dependency used by a single route.
+  threshold: >-
+    Once the same Depends(...) appears in a few routes.
+  sources:
+    - https://fastapi.tiangolo.com/tutorial/dependencies/
+
+- id: fastapi.ref.yield-dependencies
+  intent: reference
+  topic: FastAPI
+  title: Open and close per-request resources with yield dependencies
+  symbol: fastapi.Depends
+  kind: library
+  library: fastapi
+  versions: ">=0.100"
+  suggestion: >-
+    Write the dependency as a generator: set up, `yield` the resource, clean up after.
+    FastAPI runs the cleanup when the request is done, even if the route raised.
+  gain: >-
+    Sessions and connections are always closed or returned to the pool, without
+    try/finally in every route.
+  effort: 1
+  impact: 3
+  risk: >-
+    Code after yield runs after the response is ready; don't rely on it to change the
+    response.
+  when_not: >-
+    For resources that live as long as the app: create those in the lifespan.
+  threshold: >-
+    Any per-request database session or client.
+  sources:
+    - https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-with-yield/
+  snippet: |
+    from typing import Annotated
+
+    from fastapi import Depends
+
+    def get_session():
+        with SessionLocal() as session:
+            yield session
+
+    SessionDep = Annotated[Session, Depends(get_session)]
+
+- id: fastapi.ref.background-tasks
+  intent: reference
+  topic: FastAPI
+  title: Run small follow-up work after the response with BackgroundTasks
+  symbol: fastapi.BackgroundTasks
+  kind: library
+  library: fastapi
+  versions: ">=0.100"
+  suggestion: >-
+    Take a `background_tasks: BackgroundTasks` parameter and call
+    `background_tasks.add_task(send_email, to, body)`.
+  gain: >-
+    The client gets its response without waiting for the email, webhook or audit write.
+  effort: 1
+  impact: 2
+  risk: >-
+    It runs in the same process: lost on a crash or deploy, and it competes with
+    requests.
+  when_not: >-
+    For work that must not be lost or takes more than a few seconds: use a job queue.
+  threshold: >-
+    Quick, best-effort follow-ups only.
+  sources:
+    - https://fastapi.tiangolo.com/tutorial/background-tasks/
+
+- id: fastapi.ref.api-router
+  intent: reference
+  topic: FastAPI
+  title: Split a large app into modules with APIRouter
+  symbol: fastapi.APIRouter
+  kind: library
+  library: fastapi
+  versions: ">=0.100"
+  suggestion: >-
+    Give each area its own `APIRouter(prefix="/orders", tags=["orders"])` in its own
+    module and `app.include_router(...)` them in main.
+  gain: >-
+    Shared prefixes, tags and dependencies per area; main.py stays small and modules can
+    be tested on their own.
+  effort: 2
+  impact: 2
+  risk: >-
+    Moving routes changes import paths; keep URLs the same.
+  when_not: >-
+    For a handful of routes.
+  threshold: >-
+    Once main.py passes a few hundred lines of routes.
+  sources:
+    - https://fastapi.tiangolo.com/tutorial/bigger-applications/

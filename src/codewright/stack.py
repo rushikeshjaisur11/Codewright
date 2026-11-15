@@ -37,12 +37,18 @@ def discover(root: str | Path) -> Stack:
     return stack
 
 
-def _add(stack: Stack, name: str, version: str | None, specifier: str | None, source: str) -> None:
+LOCKFILES = ("uv.lock", "poetry.lock", "Pipfile.lock")
+
+
+def _add(
+    stack: Stack, name: str, version: str | None, specifier: str | None, source: str, extras: set[str] | None = None
+) -> None:
     key = normalise(name)
     existing = stack.dependencies.get(key)
     if existing is None:
-        stack.dependencies[key] = Dependency(key, version, specifier, source)
+        stack.dependencies[key] = Dependency(key, version, specifier, source, set(extras or ()))
         return
+    existing.extras |= set(extras or ())
     if version:
         existing.version = version
         existing.source = source
@@ -67,7 +73,7 @@ def _parse_requirement(line: str, stack: Stack, source: str) -> None:
     for s in req.specifier:
         if s.operator in ("==", "==="):
             pinned = s.version
-    _add(stack, req.name, pinned, spec, source)
+    _add(stack, req.name, pinned, spec, source, {e.lower() for e in req.extras})
 
 
 def _from_pyproject(root: Path, stack: Stack) -> None:
@@ -172,3 +178,48 @@ def python_version(stack: Stack) -> str:
     if m:
         return f"{m.group(1)}.{m.group(2)}"
     return f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+PROJECT_FILES = ("pyproject.toml", "setup.cfg", "uv.lock", "poetry.lock", "Pipfile.lock", "requirements.txt")
+
+
+def for_path(stack: Stack, path: str) -> Stack:
+    """The stack a file actually runs on: its nearest project folder's, layered over the repo root's.
+
+    A monorepo of separate projects (one pyproject.toml each, no root lockfile) has an empty root
+    stack; a uv workspace has the versions in the root lock and the ranges in each member. Both
+    are right here: the project's own files win, the root fills in what they don't say.
+    """
+    root = Path(stack.root)
+    folder = (root / path).parent
+    while folder != root and root in folder.parents:
+        if not (folder / "__init__.py").exists() and (
+            any((folder / n).exists() for n in PROJECT_FILES) or (folder / "setup.py").exists()
+        ):
+            break
+        folder = folder.parent
+    else:
+        return stack
+    cache = stack.__dict__.setdefault("_projects", {})  # not a dataclass field: never serialised
+    key = str(folder)
+    if key not in cache:
+        own = discover(folder)
+        merged = Stack(
+            root=stack.root,
+            python=own.python or stack.python,
+            dependencies={
+                k: Dependency(d.name, d.version, d.specifier, d.source, set(d.extras))
+                for k, d in stack.dependencies.items()
+            },
+            docker_images=own.docker_images or stack.docker_images,
+            sources=[str(Path(folder.relative_to(root), s)) for s in own.sources] + stack.sources,
+        )
+        for k, d in own.dependencies.items():
+            base = merged.dependencies.get(k)
+            if base is None or d.version:
+                merged.dependencies[k] = d
+            else:  # declared in the project, locked at the root (a workspace)
+                base.specifier = d.specifier or base.specifier
+                base.extras |= d.extras
+        cache[key] = merged
+    return cache[key]

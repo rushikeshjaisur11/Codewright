@@ -204,6 +204,7 @@ input, textarea, select { font: inherit; color: var(--text); }
 /* text action: the one link look, not a third button style */
 .btn.ghost { background: none; color: var(--text-2); padding: 0 8px; }
 .btn.ghost:hover:not(:disabled) { background: color-mix(in oklab, var(--ink) 6%, transparent); color: var(--text); transform: none; }
+.btn.accent { color: var(--accent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 60%, transparent); background: var(--accent-soft); }
 .btn.danger.on { background: var(--red-soft); color: var(--red); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--red) 40%, transparent); }
 
 .input, .select, .textarea {

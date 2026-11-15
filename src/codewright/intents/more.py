@@ -7,6 +7,8 @@ plus any ``data["imports"]`` the rewrite needs. ``suggest.py`` turns those into 
 
 from __future__ import annotations
 
+import json
+
 from tree_sitter import Node
 
 from ..graph import resolve, text
@@ -40,7 +42,7 @@ def _in_await(call: Node) -> bool:
 # --------------------------------------------------------------------------- async hygiene
 
 
-@detector("blocking-sleep-in-async")
+@detector("blocking-sleep-in-async", triggers=("sleep",))
 def detect_sync_sleep_in_async(pf, fn, node, graph):
     if not fn.is_async or (body := _body(node)) is None:
         return []
@@ -64,7 +66,7 @@ def detect_sync_sleep_in_async(pf, fn, node, graph):
     ]
 
 
-@detector("blocking-http-in-async")
+@detector("blocking-http-in-async", triggers=("requests", "urlopen"))
 def detect_blocking_http_in_async(pf, fn, node, graph):
     if not fn.is_async or (body := _body(node)) is None:
         return []
@@ -85,9 +87,15 @@ def detect_blocking_http_in_async(pf, fn, node, graph):
 # --------------------------------------------------------------------------- timing
 
 
-@detector("wall-clock-timing")
+@detector("wall-clock-timing", triggers=("time",))
 def detect_wall_clock_timing(pf, fn, node, graph):
-    """`start = time.time()` ... `time.time() - start` measures durations with the wall clock."""
+    """`start = time.time()` ... `time.time() - start` measures durations with the wall clock.
+
+    Only when every time.time() value stays "on the clock": stored in a local name, offset by a
+    duration, and subtracted from or compared with other time.time() values. A value that meets
+    anything else (a file's st_mtime, a timestamp from elsewhere, a return or an attribute) is a
+    real point in time, and perf_counter() would break it.
+    """
     if (body := _body(node)) is None:
         return []
     calls = [
@@ -95,16 +103,10 @@ def detect_wall_clock_timing(pf, fn, node, graph):
         for c, name in calls_in(body, pf)
         if name == "time.time" and not c.child_by_field_name("arguments").named_children
     ]
-    if len(calls) < 2:
-        return []
-    in_subtraction = any(
-        c.parent is not None and c.parent.type == "binary_operator" and "-" in text(c.parent) for c in calls
-    )
-    if not in_subtraction:
-        return []
-    callee_text = text(_callee(calls[0]))
-    if callee_text != "time.time":
+    if len(calls) < 2 or text(_callee(calls[0])) != "time.time":
         return []  # `from time import time` style: leave to a human
+    if not _clock_only(body, calls):
+        return []
     edits = [(c.start_byte, c.end_byte, "time.perf_counter()") for c in calls]
     return [
         IntentMatch(
@@ -117,10 +119,73 @@ def detect_wall_clock_timing(pf, fn, node, graph):
     ]
 
 
+def _up(n: Node) -> Node | None:
+    p = n.parent
+    while p is not None and p.type == "parenthesized_expression":
+        p = p.parent
+    return p
+
+
+def _clock_only(body: Node, calls: list[Node]) -> bool:
+    """True when every time.time() value is only compared or subtracted with other time.time() values."""
+    call_ids = {c.start_byte for c in calls}
+
+    def assigned_name(expr: Node) -> str | None:
+        """`name = <expr>` or `name = <expr> + duration`: the local name the clock value goes into."""
+        p = _up(expr)
+        if p is not None and p.type == "binary_operator" and text(p.child_by_field_name("operator")) == "+":
+            p = _up(p)
+        if p is not None and p.type == "assignment":
+            left = p.child_by_field_name("left")
+            if left is not None and left.type == "identifier":
+                return text(left)
+        return None
+
+    names = {n for c in calls if (n := assigned_name(c))}
+
+    def on_clock(n: Node | None) -> bool:
+        while n is not None and n.type == "parenthesized_expression":
+            n = n.named_children[0] if n.named_children else None
+        if n is None:
+            return False
+        return (n.type == "call" and n.start_byte in call_ids) or (n.type == "identifier" and text(n) in names)
+
+    def ok_use(n: Node) -> bool:
+        p = _up(n)
+        if p is None:
+            return False
+        if p.type == "binary_operator" and text(p.child_by_field_name("operator")) == "-":
+            other = (
+                p.child_by_field_name("right") if p.child_by_field_name("left") == n else p.child_by_field_name("left")
+            )
+            return on_clock(other)
+        if p.type == "comparison_operator":
+            return all(on_clock(o) for o in p.named_children if o.start_byte != n.start_byte)
+        return assigned_name(n) is not None
+
+    subtracted = False
+    for c in calls:
+        if not ok_use(c):
+            return False
+    for ident in walk(body):
+        if ident.type != "identifier" or text(ident) not in names:
+            continue
+        p = _up(ident)
+        if p is not None and p.type == "assignment" and p.child_by_field_name("left") == ident:
+            continue  # the assignment itself
+        if not ok_use(ident):
+            return False
+    for c in calls:
+        p = _up(c)
+        if p is not None and p.type == "binary_operator" and text(p.child_by_field_name("operator")) == "-":
+            subtracted = True
+    return subtracted
+
+
 # --------------------------------------------------------------------------- deprecated APIs
 
 
-@detector("datetime-utcnow")
+@detector("datetime-utcnow", triggers=("utcnow",))
 def detect_utcnow(pf, fn, node, graph):
     if (body := _body(node)) is None:
         return []
@@ -191,6 +256,13 @@ def detect_pydantic_v1(pf, fn, node, graph):
 
 
 def _pydantic_models(pf) -> set[str]:
+    """Classes in the file that subclass a pydantic model. Computed once per file, not per function."""
+    if "pydantic_models" not in pf.cache:
+        pf.cache["pydantic_models"] = _find_pydantic_models(pf)
+    return pf.cache["pydantic_models"]
+
+
+def _find_pydantic_models(pf) -> set[str]:
     names = set()
     for n in walk(pf.root, into_defs=True):
         if n.type == "class_definition":
@@ -218,7 +290,7 @@ def detect_on_event(pf, fn, node, graph):
     return []
 
 
-@detector("sqlalchemy-legacy-query")
+@detector("sqlalchemy-legacy-query", triggers=("query",))
 def detect_legacy_query(pf, fn, node, graph):
     if not any(v.startswith("sqlalchemy") for v in pf.module.imports.values()):
         return []
@@ -242,7 +314,7 @@ def detect_legacy_query(pf, fn, node, graph):
 # --------------------------------------------------------------------------- stdlib reinventions
 
 
-@detector("manual-counter")
+@detector("manual-counter", triggers=(" in ",))
 def detect_manual_counter(pf, fn, node, graph):
     """if k in d: d[k] += 1  else: d[k] = 1   ->  collections.Counter"""
     if (body := _body(node)) is None:
@@ -268,7 +340,7 @@ def detect_manual_counter(pf, fn, node, graph):
     return []
 
 
-@detector("manual-defaultdict")
+@detector("manual-defaultdict", triggers=(" not in ",))
 def detect_manual_defaultdict(pf, fn, node, graph):
     """if k not in d: d[k] = []  then d[k].append(v)   ->  collections.defaultdict(list)"""
     if (body := _body(node)) is None:
@@ -295,7 +367,7 @@ def detect_manual_defaultdict(pf, fn, node, graph):
     return []
 
 
-@detector("manual-thread-fanout")
+@detector("manual-thread-fanout", triggers=("Thread",))
 def detect_thread_fanout(pf, fn, node, graph):
     if (body := _body(node)) is None:
         return []
@@ -310,19 +382,51 @@ def detect_thread_fanout(pf, fn, node, graph):
     return []
 
 
-@detector("os-system")
+@detector("os-system", triggers=("system",))
 def detect_os_system(pf, fn, node, graph):
     if (body := _body(node)) is None:
         return []
     for call, name in calls_in(body, pf):
         if name in ("os.system", "os.popen"):
-            return [
-                IntentMatch("os-system", fn, line(call), f"{name}() runs the command through a shell", {"call": name})
-            ]
+            data: dict = {"call": name}
+            if name == "os.system" and (argv := _plain_command(call)) is not None:
+                imports = [] if "subprocess" in pf.module.imports else ["import subprocess"]
+                listed = "[" + ", ".join(json.dumps(a, ensure_ascii=False) for a in argv) + "]"
+                data |= {
+                    "edits": [(call.start_byte, call.end_byte, f"subprocess.run({listed}, check=False)")],
+                    "imports": imports,
+                }
+            return [IntentMatch("os-system", fn, line(call), f"{name}() runs the command through a shell", data)]
     return []
 
 
-@detector("string-concat-loop")
+SHELL_SYNTAX = set("|&;<>()$`\\\"'*?[]#~=%{}!\n")
+
+
+def _plain_command(call: Node) -> list[str] | None:
+    """The argument list for `os.system("git status")` when the rewrite can't change behaviour:
+    `os.system` spelled out, its result unused, and a plain string literal with no shell syntax
+    (pipes, redirects, variables, globs, quotes). Anything else is left for a human."""
+    import ast
+    import shlex
+
+    if text(_callee(call)) != "os.system" or call.parent is None or call.parent.type != "expression_statement":
+        return None
+    args = call.child_by_field_name("arguments").named_children
+    if len(args) != 1 or args[0].type != "string" or any(c.type == "interpolation" for c in args[0].children):
+        return None
+    if text(args[0])[0] not in "\"'":  # no f-, b-, r- or u-prefixed strings
+        return None
+    try:
+        command = ast.literal_eval(text(args[0]))
+    except (ValueError, SyntaxError):
+        return None
+    if not isinstance(command, str) or not command.strip() or set(command) & SHELL_SYNTAX:
+        return None
+    return shlex.split(command)
+
+
+@detector("string-concat-loop", triggers=("+=",))
 def detect_string_concat_loop(pf, fn, node, graph):
     if (body := _body(node)) is None:
         return []

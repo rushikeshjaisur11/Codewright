@@ -1,0 +1,26 @@
+name: Codewright
+
+# Codewright reviews its own pull requests with the Action in this repository (uses: ./),
+# so every PR exercises the Action end to end: install, review changed lines, SARIF output and
+# (where code scanning is enabled) the upload.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read  # upload-sarif reads the workflow run; required in private repositories
+
+jobs:
+  review:
+    name: Review changed lines
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./
+        with:
+          # Upload only where code scanning is enabled (set the repository variable CODE_SCANNING=true);
+          # forks can't upload. The review and its summary run either way.
+          upload-sarif: ${{ vars.CODE_SCANNING == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}

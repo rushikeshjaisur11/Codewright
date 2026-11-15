@@ -1,0 +1,83 @@
+# Celery 5. Checked in Celery 5.0.5 and 5.7.0.
+
+- id: celery.autoretry
+  intent: retry
+  topic: Celery
+  title: Retry Celery tasks with autoretry_for instead of a loop inside the task
+  symbol: celery.app.autoretry.add_autoretry_behaviour
+  kind: library
+  library: celery
+  versions: ">=5.0"
+  match:
+    celery: true
+  suggestion: >-
+    Declare the retry on the task:
+    `@app.task(autoretry_for=(ConnectionError,), retry_backoff=True, retry_jitter=True, max_retries=5)`
+    and drop the loop and sleep.
+  gain: >-
+    A sleep loop holds a worker slot for the whole wait. With autoretry the task is
+    re-queued with exponential backoff and jitter, the worker is free meanwhile, and
+    retries show in monitoring.
+  effort: 1
+  impact: 3
+  risk: >-
+    The task must be idempotent: it reruns from the start. Retries count against
+    max_retries, after which the task fails.
+  when_not: >-
+    When the retry is a quick in-process retry of one call that must finish within the
+    same task run.
+  threshold: >-
+    Any task whose retry waits longer than a second or two.
+  sources:
+    - https://docs.celeryq.dev/en/stable/userguide/tasks.html#automatic-retry-for-known-exceptions
+
+- id: celery.ref.acks-late
+  intent: reference
+  topic: Celery
+  title: Don't lose tasks when a worker dies with acks_late
+  symbol: celery.app.task.Task.acks_late
+  kind: library
+  library: celery
+  versions: ">=5.0"
+  suggestion: >-
+    Set `acks_late=True` (and `reject_on_worker_lost=True`) on tasks that must not be
+    lost, so the message is acknowledged after the task finishes, not when it starts.
+  gain: >-
+    By default a task is acknowledged when a worker takes it, so a crash or deploy
+    mid-task loses it; with acks_late the broker redelivers it.
+  effort: 1
+  impact: 4
+  risk: >-
+    Tasks may run twice after a crash; make them idempotent.
+  when_not: >-
+    For tasks that must never run twice and can't be made idempotent.
+  threshold: >-
+    Any task whose loss costs money or data.
+  sources:
+    - https://docs.celeryq.dev/en/stable/userguide/tasks.html#Task.acks_late
+    - https://docs.celeryq.dev/en/stable/faq.html#faq-acks-late-vs-retry
+
+- id: celery.ref.time-limits
+  intent: reference
+  topic: Celery
+  title: Stop stuck tasks with soft_time_limit and time_limit
+  symbol: celery.app.task.Task.soft_time_limit
+  kind: library
+  library: celery
+  versions: ">=5.0"
+  suggestion: >-
+    Set `soft_time_limit` (raises SoftTimeLimitExceeded inside the task so it can clean
+    up) and a slightly larger `time_limit` (kills the process) per task or globally.
+  gain: >-
+    A task stuck on a hung call no longer holds a worker forever.
+  effort: 1
+  impact: 3
+  risk: >-
+    Hard limits kill the worker process mid-task; leave a margin over the soft limit.
+  when_not: >-
+    For tasks whose runtime is genuinely unbounded (long exports); give those a queue of
+    their own.
+  threshold: >-
+    Any task that calls the network or a database.
+  sources:
+    - https://docs.celeryq.dev/en/stable/userguide/workers.html#time-limits

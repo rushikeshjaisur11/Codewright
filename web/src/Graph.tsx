@@ -135,9 +135,18 @@ type Layout = { pos: Record<string, Pt>; routes: Record<string, Pt[]> };
 
 const edgeKey = (e: GEdge, i: number) => `e${i}-${e.source}-${e.target}`;
 
+// ELK runs in a Web Worker, created once: laying out a large map no longer blocks scrolling,
+// hover or typing while it computes.
+let elkReady: Promise<{ layout: (graph: any) => Promise<any> }> | null = null;
+function getElk() {
+  elkReady ??= Promise.all([import("elkjs/lib/elk-api.js"), import("elkjs/lib/elk-worker.min.js?worker")]).then(
+    ([api, worker]) => new api.default({ workerFactory: () => new worker.default() }),
+  );
+  return elkReady;
+}
+
 async function elkLayout(nodes: GNode[], edges: GEdge[], dir: Dir, o: Overlay): Promise<Layout> {
-  const { default: ELK } = await import("elkjs/lib/elk.bundled.js");
-  const elk = new ELK();
+  const elk = await getElk();
   const ids = new Set(nodes.map((n) => n.id));
   const res = await elk.layout({
     id: "root",

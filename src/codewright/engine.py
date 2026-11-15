@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import cards as card_store
-from . import critic, diffscope, graph, proof, rank, stack
+from . import critic, diffscope, graph, proof, proof_env, rank, stack
 from .feedback import Feedback
 from .intents import detect
 from .models import Finding, Stack
@@ -26,6 +25,7 @@ class ReviewResult:
     base: str | None = None  # PR mode: the ref compared against
     seconds: float = 0.0
     feedback: Feedback = field(default_factory=Feedback)
+    test_env: str = ""  # which interpreter ran the tests during proof, and why
 
 
 def review(
@@ -38,13 +38,17 @@ def review(
     test_timeout: int = 300,
     base: str | None = None,
     use_feedback: bool = True,
+    proof_jobs: int | None = None,
+    full_suite: bool = False,
+    build_env: bool = True,
 ) -> ReviewResult:
     t0 = time.perf_counter()
     root = Path(root).resolve()
     st = stack.discover(root)
     g = graph.build(root)
     matches = detect(g)
-    findings = make_findings(matches, st, g, card_store.load(extra_cards))
+    all_cards = card_store.load(extra_cards)
+    findings = make_findings(matches, st, g, all_cards)
 
     if base:
         changed = diffscope.changed_lines(root, base)
@@ -60,16 +64,30 @@ def review(
     for f in findings:
         f.status = fb.status_of(f)
 
-    py = python or critic.target_python(root)
-    if os.sep in py:
-        py = os.path.abspath(py)  # tests run with a different cwd; keep venv symlinks intact
+    env = proof_env.resolve(root, python, build=build_env and run_proof)
+    py = env.python
+    test_env = env.source + (f" ({env.note})" if env.note else "")
     symbols = {f.id: f.symbol for f in findings if critic.is_dotted_symbol(f.symbol)}
-    critic.check_symbols(findings, py, symbols)
+    libraries = {c.id: c.library for c in all_cards if c.library}
+    dists = {f.symbol: libraries[f.card_id] for f in findings if f.card_id in libraries}
+    critic.check_symbols(findings, py, symbols, dists)
 
     # Drop malformed or hallucinated findings before spending time on proof.
     kept, rejected = critic.review(findings)
     if run_proof:
-        proof.prove(kept, root, py, timeout=test_timeout)
+        from .graph import is_test_file
+
+        importers = {f.file: sorted(p for p in g.importers_of(f.file) if is_test_file(p)) for f in kept if f.patch}
+        proof.prove(
+            kept,
+            root,
+            py,
+            timeout=test_timeout,
+            jobs=proof_jobs,
+            python_label=env.source,
+            importers=importers,
+            full_suite=full_suite,
+        )
         kept, broke = critic.review(kept)
         rejected += broke
     else:
@@ -86,4 +104,5 @@ def review(
         base,
         round(time.perf_counter() - t0, 2),
         fb,
+        test_env if run_proof else "",
     )

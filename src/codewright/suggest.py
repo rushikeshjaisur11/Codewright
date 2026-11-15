@@ -12,13 +12,15 @@ from .graph import CodeGraph, ParsedFile, text
 from .intents.detectors import snippet as code_snippet
 from .intents.detectors import walk
 from .models import Card, Finding, IntentMatch, Stack
+from .stack import for_path
 
 
 def make_findings(matches: list[IntentMatch], stack: Stack, graph: CodeGraph, cards: list[Card]) -> list[Finding]:
     hot = graph.hot_functions()
     findings: list[Finding] = []
     for m in matches:
-        options = best_cards(m, stack, cards)
+        here = for_path(stack, m.function.file)  # a monorepo's projects each have their own versions
+        options = best_cards(m, here, cards)
         if not options:
             continue
         card, kind, api = options[0]
@@ -26,6 +28,8 @@ def make_findings(matches: list[IntentMatch], stack: Stack, graph: CodeGraph, ca
         fn = m.function
         effort = card.effort + (1 if kind == "wellknown" else 0)
         suggestion = card.suggestion
+        if m.data.get("advice"):  # what the change means in this codebase, ahead of the general advice
+            suggestion = f"{m.data['advice']} {suggestion}"
         if kind == "wellknown":
             suggestion += f" (Adds a dependency: {card.library}.)"
         fid = hashlib.sha1(f"{card.id}:{fn.file}:{fn.qualname}:{m.line}".encode()).hexdigest()[:8]
@@ -59,6 +63,11 @@ def make_findings(matches: list[IntentMatch], stack: Stack, graph: CodeGraph, ca
             finding.patch = builder(pf, m)
         elif card.autofix and m.data.get("edits"):
             finding.patch = _span_patch(pf, m)
+        guard = PATCH_GUARDS.get(card.id)
+        blocked = guard(here) if guard and finding.patch else None
+        if blocked:  # the rewrite is right in general but breaks with this repo's versions
+            finding.patch = None
+            finding.suggestion = f"{blocked} {finding.suggestion}"
         findings.append(finding)
     return findings
 
@@ -131,6 +140,9 @@ def _add_import(pf: ParsedFile, lines: list[str], statement: str) -> list[str]:
                     lines = list(lines)
                     lines[i] = prefix + ", ".join([*names, parts[3]]) + "\n"
                 return lines
+    stdlib_at = _stdlib_position(pf, statement)
+    if stdlib_at is not None:
+        return [*lines[:stdlib_at], statement, *lines[stdlib_at:]]
     last_import = 0
     for child in pf.root.children:
         if child.type in ("import_statement", "import_from_statement", "future_import_statement"):
@@ -145,6 +157,39 @@ def _add_import(pf: ParsedFile, lines: list[str], statement: str) -> list[str]:
     return [*lines[:last_import], statement, *lines[last_import:]]
 
 
+def _import_key(statement: str) -> tuple[bool, str] | None:
+    """isort's order inside a section: `import x` lines before `from x import` lines, then by module."""
+    parts = statement.split()
+    if len(parts) >= 2 and parts[0] in ("import", "from"):
+        return parts[0] == "from", parts[1].lower()
+    return None
+
+
+def _stdlib_position(pf: ParsedFile, statement: str) -> int | None:
+    """Line index to insert a standard-library import at, keeping the stdlib block sorted."""
+    import sys
+
+    key = _import_key(statement)
+    if key is None or key[1].split(".")[0] not in sys.stdlib_module_names:
+        return None
+    stdlib = []
+    for child in pf.root.children:
+        if child.type in ("import_statement", "import_from_statement"):
+            k = _import_key(text(child))
+            if k and k[1].split(".")[0] in sys.stdlib_module_names:
+                stdlib.append((k, child))
+            elif stdlib:
+                break  # the stdlib block ended
+        elif stdlib and child.type not in ("comment",):
+            break
+    if not stdlib:
+        return None
+    for k, child in stdlib:
+        if k > key:
+            return child.start_point[0]
+    return stdlib[-1][1].end_point[0] + 1
+
+
 def _span_patch(pf: ParsedFile, m: IntentMatch) -> str | None:
     """Apply a detector's (start_byte, end_byte, replacement) edits and any imports it needs."""
     src = pf.source
@@ -154,6 +199,33 @@ def _span_patch(pf: ParsedFile, m: IntentMatch) -> str | None:
     for stmt in m.data.get("imports", []):
         after = _add_import(pf, after, stmt + "\n")
     return unified_diff(pf.path, pf.lines, after)
+
+
+def _fastapi_annotated_guard(stack: Stack) -> str | None:
+    """FastAPI 0.100-0.104 crash on Annotated parameters with Pydantic 2.12+ (fixed in 0.105.0).
+
+    Found by running the rewrite: `'FieldInfo' object has no attribute 'in_'` when an Annotated
+    dependency is shared by two routes, with FastAPI 0.100.1-0.104.1 and Pydantic 2.12.5 / 2.14.3.
+    """
+    from packaging.version import InvalidVersion, Version
+
+    fa, pyd = stack.version_of("fastapi"), stack.version_of("pydantic")
+    try:
+        if fa is None or not (Version("0.100.0") <= Version(fa) < Version("0.105.0")):
+            return None
+        if pyd is not None and Version(pyd) < Version("2.12.0"):
+            return None
+    except InvalidVersion:
+        return None
+    return (
+        f"Upgrade FastAPI to 0.105.0 or later first: FastAPI {fa} with Pydantic {pyd or '2.12+'} fails on "
+        "Annotated parameters, so Codewright doesn't offer the rewrite yet."
+    )
+
+
+PATCH_GUARDS = {
+    "fastapi.annotated-params": _fastapi_annotated_guard,
+}
 
 
 PATCHERS = {

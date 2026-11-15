@@ -1,0 +1,162 @@
+# Architecture review: kind "practice" applies to any stack. Every change these suggest moves,
+# renames or tests code without changing what it does; none is auto-patched. Each finding
+# starts with advice computed from the repo itself (which module, which callers, which test
+# style it already uses), followed by the general advice below.
+
+- id: arch.import-cycle
+  intent: arch-import-cycle
+  topic: Architecture
+  title: Break the import cycle at its weakest link
+  symbol: import-cycle
+  kind: practice
+  library: null
+  versions: "*"
+  suggestion: >-
+    Move the names the weakest link needs into a module that both sides can import (Move
+    Function), so the dependency points one way. If only one function needs them, importing
+    inside that function also works, as the Python FAQ describes, but it hides the coupling
+    rather than removing it.
+  gain: >-
+    A top-level `from a import name` inside a cycle fails with ImportError (or a partially
+    initialised module) as soon as the import order changes, for example when a test or a
+    new entry point imports the other module first. Cycles also mean neither module can be
+    understood, tested or split out without the other.
+  effort: 2
+  impact: 3
+  risk: >-
+    Moving a name changes its import path: update every importer in the same change, and
+    keep a re-export in the old module if code outside the repo imports it.
+  when_not: >-
+    When every link is already inside a function and the two modules really are one unit
+    (a CLI and the server it launches): the cycle is then only coupling, not a bug waiting
+    for an import order.
+  threshold: >-
+    Any cycle with a top-level import; cycles of deferred imports when the modules belong
+    to different components.
+  sources:
+    - https://docs.python.org/3/faq/programming.html#what-are-the-best-practices-for-using-import-in-a-module
+    - https://refactoring.com/catalog/moveFunction.html
+
+- id: arch.layer-bypass
+  intent: arch-layer-bypass
+  topic: Architecture
+  title: Route the query through the layer the other routes use
+  symbol: service-layer
+  kind: practice
+  library: null
+  versions: "*"
+  suggestion: >-
+    Move the route's query into a function in the module the repo's other routes already
+    use for database access, with the same session and the same statements, and call it
+    from the route. The route keeps its request parsing and response; the query moves
+    unchanged.
+  gain: >-
+    One place per entity for queries means transactions, filters (tenancy, soft deletes)
+    and caching are applied the same way on every path, and the query can be tested
+    without HTTP. This is the repo's own convention: most of its routes already do this.
+  effort: 2
+  impact: 3
+  risk: >-
+    Keep the session and transaction boundaries exactly where they are: pass the route's
+    session in rather than opening a new one inside the layer.
+  when_not: >-
+    Small apps where routes query directly by design, or a one-off admin or health route.
+    Codewright only reports this when at least 60% of the repo's database routes, and at
+    least three, go through another module.
+  threshold: >-
+    A route that queries directly in a codebase whose dominant pattern is layered.
+  sources:
+    - https://martinfowler.com/eaaCatalog/serviceLayer.html
+    - https://fastapi.tiangolo.com/tutorial/bigger-applications/
+    - https://refactoring.com/catalog/moveFunction.html
+
+- id: arch.untested-hotspot
+  intent: arch-untested-hotspot
+  topic: Architecture
+  title: Pin a heavily used function with a test before changing it
+  symbol: characterization-test
+  kind: practice
+  library: null
+  versions: "*"
+  suggestion: >-
+    Write a characterization test: call the function with the inputs its callers pass and
+    assert what it returns today, without changing the function. Use the runner and client
+    the repo's tests already use, so the test reads like the others.
+  gain: >-
+    It is the most-called code on request or command paths and no test reaches it, so any
+    change to it (including the other suggestions here) can break many callers silently.
+    A test that records current behaviour turns that into a failing test.
+  effort: 2
+  impact: 3
+  risk: >-
+    A characterization test records today's behaviour, bugs included: if a test exposes a
+    bug, fix it in its own change, not while refactoring.
+  when_not: >-
+    Code that is only glue around a library call already covered by that library's tests,
+    or code that is about to be deleted.
+  threshold: >-
+    Fan-in in this repo's top tenth (at least five callers), on a path from a route, command
+    or task, at least three statements, in a project that already has tests.
+  sources:
+    - https://michaelfeathers.silvrback.com/characterization-testing
+    - https://fastapi.tiangolo.com/tutorial/testing/
+    - https://click.palletsprojects.com/en/stable/testing/
+
+- id: arch.duplicate-logic
+  intent: arch-duplicate-logic
+  topic: Architecture
+  title: Keep one copy of duplicated logic
+  symbol: extract-function
+  kind: practice
+  library: null
+  versions: "*"
+  suggestion: >-
+    The bodies are identical (same parameters, same statements, comments and docstrings
+    aside), so keep one copy in a module both callers can import and replace the others
+    with calls to it (Extract Function, then Move Function). Behaviour is unchanged by
+    construction.
+  gain: >-
+    A fix made to one copy and not the other is the classic source of "it works here but
+    not there" bugs; one copy means one place to fix, test and read.
+  effort: 2
+  impact: 2
+  risk: >-
+    If the copies are meant to diverge soon (one is a fork being rewritten), merging them
+    couples work that should stay separate.
+  when_not: >-
+    Copies in separate deployable projects (Codewright only compares functions within the
+    same pyproject.toml or setup.py), generated code, or deliberately vendored code.
+  threshold: >-
+    Two or more functions with identical bodies of eight or more lines in the same project.
+  sources:
+    - https://refactoring.com/catalog/extractFunction.html
+    - https://refactoring.com/catalog/moveFunction.html
+
+- id: arch.private-import
+  intent: arch-private-import
+  topic: Architecture
+  title: Import another component's public API, not its internals
+  symbol: public-interface
+  kind: practice
+  library: null
+  versions: "*"
+  suggestion: >-
+    Give the name a public spelling in its module (keep the underscore name as an alias so
+    the owning component is untouched) and import the public name, or add a small public
+    function that wraps it. Nothing about the function changes, only how it is reached.
+  gain: >-
+    PEP 8: a leading underscore marks an internal interface with no compatibility promise.
+    The owning component can rename or change it at any time, and the importing component
+    breaks; making it public records that it is now part of the contract.
+  effort: 1
+  impact: 2
+  risk: >-
+    Making a name public is a promise: keep its signature stable once other components
+    depend on it.
+  when_not: >-
+    Tests reaching into internals, or two components that are released and versioned
+    together as one package.
+  threshold: >-
+    Any underscore name imported from a different component of the architecture map.
+  sources:
+    - https://peps.python.org/pep-0008/#public-and-internal-interfaces

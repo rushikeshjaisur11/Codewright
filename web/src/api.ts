@@ -55,6 +55,12 @@ export interface ReviewData {
 export interface WorkspaceInfo {
   id: string; root: string; name: string; running: boolean; last_run: number | null; error: string | null;
   has_result: boolean; branch: string | null; findings: number | null; verified: number | null; files: number | null;
+  watching?: boolean; revision?: number;
+}
+export interface ChangeItem { id: string; title: string; file: string; line: number }
+export interface Revision {
+  revision: number; running: boolean; watching: boolean;
+  last_change: { at: number; files: string[]; new: ChangeItem[]; resolved: ChangeItem[] } | null;
 }
 
 export interface RecentRepo { path: string; name: string; opened: number }
@@ -94,23 +100,35 @@ export interface ModulePage {
 }
 
 export interface Citation { n: number; id: string; file: string; line: number; end: number; title: string; score: number }
-export interface ChatAnswer { answer: string; citations: Citation[]; mode: "llm" | "extractive" }
+export interface KnowledgeCite {
+  n: string; id: string; title: string; symbol: string; library: string; versions: string;
+  suggestion: string; when_not: string; sources: string[]; fit: { status: FitStatus; detail: string };
+}
+export interface ChatAnswer { answer: string; citations: Citation[]; knowledge?: KnowledgeCite[]; mode: "llm" | "extractive" }
 
 export interface Release {
   name: string; installed: string | null; latest: string | null; released?: string;
   bump: "major" | "minor" | "patch" | "current" | "unknown"; new_since_last_check: boolean;
-  unlocks: { card: string; title: string }[];
+  unlocks: { card: string; title: string; topic?: string; reference?: boolean }[];
+  preview?: { new: PreviewItem[]; resolved: PreviewItem[] } | null;
 }
+export interface PreviewItem { card: string; title: string; file: string; line: number; autofix: boolean }
 
+export type FitStatus = "fits" | "upgrade" | "older" | "unused" | "unknown";
 export interface Card {
   id: string; intent: string; title: string; symbol: string; kind: string; library: string | null;
   versions: string; suggestion: string; gain: string; effort: number; impact: number; risk: string;
   when_not: string; threshold: string; sources: string[]; snippet: string; snippet_lang: string; autofix: boolean;
+  topic: string; reference: boolean; extra: string; fit: { status: FitStatus; detail: string };
 }
 
 export interface Settings {
   model: string; offline: boolean; llm: { available: boolean; model: string; reason: string };
   constraints: string[]; mutes: { intent: string; path: string; reason: string }[];
+}
+
+export interface IndexState {
+  url: string; source: string; is_pypi: boolean; repo: string | null; machine: string | null; env_override: boolean;
 }
 
 // ---- design
@@ -139,7 +157,7 @@ export interface Proposal {
     assumptions: { key: string; value: number; default: number; meaning: string; overridden: boolean }[];
     peak_rps: number; instances: number; data_gb_y3: number;
   };
-  versions: Record<string, string>; version_source: Record<string, string>;
+  versions: Record<string, string>; version_source: Record<string, string>; index?: string | null;
   candidates: Candidate[]; recommended: string; decisions: Decision[];
   data_model: { entities: { name: string; fields: string[] }[]; endpoints: { method: string; path: string; summary: string }[]; source: string };
 }
@@ -175,6 +193,8 @@ export const api = {
   folders: (path = "") => req<FolderListing>("GET", `/api/fs?path=${q(path)}`),
   review: (id: string) => req<ReviewPayload>("GET", `${w(id)}/review`),
   runReview: (id: string, proof: boolean, base: string) => req<WorkspaceInfo>("POST", `${w(id)}/review`, { proof, base }),
+  watch: (id: string, on: boolean) => req<WorkspaceInfo>("POST", `${w(id)}/watch`, { on }),
+  revision: (id: string) => req<Revision>("GET", `${w(id)}/revision`),
   feedback: (id: string, fid: string, status: string, reason = "") =>
     req<Metrics>("POST", `${w(id)}/findings/${fid}/feedback`, { status, reason }),
   mute: (id: string, intent: string, path = "", undo = false) => req<Metrics>("POST", `${w(id)}/mute`, { intent, path, undo }),
@@ -188,10 +208,13 @@ export const api = {
   chat: (id: string, question: string, history: { role: string; content: string }[]) =>
     req<ChatAnswer>("POST", `${w(id)}/chat`, { question, history }),
   releases: (id: string) => req<Release[]>("GET", `${w(id)}/releases`),
-  cards: () => req<Card[]>("GET", "/api/cards"),
+  cards: (wid?: string | null) => req<Card[]>("GET", `/api/cards${wid ? `?workspace=${encodeURIComponent(wid)}` : ""}`),
   settings: (id: string) => req<Settings>("GET", `${w(id)}/settings`),
   saveSettings: (id: string, s: Partial<{ model: string; offline: boolean; constraints: string[] }>) =>
     req<Settings>("POST", `${w(id)}/settings`, s),
+  index: (id: string) => req<IndexState>("GET", `${w(id)}/index`),
+  saveIndex: (id: string, url: string, scope: "repo" | "machine") => req<IndexState>("POST", `${w(id)}/index`, { url, scope }),
+  testIndex: (id: string, url = "") => req<{ ok: boolean; detail: string }>("POST", `${w(id)}/index/test`, { url }),
   newDesign: () => req<DesignState>("POST", "/api/design"),
   answer: (sid: string, qid: string, value: unknown) => req<DesignState>("POST", `/api/design/${sid}/answer`, { qid, value }),
   propose: (sid: string, workspace = "") => req<Proposal>("POST", `/api/design/${sid}/propose`, { workspace }),

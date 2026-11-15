@@ -101,8 +101,9 @@ ADK_LOOP = """
 """
 
 
-@pytest.mark.parametrize("version,card_id", [("1.20.0", "adk.sequential-agent"), ("2.9.0", "adk.workflow")])
+@pytest.mark.parametrize("version,card_id", [("2.0.0", "adk.workflow"), ("2.9.0", "adk.workflow"), ("1.39.1", None)])
 def test_adk_card_depends_on_installed_version(tmp_path, version, card_id):
+    """ADK knowledge covers 2.x only: on 1.x nothing but the upgrade card applies."""
     write_repo(
         tmp_path,
         {
@@ -114,22 +115,22 @@ def test_adk_card_depends_on_installed_version(tmp_path, version, card_id):
     st = stack.discover(tmp_path)
     [match] = detect(g)
     best = cards.best_cards(match, st, cards.load())
-    assert best[0][0].id == card_id
+    assert (best[0][0].id if best else None) == card_id
 
 
-def test_deprecated_class_not_flagged_before_2_0(tmp_path):
+def test_adk_1x_repo_gets_only_the_upgrade_card(tmp_path):
     write_repo(
         tmp_path,
         {
             "agent.py": (
-                "from google.adk.agents import SequentialAgent\nroot = SequentialAgent(name='x', sub_agents=[])\n"
+                "from google.adk.agents import SequentialAgent\nroot_agent = SequentialAgent(name='x', sub_agents=[])\n"
             ),
             "uv.lock": 'version = 1\n\n[[package]]\nname = "google-adk"\nversion = "1.20.0"\n',
         },
     )
     g = graph.build(tmp_path)
     findings = make_findings(detect(g), stack.discover(tmp_path), g, cards.load())
-    assert findings == []
+    assert [f.card_id for f in findings] == ["adk.upgrade-to-2"]
 
 
 def test_installed_library_beats_new_dependency(tmp_path):
