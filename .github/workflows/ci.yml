@@ -37,6 +37,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
+          activate-environment: true  # create .venv and put it on PATH for the steps below
       - run: uv pip install -e ".[dev]"
       - run: pytest -q
 
