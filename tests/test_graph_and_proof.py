@@ -4,6 +4,7 @@ from pathlib import Path
 
 from codewright import graph, proof
 from codewright.engine import review
+from codewright.models import Finding
 
 
 def write_repo(tmp_path: Path, files: dict[str, str]) -> Path:
@@ -213,3 +214,13 @@ def test_parallel_failure_is_rerun_alone(tmp_path, monkeypatch):
     assert len(timed) == 2 and all(f.proof.value == "verified" for f in timed)
     assert sum("re-run on its own" in f.proof_detail for f in timed) == 1
     assert len(calls) == 3
+
+
+def test_module_level_code_counts_as_reached_when_imported():
+    def finding(function):
+        return Finding("x", "i", "a.py", 1, function, "t", "", "", "", "", "", 1, 1, "", "", "", [], "")
+
+    trace = proof.Trace({("a.py", "<module>"): [proof.COLLECTION], ("a.py", "f"): [proof.COLLECTION]})
+    assert trace.tests_for(finding("<module>")) == [proof.COLLECTION]  # the changed lines ran on import
+    assert trace.tests_for(finding("f")) == []  # a function called only at import time is not tested
+    assert proof._reached_detail(finding("<module>"), trace) == "tests that import `a.py`"

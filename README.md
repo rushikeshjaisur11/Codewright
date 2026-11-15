@@ -88,7 +88,7 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 | --- | --- | --- |
 | 1. Stack discovery | `stack.py` | Reads `uv.lock`, `poetry.lock`, `Pipfile.lock`, `requirements*.txt`, `pyproject.toml`, `.python-version` and Dockerfiles. Lockfile versions beat declared ranges |
 | 2. Code graph | `graph.py` | Its own tree-sitter indexer: imports, classes, functions, decorators, call edges and entry points. Calls resolve through imports (relative imports and package re-exports included), enclosing scopes, `self`/`super()` and base classes; a call on an object of unknown type is matched by method name only when the name isn't one builtin types already have (`d.items()` never links to your `items`). Code reachable from an entry point is on the hot path |
-| 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand (17 intents) |
+| 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand (21 intents) |
 | 4. Capability cards | `cards/data/*.yaml` | Per library and version: the API, gain, effort, risk, "when not to", scale threshold and sources. Preference: already installed, then stdlib, then platform, then a new dependency |
 | 5. Suggestion | `suggest.py` | Picks the best card and writes the smallest safe diff when the code's shape allows it |
 | 6. Critic | `critic.py` | Drops findings missing a file, an API version, a gain, effort, risk, threshold, "when not to" or a source, and checks that the suggested symbol exists in the repo's own interpreter |
@@ -109,6 +109,11 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 | Connection or client per request | SQLAlchemy engine reuse, psycopg/asyncpg pools, shared httpx client or requests Session | |
 | Polling loop over a jobs table | Postgres `FOR UPDATE SKIP LOCKED` + `LISTEN/NOTIFY` | |
 | Hand-written agent orchestration (ADK) | ADK 2.0 graph workflows, or `SequentialAgent` on 1.x | |
+| Sync `Runner.run` inside `async def` (ADK) | `async for` over `Runner.run_async` | yes |
+| `InMemorySessionService`/`InMemoryRunner` in a server (ADK) | `DatabaseSessionService` (or `VertexAiSessionService`) | |
+| Agent instruction f-string that calls something at import (ADK) | An instruction provider, or `{key}` state placeholders | yes |
+| Web route that drives a `Runner` by hand (ADK) | `get_fast_api_app` | |
+| Retry loop around an agent run (ADK) | `Gemini(retry_options=HttpRetryOptions(...))` | |
 | `@app.on_event` | FastAPI lifespan | |
 | `session.query()` on SQLAlchemy 2.x | `select()` | |
 | Manual counting, grouping, thread fan-out | `Counter`, `defaultdict`, `ThreadPoolExecutor` | |

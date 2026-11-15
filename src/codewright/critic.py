@@ -32,6 +32,8 @@ for sym in json.loads(sys.argv[1]):
             status = "ok"
         except AttributeError:
             status = "missing"
+        except Exception:
+            status = "unchecked"  # e.g. a lazy attribute that needs an optional extra
         break
     if status == "unchecked":
         import builtins

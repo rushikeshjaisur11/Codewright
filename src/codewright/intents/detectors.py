@@ -19,7 +19,9 @@ from ..graph import CodeGraph, ParsedFile, resolve, text
 from ..models import Function, IntentMatch
 
 Detector = Callable[[ParsedFile, Function, Node, CodeGraph], list[IntentMatch]]
+ModuleDetector = Callable[[ParsedFile], list[IntentMatch]]
 DETECTORS: dict[str, Detector] = {}
+MODULE_DETECTORS: dict[str, ModuleDetector] = {}  # run once per file, for code at module scope
 
 SLEEP_CALLS = {"time.sleep", "asyncio.sleep", "trio.sleep", "anyio.sleep"}
 CONNECT_CALLS = {
@@ -49,6 +51,14 @@ def detector(intent: str):
     return wrap
 
 
+def module_detector(intent: str):
+    def wrap(fn: ModuleDetector) -> ModuleDetector:
+        MODULE_DETECTORS[intent] = fn
+        return fn
+
+    return wrap
+
+
 def walk(node: Node, *, into_defs: bool = False) -> Iterator[Node]:
     """Depth-first walk that, by default, does not descend into nested defs/classes."""
     stack = [node]
@@ -61,8 +71,8 @@ def walk(node: Node, *, into_defs: bool = False) -> Iterator[Node]:
             stack.append(child)
 
 
-def calls_in(node: Node, pf: ParsedFile) -> Iterator[tuple[Node, str]]:
-    for n in walk(node):
+def calls_in(node: Node, pf: ParsedFile, *, into_defs: bool = False) -> Iterator[tuple[Node, str]]:
+    for n in walk(node, into_defs=into_defs):
         if n.type == "call":
             f = n.child_by_field_name("function")
             if f is not None and f.type in ("identifier", "attribute"):
@@ -104,15 +114,23 @@ def detect_retry(pf, fn, node, graph):
         if loop.type not in ("for_statement", "while_statement"):
             continue
         has_try = any(n.type == "try_statement" for n in walk(loop))
-        sleeps = [name for _, name in calls_in(loop, pf) if name in SLEEP_CALLS]
+        names = [name for _, name in calls_in(loop, pf)]
+        sleeps = [name for name in names if name in SLEEP_CALLS]
         if has_try and sleeps:
+            # Retrying an ADK agent run or a Gemini call: the model client can retry for you.
+            model_call = _imports_adk(pf) and any(
+                n.endswith((".run_async", ".generate_content", ".generate_content_async"))
+                or (n.endswith(".run") and "runner" in n.rsplit(".", 2)[-2].lower())
+                for n in names
+                if "." in n
+            )
             return [
                 IntentMatch(
                     "retry",
                     fn,
                     line(loop),
                     f"loop with try/except and {sleeps[0]}() re-runs a failing call",
-                    {"sleep": sleeps[0], "async": fn.is_async},
+                    {"sleep": sleeps[0], "async": fn.is_async, **({"adk": True} if model_call else {})},
                 )
             ]
     return []
@@ -242,7 +260,7 @@ def detect_hand_orchestrator(pf, fn, node, graph):
     if body is None:
         return []
     runs = [c for c, name in calls_in(body, pf) if name.endswith(".run_async") or name.endswith(".run")]
-    in_loop = any(p.type in ("for_statement", "while_statement") for c in runs for p in _ancestors(c, stop=body))
+    in_loop = any(_in_loop_body(c, body) for c in runs)
     if len(runs) >= 2 or (runs and in_loop):
         return [
             IntentMatch(
@@ -258,6 +276,20 @@ def detect_hand_orchestrator(pf, fn, node, graph):
     return []
 
 
+def _in_loop_body(call: Node, stop: Node) -> bool:
+    """True when `call` runs once per iteration of a loop, not when it is the loop's own iterable.
+
+    `for event in runner.run_async(...)` reads one run's events; `for step in steps: await step.run(...)`
+    drives several runs.
+    """
+    for p in _ancestors(call, stop):
+        if p.type in ("for_statement", "while_statement"):
+            body = p.child_by_field_name("body")
+            if body is not None and body.start_byte <= call.start_byte < body.end_byte:
+                return True
+    return False
+
+
 def _ancestors(node: Node, stop: Node) -> Iterator[Node]:
     p = node.parent
     while p is not None and p != stop:
@@ -265,6 +297,7 @@ def _ancestors(node: Node, stop: Node) -> Iterator[Node]:
         p = p.parent
 
 
+@module_detector("agent-orchestrator")
 def detect_module_level(pf: ParsedFile) -> list[IntentMatch]:
     """Module-scope intents (e.g. a deprecated ADK agent class assigned to root_agent)."""
     out: list[IntentMatch] = []
@@ -320,6 +353,7 @@ def detect(graph: CodeGraph, only: set[str] | None = None) -> list[IntentMatch]:
     for pf in graph.files.values():
         if is_test_file(pf.path):
             continue
-        if not only or "agent-orchestrator" in only:
-            matches.extend(detect_module_level(pf))
+        for intent, mdet in MODULE_DETECTORS.items():
+            if not only or intent in only:
+                matches.extend(mdet(pf))
     return matches

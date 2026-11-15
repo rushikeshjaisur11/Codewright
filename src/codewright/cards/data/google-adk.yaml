@@ -1,0 +1,278 @@
+# Capability cards: Google Agent Development Kit (google-adk).
+# Version ranges were checked against the released wheels on PyPI (1.0.0 to 2.14.1):
+#   Runner.run_async, InstructionProvider, DatabaseSessionService   since 1.0
+#   get_fast_api_app(agents_dir=..., session_service_uri=...)       since 1.5
+#   Gemini(retry_options=types.HttpRetryOptions(...))               since 1.9.0
+#   Workflow; SequentialAgent/ParallelAgent/LoopAgent deprecated    since 2.0
+
+- id: adk.workflow
+  intent: agent-orchestrator
+  title: Move fixed agent orchestration to an ADK 2.0 graph workflow
+  symbol: google.adk.Workflow
+  kind: library
+  library: google-adk
+  versions: ">=2.0"
+  suggestion: >-
+    Express the agent sequence, parallel branches or loop as a Workflow whose
+    edges connect the agents and plain functions, instead of
+    SequentialAgent/ParallelAgent/LoopAgent or a hand-written driver loop.
+  gain: >-
+    SequentialAgent, ParallelAgent and LoopAgent are deprecated from ADK 2.0 in
+    favour of Workflow and will be removed. A Workflow adds routing between
+    nodes, human input, per-node retries and resumable runs, and the steps
+    show up in the dev UI and traces.
+  effort: 3
+  impact: 4
+  risk: >-
+    Migration changes how state and events flow between steps; re-run your agent
+    evals and compare traces before switching.
+  when_not: >-
+    When the order of steps is decided by the model at run time (keep an LLM
+    agent with sub-agents or tools), or when this pipeline is itself a
+    sub-agent of an LlmAgent: a Workflow cannot be an LlmAgent sub-agent yet.
+  threshold: >-
+    Worth it as soon as there are two or more fixed steps or any branch, retry or
+    human approval step.
+  sources:
+    - https://adk.dev/graphs/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/agents/sequential_agent.py
+    - https://developers.googleblog.com/en/why-we-built-adk-20/
+  snippet: |
+    from google.adk import Agent, Workflow
+
+    planner = Agent(name="planner", model="gemini-flash-latest", instruction="...")
+    writer = Agent(name="writer", model="gemini-flash-latest", instruction="...")
+
+    root_agent = Workflow(name="pipeline", edges=[("START", planner, writer)])
+
+- id: adk.sequential-agent
+  intent: agent-orchestrator
+  title: Replace the hand-written agent loop with SequentialAgent
+  symbol: google.adk.agents.SequentialAgent
+  kind: library
+  library: google-adk
+  versions: ">=1.0,<2.0"
+  match:
+    deprecated_class: null
+  suggestion: >-
+    On ADK 1.x, wrap the agents in a SequentialAgent (or LoopAgent for repeats)
+    and pass data between them through session state with output_key.
+  gain: >-
+    One runner call instead of a driver loop; events, state and tracing flow
+    through ADK so the steps show up in the dev UI and evals.
+  effort: 2
+  impact: 3
+  risk: >-
+    These classes are deprecated in ADK 2.0; plan the move to graph workflows
+    when you upgrade.
+  when_not: >-
+    When the next step depends on the model's decision; use an LLM agent with
+    sub-agents instead.
+  threshold: >-
+    Once there are branches or human approval steps, upgrade to ADK 2.0 workflows.
+  sources:
+    - https://adk.dev/agents/workflow-agents/sequential-agents/
+
+- id: adk.run-async
+  intent: adk-sync-run
+  title: Use Runner.run_async instead of the sync Runner.run in async code
+  symbol: google.adk.runners.Runner.run_async
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  autofix: true
+  suggestion: >-
+    Iterate the agent's events with `async for event in runner.run_async(...)`.
+    It takes the same user_id, session_id and new_message arguments.
+  gain: >-
+    Runner.run starts the agent on a background thread and hands events back
+    through a blocking queue, so inside async def it stalls the event loop for
+    the whole turn, model calls and tools included: no other request on that
+    worker moves until the agent is done. ADK documents run() as being only
+    for local testing.
+  effort: 1
+  impact: 4
+  risk: >-
+    Code inside the loop now runs on the event loop between events; a slow
+    synchronous step there blocks it just as before.
+  when_not: >-
+    In synchronous scripts and notebooks with no event loop of their own,
+    where run() is the convenient choice.
+  threshold: >-
+    Matters from the second concurrent user: each blocked turn delays every
+    other request handled by that worker.
+  sources:
+    - https://github.com/google/adk-python/blob/main/src/google/adk/runners.py
+    - https://adk.dev/agents/llm-agents/
+  snippet: |
+    async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=message):
+        if event.is_final_response():
+            reply = event.content.parts[0].text
+
+- id: adk.persistent-sessions
+  intent: adk-in-memory-sessions
+  title: Store ADK sessions in a database instead of process memory
+  symbol: google.adk.sessions.DatabaseSessionService
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  suggestion: >-
+    Give the Runner a DatabaseSessionService with an async database URL
+    (postgresql+asyncpg://..., or sqlite+aiosqlite:///sessions.db on one
+    machine). On Vertex AI Agent Engine, use VertexAiSessionService instead.
+  gain: >-
+    InMemorySessionService and InMemoryRunner lose every conversation when the
+    process restarts or a container is recycled, and each worker process or
+    replica sees only its own sessions, so a user whose next request lands
+    elsewhere starts from scratch. A database keeps sessions, events and state
+    across restarts and shares them between workers.
+  effort: 2
+  impact: 4
+  risk: >-
+    Needs SQLAlchemy and an async driver (asyncpg, aiosqlite); a plain
+    sqlite:// or postgresql:// URL fails. Session history now grows in the
+    database, so plan retention.
+  when_not: >-
+    In tests, local development and single-process demos where losing sessions
+    on restart is fine.
+  threshold: >-
+    As soon as the app runs more than one worker or replica, or is redeployed
+    while users are mid-conversation.
+  sources:
+    - https://adk.dev/sessions/session/
+    - https://adk.dev/deploy/cloud-run/
+  snippet: |
+    from google.adk.runners import Runner
+    from google.adk.sessions import DatabaseSessionService
+
+    session_service = DatabaseSessionService(db_url="postgresql+asyncpg://user:pass@host/agents")
+    runner = Runner(agent=root_agent, app_name="my_app", session_service=session_service)
+
+- id: adk.instruction-provider
+  intent: adk-frozen-instruction
+  title: Build the instruction per request instead of once at import
+  symbol: google.adk.agents.llm_agent.InstructionProvider
+  kind: library
+  library: google-adk
+  versions: ">=1.0"
+  autofix: true
+  suggestion: >-
+    Pass a function as `instruction` (it receives a ReadonlyContext and returns
+    the text), or move the value into session state and reference it as
+    `{key}` in a plain string.
+  gain: >-
+    An f-string is evaluated once, when the module defining the agent is
+    imported, so a date, a clock reading or a config lookup inside it stays
+    frozen for the life of the process. A provider runs on every model call,
+    and can read session state from the context.
+  effort: 1
+  impact: 3
+  risk: >-
+    A provider's text is not scanned for `{key}` state placeholders; build any
+    such values yourself from ctx.state. The function now runs on every turn,
+    so keep it cheap.
+  when_not: >-
+    When the interpolated value really is fixed for the life of the process,
+    such as a product name read from settings at startup.
+  threshold: >-
+    Any long-running server: a date in the instruction goes stale after
+    midnight on the first day.
+  sources:
+    - https://adk.dev/agents/llm-agents/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/agents/llm_agent.py
+  snippet: |
+    from datetime import date
+
+    from google.adk.agents import LlmAgent
+
+    root_agent = LlmAgent(
+        name="assistant",
+        model="gemini-flash-latest",
+        instruction=lambda ctx: f"Today is {date.today():%A %d %B}. Help {ctx.state.get('user_name', 'the user')}.",
+    )
+
+- id: adk.fast-api-app
+  intent: adk-hand-server
+  title: Serve the agent with ADK's get_fast_api_app instead of hand-written routes
+  symbol: google.adk.cli.fast_api.get_fast_api_app
+  kind: library
+  library: google-adk
+  versions: ">=1.5"
+  suggestion: >-
+    Build the app with get_fast_api_app(agents_dir=..., session_service_uri=...,
+    web=False) and add your own routes to the FastAPI app it returns.
+  gain: >-
+    One call gives the run and streaming (/run, /run_sse) endpoints, session
+    and artifact APIs and, with web=True, the dev UI, wired to the session,
+    artifact and memory services named by URI. The endpoint code, session
+    lookup and event streaming you maintain by hand go away.
+  effort: 3
+  impact: 3
+  risk: >-
+    The request and response shapes become ADK's, so existing clients need
+    updating; check CORS (allow_origins) and add authentication in front of
+    it yourself.
+  when_not: >-
+    When the endpoint is a small part of a larger product API with its own
+    request shape, auth and error handling, or the agent runs inside another
+    framework's request lifecycle.
+  threshold: >-
+    Worth it once you maintain more than a single run endpoint: streaming,
+    session listing or resuming, artifacts, or the dev UI.
+  sources:
+    - https://adk.dev/deploy/cloud-run/
+    - https://adk.dev/runtime/api-server/
+  snippet: |
+    import os
+
+    from google.adk.cli.fast_api import get_fast_api_app
+
+    app = get_fast_api_app(
+        agents_dir=os.path.dirname(os.path.abspath(__file__)),
+        session_service_uri="sqlite+aiosqlite:///./sessions.db",
+        allow_origins=["https://app.example.com"],
+        web=False,
+    )
+
+- id: adk.gemini-retry-options
+  intent: retry
+  title: Let the Gemini client retry instead of a hand-written loop around the agent
+  symbol: google.genai.types.HttpRetryOptions
+  kind: library
+  library: google-adk
+  versions: ">=1.9.0"
+  match:
+    adk: true
+  suggestion: >-
+    Configure retries on the model, `Gemini(model=..., retry_options=types.HttpRetryOptions(attempts=5))`,
+    and drop the loop, sleep and counter around the run.
+  gain: >-
+    The client retries only the failed model request, with exponential
+    backoff and jitter, on 408, 429 and 5xx responses and transient
+    connection errors. A loop around the whole run repeats every step of the
+    turn, tool calls included, and appends a duplicate user message to the
+    session on each try.
+  effort: 1
+  impact: 3
+  risk: >-
+    Retries add latency to a turn that is already slow; cap attempts and
+    max_delay so a user isn't left waiting on a struggling model.
+  when_not: >-
+    When the loop retries on your own tool or application errors rather than
+    model API errors; handle those in the tool or with a Workflow node's retry.
+  threshold: >-
+    As soon as you see 429 (quota) or 503 responses from the model in
+    production.
+  sources:
+    - https://adk.dev/agents/models/google-gemini/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/models/google_llm.py
+  snippet: |
+    from google.adk.agents import LlmAgent
+    from google.adk.models import Gemini
+    from google.genai import types
+
+    root_agent = LlmAgent(
+        name="assistant",
+        model=Gemini(model="gemini-flash-latest", retry_options=types.HttpRetryOptions(attempts=5, max_delay=30)),
+        instruction="...",
+    )

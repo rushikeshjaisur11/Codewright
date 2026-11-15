@@ -124,7 +124,10 @@ class Trace:
     outside: int = 0  # functions the tests ran from the original checkout rather than the copy
 
     def tests_for(self, f: Finding) -> list[str]:
-        return [t for t in self.reached.get((f.file, f.function), []) if t != COLLECTION]
+        hits = self.reached.get((f.file, f.function), [])
+        if f.function == "<module>":
+            return hits  # module-level code runs on import, usually while pytest collects the tests
+        return [t for t in hits if t != COLLECTION]
 
 
 def has_tests(root: Path) -> bool:
@@ -228,7 +231,10 @@ def _reached_detail(f: Finding, trace: Trace | None) -> str:
     tests = trace.tests_for(f) if trace else []
     if trace is None:
         return f"tests that reach `{f.function}` (by the static call graph)"
-    shown = ", ".join(f"`{t}`" for t in tests[:2]) + (f" and {len(tests) - 2} more" if len(tests) > 2 else "")
+    named = [t for t in tests if t != COLLECTION]
+    if not named:  # module-level code, run when the tests import the module
+        return f"tests that import `{f.file}`"
+    shown = ", ".join(f"`{t}`" for t in named[:2]) + (f" and {len(named) - 2} more" if len(named) > 2 else "")
     return f"tests that run `{f.function}` ({shown})"
 
 
@@ -264,7 +270,7 @@ def prove(
         trace = read_trace(tmp / "trace")
         if trace is not None:  # what actually ran beats what the call graph guessed
             for f in findings:
-                f.reached_by = trace.tests_for(f)[:5]
+                f.reached_by = [t for t in trace.tests_for(f) if t != COLLECTION][:5]
                 f.covered = bool(trace.tests_for(f))
 
         jobs = max(1, min(jobs or default_jobs(), len(with_patch)))
