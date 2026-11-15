@@ -293,3 +293,14 @@ def test_action_passes_inputs_through_the_environment():
     review = next(s for s in action["runs"]["steps"] if s.get("id") == "review")
     assert "${{" not in review["run"]  # no expression interpolated into the script (injection-safe)
     assert {"REVIEW_PATH", "PR_ONLY", "PROOF", "BASE_REF"} <= set(review["env"])
+
+
+def test_watch_reports_new_and_resolved_findings():
+    from types import SimpleNamespace as F
+
+    from codewright.cli import diff_findings
+
+    seen, new, gone = diff_findings({}, [F(id="a"), F(id="b")])
+    assert set(seen) == {"a", "b"} and [f.id for f in new] == ["a", "b"] and gone == []
+    seen, new, gone = diff_findings(seen, [F(id="b"), F(id="c")])
+    assert [f.id for f in new] == ["c"] and [f.id for f in gone] == ["a"]

@@ -40,7 +40,9 @@ def _clean_errors():
 def review(
     path: Path = typer.Argument(Path("."), exists=True, file_okay=False, help="Repository to review."),
     top: int = typer.Option(10, help="Show at most this many findings (0 = all)."),
-    proof: bool = typer.Option(True, "--proof/--no-proof", help="Run the test suite before and after each patch."),
+    proof: bool | None = typer.Option(
+        None, "--proof/--no-proof", help="Run the tests before and after each patch (default: on; off with --watch)."
+    ),
     fmt: Format = typer.Option(Format.terminal, "--format", "-f", help="Output format."),
     output: Path | None = typer.Option(None, "--output", "-o", help="Write the report to a file."),
     sarif_output: Path | None = typer.Option(
@@ -60,10 +62,19 @@ def review(
         "--build-env/--no-build-env",
         help="Without a repo .venv, build (and cache) an environment from uv.lock or requirements to run the tests.",
     ),
+    watch: bool = typer.Option(
+        False, "--watch", "-w", help="Keep running: re-review on every save and print new and resolved findings."
+    ),
+    interval: float = typer.Option(1.0, "--interval", min=0.2, help="With --watch: seconds between checks for saves."),
 ) -> None:
     """Review a repo: ranked, proven 'instead of X, use Y' findings."""
     from .engine import review as run_review
     from .report import print_terminal, to_json, to_markdown, to_pr_comment, to_sarif
+
+    if watch:
+        _watch(path, interval, proof=bool(proof), python=python, cards=cards or None, base=base)
+        return
+    proof = True if proof is None else proof
 
     with console.status("Scanning..."), _clean_errors():
         result = run_review(
@@ -88,6 +99,68 @@ def review(
         console.print(f"Wrote {output}")
     else:
         print(text)
+
+
+def _snapshot(root: Path) -> dict[str, tuple[int, int]]:
+    """(mtime, size) of every Python file Codewright would scan."""
+    out = {}
+    for p in graph_mod.iter_python_files(root.resolve()):
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        out[str(p)] = (st.st_mtime_ns, st.st_size)
+    return out
+
+
+def diff_findings(before: dict, findings: list) -> tuple[dict, list, list]:
+    """(findings by id, new since `before`, resolved since `before`)."""
+    now = {f.id: f for f in findings}
+    return now, [f for fid, f in now.items() if fid not in before], [f for fid, f in before.items() if fid not in now]
+
+
+def _watch(path: Path, interval: float, **opts) -> None:
+    """`review --watch`: a review on every save. Proof is off unless --proof is given explicitly."""
+    import time
+
+    from .engine import review as run_review
+
+    def run():
+        return run_review(
+            path,
+            run_proof=opts["proof"],
+            top=None,
+            python=opts["python"],
+            extra_cards=opts["cards"],
+            base=opts["base"],
+        )
+
+    seen: dict = {}
+    snap: dict = {}
+    console.print(f"Watching [bold]{path.resolve()}[/] for saves (Ctrl+C to stop)")
+    try:
+        while True:
+            current = _snapshot(path)
+            if current != snap:
+                changed = sorted(
+                    {p for p in current.keys() ^ snap.keys()}
+                    | {p for p in current if snap.get(p) not in (None, current[p])}
+                )
+                with _clean_errors():
+                    seen, new, gone = diff_findings(seen, run().findings)
+                stamp = time.strftime("%H:%M:%S")
+                what = f"{len(changed)} file(s) changed" if snap else "first review"
+                console.print(f"[dim]{stamp}[/] {what}: {len(seen)} finding(s)")
+                for f in new:
+                    console.print(
+                        f"  [green]+[/] {f.file}:{f.line}  {f.title}" + ("  [blue](auto-patch)[/]" if f.patch else "")
+                    )
+                for f in gone:
+                    console.print(f"  [dim]- resolved: {f.file}:{f.line}  {f.title}[/]")
+                snap = current
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print("Stopped.")
 
 
 @app.command()

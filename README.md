@@ -56,6 +56,7 @@ The web app only answers requests addressed to `localhost`, and refuses requests
 codewright review .                         # ranked findings in the terminal (runs proof by default)
 codewright review . -j 8                    # run up to 8 patched test suites at once
 codewright review . -f markdown -o report.md
+codewright review . --watch                 # re-review on every save; prints new and resolved findings
 codewright review . -f sarif -o codewright.sarif   # for GitHub code scanning and other SARIF viewers
 codewright review . --base origin/main -f pr -o comment.md   # PR mode: changed code only
 codewright check .                          # exit 1 when code drifts from .codewright/design.json
