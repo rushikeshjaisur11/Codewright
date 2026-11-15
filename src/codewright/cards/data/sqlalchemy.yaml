@@ -1,0 +1,100 @@
+# SQLAlchemy 2. Every symbol and behaviour below was checked in SQLAlchemy 2.0.0 and 2.1.8.
+
+- id: sqlalchemy.orm-declarative-base
+  intent: sqlalchemy-ext-declarative
+  topic: SQLAlchemy
+  title: Import declarative_base from sqlalchemy.orm, then move to DeclarativeBase
+  symbol: sqlalchemy.orm.DeclarativeBase
+  kind: library
+  library: sqlalchemy
+  versions: ">=2.0"
+  autofix: true  # only `from sqlalchemy.ext.declarative import declarative_base`: the same function's new home
+  suggestion: >-
+    Import `declarative_base` from `sqlalchemy.orm` (the patch does this; it's the same
+    function). Then, when convenient, subclass `DeclarativeBase` and declare columns as
+    `Mapped[...] = mapped_column(...)`.
+  gain: >-
+    `sqlalchemy.ext.declarative` emits MovedIn20Warning in SQLAlchemy 2. A
+    DeclarativeBase subclass with Mapped annotations gives type checkers the column types,
+    so `user.id` is known to be an int.
+  effort: 1
+  impact: 2
+  risk: >-
+    The import change is behaviour-preserving; moving to DeclarativeBase touches every
+    model, so do that separately.
+  when_not: >-
+    In code that must still run on SQLAlchemy 1.3.
+  threshold: >-
+    Before warnings are treated as errors in tests.
+  sources:
+    - https://docs.sqlalchemy.org/en/20/orm/declarative_styles.html
+    - https://docs.sqlalchemy.org/en/20/changelog/migration_20.html
+  snippet: |
+    from sqlalchemy import String
+    from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+    class Base(DeclarativeBase):
+        pass
+
+    class User(Base):
+        __tablename__ = "users"
+        id: Mapped[int] = mapped_column(primary_key=True)
+        name: Mapped[str] = mapped_column(String(100))
+
+- id: sqlalchemy.ref.selectinload
+  intent: reference
+  topic: SQLAlchemy
+  title: Load related rows in one query with selectinload instead of N+1 lazy loads
+  symbol: sqlalchemy.orm.selectinload
+  kind: library
+  library: sqlalchemy
+  versions: ">=2.0"
+  suggestion: >-
+    Add `.options(selectinload(User.orders))` to the select so the related rows of all
+    users load in one extra query, instead of one query per user on first access.
+  gain: >-
+    A page of 50 users with orders becomes 2 queries instead of 51; it also avoids lazy
+    loads, which fail outright under AsyncSession.
+  effort: 1
+  impact: 4
+  risk: >-
+    Loads related rows you may not use; for one-to-one relationships `joinedload` is
+    often better.
+  when_not: >-
+    When the relationship is rarely accessed.
+  threshold: >-
+    Any list endpoint that touches a relationship per row.
+  sources:
+    - https://docs.sqlalchemy.org/en/20/orm/queryguide/relationships.html
+  snippet: |
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    users = session.scalars(select(User).options(selectinload(User.orders))).all()
+
+- id: sqlalchemy.ref.asyncio
+  intent: reference
+  topic: SQLAlchemy
+  title: Use AsyncSession with create_async_engine in async apps
+  symbol: sqlalchemy.ext.asyncio.create_async_engine
+  kind: library
+  library: sqlalchemy
+  versions: ">=2.0"
+  suggestion: >-
+    Create the engine once with `create_async_engine("postgresql+asyncpg://...")`, a
+    session factory with `async_sessionmaker(engine, expire_on_commit=False)`, and await
+    queries in async request handlers.
+  gain: >-
+    Database waits no longer block the event loop, so one worker serves other requests
+    meanwhile.
+  effort: 3
+  impact: 3
+  risk: >-
+    Needs an async driver (asyncpg, aiosqlite) and the greenlet package
+    (`sqlalchemy[asyncio]`); lazy loading raises, so load relationships explicitly.
+  when_not: >-
+    In sync apps or scripts: the sync API is simpler.
+  threshold: >-
+    When an async app spends noticeable time waiting on the database.
+  sources:
+    - https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html

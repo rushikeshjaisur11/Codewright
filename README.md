@@ -111,7 +111,7 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 | --- | --- | --- |
 | 1. Stack discovery | `stack.py` | Reads `uv.lock`, `poetry.lock`, `Pipfile.lock`, `requirements*.txt`, `pyproject.toml`, `.python-version` and Dockerfiles. Lockfile versions beat declared ranges |
 | 2. Code graph | `graph.py` | Its own tree-sitter indexer: imports, classes, functions, decorators, call edges and entry points. Calls resolve through imports (relative imports and package re-exports included), enclosing scopes, `self`/`super()` and base classes; a call on an object of unknown type is matched by method name only when the name isn't one builtin types already have (`d.items()` never links to your `items`). Code reachable from an entry point is on the hot path |
-| 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand (34 intents) |
+| 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand (39 intents) |
 | 4. Capability cards | `cards/data/*.yaml` | Per library and version: the API, gain, effort, risk, "when not to", scale threshold and sources. Preference: already installed, then stdlib, then platform, then a new dependency |
 | 5. Suggestion | `suggest.py` | Picks the best card and writes the smallest safe diff when the code's shape allows it |
 | 6. Critic | `critic.py` | Drops findings missing a file, an API version, a gain, effort, risk, threshold, "when not to" or a source, and checks that the suggested symbol exists in the repo's own interpreter. A symbol whose library isn't installed there, or whose module needs an optional extra, counts as unchecked, not missing |
@@ -127,12 +127,17 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 | Durations with `time.time()` | `time.perf_counter()` | yes |
 | `datetime.utcnow()` | `datetime.now(timezone.utc)` | yes |
 | Pydantic v1 methods on v2 | `model_validate`, `model_validate_json`… | yes |
-| Retry loop with sleep | `tenacity` | |
+| Retry loop with sleep | `tenacity`; `autoretry_for` inside a Celery task | |
 | Blocking `requests` in `async def` | `httpx.AsyncClient` | |
 | Connection or client per request | SQLAlchemy engine reuse, psycopg/asyncpg pools, shared httpx client or requests Session | |
 | Polling loop over a jobs table | Postgres `FOR UPDATE SKIP LOCKED` + `LISTEN/NOTIFY` | |
 | Google ADK 2.x agents (18 intents) | See [Google ADK](#google-adk) | 3 of them |
 | `@app.on_event` | FastAPI lifespan | |
+| `requests.get(...)` without `timeout=` | A `(connect, read)` timeout: requests never times out by default | |
+| Pydantic 1 `@validator` / `@root_validator` on Pydantic 2 | `@field_validator` / `@model_validator` | |
+| `class Config:` inside a Pydantic 2 model | `model_config = ConfigDict(...)` | |
+| `from pydantic import BaseSettings` on Pydantic 2 (an import error) | `pydantic_settings.BaseSettings` | |
+| `sqlalchemy.ext.declarative` on SQLAlchemy 2 | `sqlalchemy.orm.declarative_base`, then `DeclarativeBase` | yes, the import |
 | `session.query()` on SQLAlchemy 2.x | `select()` | |
 | Manual counting, grouping, thread fan-out | `Counter`, `defaultdict`, `ThreadPoolExecutor` | |
 | `os.system` | `subprocess.run` with an argument list | yes, for a plain command whose result is unused |
@@ -141,6 +146,8 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 Add your own cards: put YAML files in a folder and pass `--cards that/folder`. Each card needs `sources` and a `when_not`, or the critic drops its findings.
 
 `codewright cards verify` checks every card: required fields, a detector for its intent, and examples that compile. With `--python` it also checks each card's API exists in an interpreter that has the library installed, and with `--links` that its sources still resolve. CI runs it weekly against the latest google-adk (`.github/workflows/cards.yml`), so a renamed API or a dead link turns the job red.
+
+Beyond ADK, the knowledge base has reference entries for FastAPI, Pydantic, SQLAlchemy, httpx and Celery: dependencies with `yield`, `BackgroundTasks`, `APIRouter`, `TypeAdapter`, `selectinload`, async sessions, client timeouts and pool limits, transport retries, `acks_late` and task time limits. Each was checked in the library's lowest stated version and in its latest release.
 
 ### Google ADK
 

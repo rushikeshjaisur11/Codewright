@@ -1,6 +1,7 @@
 # Capability cards: framework APIs whose recommended form changed between versions.
 - id: pydantic.v2-methods
   intent: pydantic-v1-api
+  topic: Pydantic
   title: Use the Pydantic v2 method names
   symbol: pydantic.BaseModel.model_validate
   kind: library
@@ -21,6 +22,7 @@
 
 - id: fastapi.lifespan
   intent: fastapi-on-event
+  topic: FastAPI
   title: Replace @app.on_event with a lifespan handler
   symbol: fastapi.FastAPI
   kind: library
@@ -51,6 +53,7 @@
 
 - id: sqlalchemy.select-2.0
   intent: sqlalchemy-legacy-query
+  topic: SQLAlchemy
   title: Use SQLAlchemy 2.0 select() instead of the legacy Query API
   symbol: sqlalchemy.select
   kind: library
@@ -75,6 +78,7 @@
 
 - id: httpx.async-client
   intent: blocking-http-in-async
+  topic: HTTP clients
   title: Use httpx.AsyncClient for HTTP calls inside async code
   symbol: httpx.AsyncClient
   kind: library

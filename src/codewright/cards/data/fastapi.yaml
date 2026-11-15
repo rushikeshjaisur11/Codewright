@@ -1,0 +1,112 @@
+# FastAPI. Checked in FastAPI 0.100.1 and 0.163.1.
+
+- id: fastapi.ref.annotated-deps
+  intent: reference
+  topic: FastAPI
+  title: Declare dependencies with Annotated and reuse them as types
+  symbol: fastapi.Depends
+  kind: library
+  library: fastapi
+  versions: ">=0.100"
+  suggestion: >-
+    Define `SessionDep = Annotated[Session, Depends(get_session)]` once and use
+    `session: SessionDep` in every route.
+  gain: >-
+    One place defines how a dependency is built; routes read like plain type hints, and
+    the functions stay callable outside FastAPI because defaults aren't Depends objects.
+  effort: 1
+  impact: 2
+  risk: >-
+    None beyond the refactor.
+  when_not: >-
+    For a dependency used by a single route.
+  threshold: >-
+    Once the same Depends(...) appears in a few routes.
+  sources:
+    - https://fastapi.tiangolo.com/tutorial/dependencies/
+
+- id: fastapi.ref.yield-dependencies
+  intent: reference
+  topic: FastAPI
+  title: Open and close per-request resources with yield dependencies
+  symbol: fastapi.Depends
+  kind: library
+  library: fastapi
+  versions: ">=0.100"
+  suggestion: >-
+    Write the dependency as a generator: set up, `yield` the resource, clean up after.
+    FastAPI runs the cleanup when the request is done, even if the route raised.
+  gain: >-
+    Sessions and connections are always closed or returned to the pool, without
+    try/finally in every route.
+  effort: 1
+  impact: 3
+  risk: >-
+    Code after yield runs after the response is ready; don't rely on it to change the
+    response.
+  when_not: >-
+    For resources that live as long as the app: create those in the lifespan.
+  threshold: >-
+    Any per-request database session or client.
+  sources:
+    - https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-with-yield/
+  snippet: |
+    from typing import Annotated
+
+    from fastapi import Depends
+
+    def get_session():
+        with SessionLocal() as session:
+            yield session
+
+    SessionDep = Annotated[Session, Depends(get_session)]
+
+- id: fastapi.ref.background-tasks
+  intent: reference
+  topic: FastAPI
+  title: Run small follow-up work after the response with BackgroundTasks
+  symbol: fastapi.BackgroundTasks
+  kind: library
+  library: fastapi
+  versions: ">=0.100"
+  suggestion: >-
+    Take a `background_tasks: BackgroundTasks` parameter and call
+    `background_tasks.add_task(send_email, to, body)`.
+  gain: >-
+    The client gets its response without waiting for the email, webhook or audit write.
+  effort: 1
+  impact: 2
+  risk: >-
+    It runs in the same process: lost on a crash or deploy, and it competes with
+    requests.
+  when_not: >-
+    For work that must not be lost or takes more than a few seconds: use a job queue.
+  threshold: >-
+    Quick, best-effort follow-ups only.
+  sources:
+    - https://fastapi.tiangolo.com/tutorial/background-tasks/
+
+- id: fastapi.ref.api-router
+  intent: reference
+  topic: FastAPI
+  title: Split a large app into modules with APIRouter
+  symbol: fastapi.APIRouter
+  kind: library
+  library: fastapi
+  versions: ">=0.100"
+  suggestion: >-
+    Give each area its own `APIRouter(prefix="/orders", tags=["orders"])` in its own
+    module and `app.include_router(...)` them in main.
+  gain: >-
+    Shared prefixes, tags and dependencies per area; main.py stays small and modules can
+    be tested on their own.
+  effort: 2
+  impact: 2
+  risk: >-
+    Moving routes changes import paths; keep URLs the same.
+  when_not: >-
+    For a handful of routes.
+  threshold: >-
+    Once main.py passes a few hundred lines of routes.
+  sources:
+    - https://fastapi.tiangolo.com/tutorial/bigger-applications/

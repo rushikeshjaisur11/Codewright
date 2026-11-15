@@ -4,6 +4,7 @@
 
 - id: tenacity.retry
   intent: retry
+  topic: Retries
   title: Replace the hand-written retry loop with tenacity
   symbol: tenacity.retry
   kind: library
@@ -85,6 +86,7 @@
 
 - id: sqlalchemy.engine-once
   intent: connection-per-request
+  topic: SQLAlchemy
   title: Create the SQLAlchemy engine once and reuse its connection pool
   symbol: sqlalchemy.create_engine
   kind: library
@@ -172,6 +174,7 @@
 
 - id: httpx.shared-client
   intent: connection-per-request
+  topic: HTTP clients
   title: Share one httpx client across requests
   symbol: httpx.AsyncClient
   kind: library
@@ -199,6 +202,7 @@
 
 - id: requests.shared-session
   intent: connection-per-request
+  topic: HTTP clients
   title: Reuse one requests.Session instead of creating one per request
   symbol: requests.Session
   kind: library

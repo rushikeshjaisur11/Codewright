@@ -146,7 +146,12 @@ def detect_retry(pf, fn, node, graph):
                     fn,
                     line(loop),
                     f"loop with try/except and {sleeps[0]}() re-runs a failing call",
-                    {"sleep": sleeps[0], "async": fn.is_async, **({"adk": True} if model_call else {})},
+                    {
+                        "sleep": sleeps[0],
+                        "async": fn.is_async,
+                        **({"adk": True} if model_call else {}),
+                        **({"celery": True} if _celery_task(fn, pf) else {}),
+                    },
                 )
             ]
     return []
@@ -261,6 +266,12 @@ def detect_connection_per_request(pf, fn, node, graph):
 
 
 # --------------------------------------------------------------------------- ADK orchestration
+
+
+def _celery_task(fn: Function, pf: ParsedFile) -> bool:
+    from .libs import is_celery_task
+
+    return is_celery_task(fn, pf)
 
 
 def _imports_adk(pf: ParsedFile) -> bool:
