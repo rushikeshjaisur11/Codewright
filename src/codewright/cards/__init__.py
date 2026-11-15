@@ -64,6 +64,8 @@ def applicable(card: Card, match: IntentMatch, stack: Stack) -> tuple[bool, str,
         return False, "", ""
     if card.unless_installed and not _missing_from_lockfile(card, stack):
         return False, "", ""
+    if card.kind == "practice":  # architecture and conventions: apply to any stack
+        return True, "practice", card.symbol
     if card.kind == "stdlib":
         py = python_version(stack)
         return version_matches(py, card.versions), "stdlib", f"{card.symbol} (Python {py})"
@@ -113,7 +115,7 @@ def _specifier_overlaps(declared: str | None, card_spec: str) -> bool:
         return False
 
 
-PREFERENCE = {"installed": 0, "stdlib": 1, "platform": 2, "wellknown": 3}
+PREFERENCE = {"installed": 0, "stdlib": 1, "practice": 1, "platform": 2, "wellknown": 3}
 
 
 def best_cards(match: IntentMatch, stack: Stack, cards: list[Card]) -> list[tuple[Card, str, str]]:

@@ -75,7 +75,7 @@ def review(
     # Drop malformed or hallucinated findings before spending time on proof.
     kept, rejected = critic.review(findings)
     if run_proof:
-        from .intents.detectors import is_test_file
+        from .graph import is_test_file
 
         importers = {f.file: sorted(p for p in g.importers_of(f.file) if is_test_file(p)) for f in kept if f.patch}
         proof.prove(

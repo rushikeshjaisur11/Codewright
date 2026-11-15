@@ -26,6 +26,8 @@ def make_findings(matches: list[IntentMatch], stack: Stack, graph: CodeGraph, ca
         fn = m.function
         effort = card.effort + (1 if kind == "wellknown" else 0)
         suggestion = card.suggestion
+        if m.data.get("advice"):  # what the change means in this codebase, ahead of the general advice
+            suggestion = f"{m.data['advice']} {suggestion}"
         if kind == "wellknown":
             suggestion += f" (Adds a dependency: {card.library}.)"
         fid = hashlib.sha1(f"{card.id}:{fn.file}:{fn.qualname}:{m.line}".encode()).hexdigest()[:8]

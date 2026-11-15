@@ -14,15 +14,17 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from .cards import REFERENCE, version_matches
-from .chat import tokens
 from .models import Card, Stack
 from .stack import python_version
+from .words import tokens
 
 
 def fit(card: Card, stack: Stack | None) -> dict:
     """How the card relates to the repo: fits, upgrade (needs a newer version), older, unused or unknown."""
     if stack is None:
         return {"status": "unknown", "detail": ""}
+    if card.kind == "practice":
+        return {"status": "fits", "detail": "applies to any codebase"}
     if card.kind == "stdlib":
         py = python_version(stack)
         return _versioned(py, card.versions, f"Python {py}")

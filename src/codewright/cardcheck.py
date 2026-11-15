@@ -135,7 +135,7 @@ def verify(
     python: str | None = None,
     links: bool = False,
 ) -> Report:
-    from .intents.detectors import DETECTORS, MODULE_DETECTORS
+    from .intents.detectors import all_intents
 
     cards = [c for c in card_store.load(extra_dirs) if not library or (c.library or "python") == library]
     report = Report(checked=len(cards))
@@ -144,7 +144,7 @@ def verify(
         if c.id in seen:
             report.problems.append(f"{c.id}: duplicate card id")
         seen.add(c.id)
-        report.problems += _shape(c, set(DETECTORS) | set(MODULE_DETECTORS))
+        report.problems += _shape(c, all_intents())
     if python:
         _symbols(cards, python, report)
     if links:

@@ -61,10 +61,10 @@ def test_every_adk_card_cites_sources_and_a_when_not():
 
 
 def test_every_adk_intent_has_a_detector():
-    from codewright.intents.detectors import DETECTORS, MODULE_DETECTORS
+    from codewright.intents.detectors import DETECTORS, GRAPH_DETECTORS, MODULE_DETECTORS
 
     intents = {c.intent for c in cards.load() if c.library == "google-adk"} - {cards.REFERENCE}
-    assert intents <= set(DETECTORS) | set(MODULE_DETECTORS)
+    assert intents <= set(DETECTORS) | set(MODULE_DETECTORS) | set(GRAPH_DETECTORS)
 
 
 # ---------------------------------------------------------------- Runner.run in async code

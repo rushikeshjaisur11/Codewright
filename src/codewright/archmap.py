@@ -17,8 +17,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .graph import CodeGraph
-from .intents.detectors import is_test_file
+from .graph import CodeGraph, is_test_file
 from .models import Finding
 
 # import prefix -> (external system label, kind)

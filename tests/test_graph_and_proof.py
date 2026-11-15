@@ -118,7 +118,7 @@ def test_nested_helpers_and_unknown_objects(tmp_path):
 
 def test_from_dot_import_is_one_level_up():
     pf = graph.ParsedFile("pkg/a.py", b"", None, graph.Module("pkg/a.py"))  # type: ignore[arg-type]
-    graph._imports(graph._PARSER.parse(b"from . import b\n").root_node.children[0], pf.module)
+    graph.record_imports(graph._PARSER.parse(b"from . import b\n").root_node.children[0], pf.module)
     assert pf.module.imports["b"] == ".b"
     assert graph.resolve_relative(".b", "pkg/a.py") == "pkg.b"
 

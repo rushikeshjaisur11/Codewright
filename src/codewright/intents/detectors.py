@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterator
 
 from tree_sitter import Node
 
-from ..graph import CodeGraph, ParsedFile, resolve, text
+from ..graph import CodeGraph, ParsedFile, is_test_file, resolve, text
 from ..models import Function, IntentMatch
 
 Detector = Callable[[ParsedFile, Function, Node, CodeGraph], list[IntentMatch]]
@@ -26,6 +26,8 @@ DETECTORS: dict[str, Detector] = {}
 # sleep, utcnow or os.system, and on large repos this skips the large majority of the work.
 TRIGGERS: dict[str, tuple[bytes, ...]] = {}
 MODULE_DETECTORS: dict[str, ModuleDetector] = {}  # run once per file, for code at module scope
+GraphDetector = Callable[[CodeGraph], list[IntentMatch]]
+GRAPH_DETECTORS: dict[str, GraphDetector] = {}  # run once per review, over the whole code graph
 
 SLEEP_CALLS = {"time.sleep", "asyncio.sleep", "trio.sleep", "anyio.sleep"}
 CONNECT_CALLS = {
@@ -66,6 +68,18 @@ def module_detector(intent: str):
         return fn
 
     return wrap
+
+
+def graph_detector(intent: str):
+    def wrap(fn: GraphDetector) -> GraphDetector:
+        GRAPH_DETECTORS[intent] = fn
+        return fn
+
+    return wrap
+
+
+def all_intents() -> set[str]:
+    return set(DETECTORS) | set(MODULE_DETECTORS) | set(GRAPH_DETECTORS)
 
 
 def walk(node: Node, *, into_defs: bool = False) -> Iterator[Node]:
@@ -150,7 +164,7 @@ def detect_retry(pf, fn, node, graph):
                         "sleep": sleeps[0],
                         "async": fn.is_async,
                         **({"adk": True} if model_call else {}),
-                        **({"celery": True} if _celery_task(fn, pf) else {}),
+                        **({"celery": True} if is_celery_task(fn, pf) else {}),
                     },
                 )
             ]
@@ -268,10 +282,15 @@ def detect_connection_per_request(pf, fn, node, graph):
 # --------------------------------------------------------------------------- ADK orchestration
 
 
-def _celery_task(fn: Function, pf: ParsedFile) -> bool:
-    from .libs import is_celery_task
-
-    return is_celery_task(fn, pf)
+def is_celery_task(fn: Function, pf: ParsedFile) -> bool:
+    for deco in fn.decorators:
+        head = deco.split("(", 1)[0]
+        target = resolve(pf.module, head)
+        if target.startswith("celery") and target.endswith(("shared_task", ".task")):
+            return True
+        if head.endswith(".task") and any(v.startswith("celery") for v in pf.module.imports.values()):
+            return True  # @app.task where app = Celery(...)
+    return False
 
 
 def _imports_adk(pf: ParsedFile) -> bool:
@@ -354,17 +373,6 @@ def detect_module_level(pf: ParsedFile) -> list[IntentMatch]:
     return out
 
 
-def is_test_file(path: str) -> bool:
-    parts = path.split("/")
-    name = parts[-1]
-    return (
-        name.startswith("test_")
-        or name.endswith("_test.py")
-        or name == "conftest.py"
-        or any(p in ("tests", "test", "fixtures") for p in parts[:-1])
-    )
-
-
 def _file_triggers(pf: ParsedFile) -> dict[str, tuple[bytes, ...]]:
     """Each detector's trigger words, plus local names this file imports from something matching them
     (`from time import sleep as pause` makes `pause` a trigger for the sleep detectors)."""
@@ -405,4 +413,7 @@ def detect(graph: CodeGraph, only: set[str] | None = None) -> list[IntentMatch]:
         for intent, mdet in MODULE_DETECTORS.items():
             if not only or intent in only:
                 matches.extend(mdet(pf))
+    for intent, gdet in GRAPH_DETECTORS.items():
+        if not only or intent in only:
+            matches.extend(gdet(graph))
     return matches

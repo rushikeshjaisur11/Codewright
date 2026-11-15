@@ -10,6 +10,7 @@ to matching a method name, and never for names that builtin types already define
 
 from __future__ import annotations
 
+import re
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -22,6 +23,7 @@ from .models import Function, Module
 from .stack import SKIP_DIRS
 
 PY = Language(tree_sitter_python.language())
+_TEST_CLIENT = re.compile(rb"\bTestClient\(|\bCliRunner\(|\.test_client\(|ASGITransport\(|WSGITransport\(")
 _PARSER = Parser(PY)
 
 ROUTE_DECORATOR_SUFFIXES = (
@@ -57,6 +59,22 @@ class ParsedFile:
     def lines(self) -> list[str]:
         """Source lines with line endings. Shared: copy before changing."""
         return self.source.decode("utf-8", errors="replace").splitlines(keepends=True)
+
+
+def is_test_file(path: str) -> bool:
+    parts = path.split("/")
+    name = parts[-1]
+    return (
+        name.startswith("test_")
+        or name.endswith("_test.py")
+        or name == "conftest.py"
+        or any(p in ("tests", "test", "fixtures") for p in parts[:-1])
+    )
+
+
+def _quoted_stem(path: str) -> bytes:
+    stem = path.rsplit("/", 1)[-1].removesuffix(".py")
+    return f'"{stem}"'.encode() if stem != "__init__" else b"\0"
 
 
 @dataclass
@@ -106,9 +124,8 @@ class CodeGraph:
 
     def test_reachable(self) -> set[str]:
         """Every function some test function reaches through the call graph."""
-        from .intents.detectors import is_test_file
-
         starts = [self.key(fn) for pf, fn in self.functions() if is_test_file(pf.path)]
+        starts += self._routes_reached_by_test_clients()
         seen: set[str] = set()
         stack = list(starts)
         while stack:
@@ -118,6 +135,29 @@ class CodeGraph:
             seen.add(q)
             stack.extend(self.edges.get(q, ()))
         return seen - set(starts)
+
+    def _routes_reached_by_test_clients(self) -> list[str]:
+        """Web routes a test drives over HTTP: invisible to a call graph, so infer them.
+
+        A test file that uses a test client (TestClient, CliRunner, Flask's test_client, ASGITransport)
+        reaches every route and CLI command defined in the code it imports, directly or through other modules.
+        """
+        if self.resolver is None:
+            return []
+        reached: set[str] = set()
+        for path, pf in self.files.items():
+            if not is_test_file(path) or not _TEST_CLIENT.search(pf.source):
+                continue
+            todo = list(self.resolver.imported_files(pf))
+            # Tests that load the app by file path (importlib's spec_from_file_location) name its stem.
+            todo += [f for f in self.files if _quoted_stem(f) in pf.source and not is_test_file(f)]
+            while todo:
+                f = todo.pop()
+                if f in reached or f not in self.files:
+                    continue
+                reached.add(f)
+                todo.extend(self.resolver.imported_files(self.files[f]))
+        return [k for k in self.entry_points if k.partition("::")[0] in reached]
 
     def key(self, fn: Function) -> str:
         return f"{fn.file}::{fn.qualname}"
@@ -167,7 +207,7 @@ def _collect(node: Node, pf: ParsedFile, prefix: str) -> None:
     for child in node.children:
         kind = child.type
         if kind in ("import_statement", "import_from_statement"):
-            _imports(child, pf.module)
+            record_imports(child, pf.module)
         elif kind == "if_statement" and "__name__" in text(child.child_by_field_name("condition")):
             pf.module.has_main_guard = True
             _collect(child, pf, prefix)
@@ -237,7 +277,7 @@ def _calls(node: Node) -> list[str]:
     return out
 
 
-def _imports(node: Node, module: Module) -> None:
+def record_imports(node: Node, module: Module) -> None:
     if node.type == "import_statement":
         for child in node.named_children:
             if child.type == "dotted_name":
@@ -523,6 +563,7 @@ def _is_entry_point(fn: Function, module: Module) -> bool:
         return True
     for deco in fn.decorators:
         head = deco.split("(", 1)[0]
-        if head.endswith(ROUTE_DECORATOR_SUFFIXES) or head in ("app.command", "click.command", "task"):
+        # `.command`/`.group` covers click groups (`@cli.command()`) and typer apps (`@app.command()`).
+        if head.endswith((*ROUTE_DECORATOR_SUFFIXES, ".command", ".group")) or head in ("command", "group", "task"):
             return True
     return False
