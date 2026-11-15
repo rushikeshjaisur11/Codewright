@@ -100,7 +100,7 @@ export default function MapPage() {
         {view && view.nodes.length === 0 && <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}><Empty icon={<Compass size={22} />} title="Nothing to draw">This level has no nodes.</Empty></div>}
         {showMermaid && view && (
           <div className="card" style={{ position: "absolute", right: 14, top: 64, width: 380, zIndex: 6, boxShadow: "var(--shadow)" }}>
-            <div className="card-head"><h3>Mermaid export</h3><div className="right"><CopyButton small text={view.mermaid} /></div></div>
+            <div className="card-head"><h2>Mermaid export</h2><div className="right"><CopyButton small text={view.mermaid} /></div></div>
             <pre className="code" style={{ margin: 0, border: 0, padding: 12, maxHeight: 360 }}>{view.mermaid}</pre>
           </div>
         )}

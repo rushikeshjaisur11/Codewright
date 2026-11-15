@@ -162,9 +162,9 @@ export default function App() {
             <span className="mark" aria-hidden="true" />
             <div className="brand-name">Codewright</div>
           </div>
-          <div className="nav-label">Repository</div>
+          <label className="nav-label" htmlFor="cw-repo">Repository</label>
           <div className="row" style={{ padding: "0 4px 6px" }}>
-            <select className="select grow" value={wid ?? ""} onChange={(e) => setWid(e.target.value)}>
+            <select id="cw-repo" className="select grow" value={wid ?? ""} onChange={(e) => setWid(e.target.value)}>
               {workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
               {!workspaces.length && <option value="">No repository</option>}
             </select>
@@ -193,7 +193,7 @@ export default function App() {
           <header className="topbar">
             <div className="crumbs">
               <span className="truncate" title={current?.root}>{current?.name ?? "Codewright"}</span>
-              <span className="faint">/</span><strong>{titles[route.page]}</strong>
+              <span className="faint sep-slash">/</span><strong>{titles[route.page]}</strong>
             </div>
             <div className="spacer" />
             {data && (

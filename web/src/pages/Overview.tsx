@@ -56,7 +56,7 @@ export default function Overview() {
       <div className="grid" style={{ gridTemplateColumns: "minmax(0, 1.6fr) minmax(0, 1fr)" }}>
         <div className="card">
           <div className="card-head">
-            <h3><GitPullRequest size={16} />Top findings</h3>
+            <h2><GitPullRequest size={16} />Top findings</h2>
             <div className="right"><button className="btn sm ghost" onClick={() => go("review")}>All findings<ArrowRight size={13} /></button></div>
           </div>
           {r.findings.length === 0 ? (
@@ -81,7 +81,7 @@ export default function Overview() {
 
         <div className="col" style={{ gap: 16 }}>
           <div className="card">
-            <div className="card-head"><h3><Layers size={16} />Findings by intent</h3></div>
+            <div className="card-head"><h2><Layers size={16} />Findings by intent</h2></div>
             <div className="card-pad col" style={{ gap: 10 }}>
               {byIntent.length === 0 && <span className="muted">None</span>}
               {byIntent.map(([intent, n]) => (
@@ -95,7 +95,7 @@ export default function Overview() {
 
           <div className="card">
             <div className="card-head">
-              <h3><Compass size={16} />Architecture drift</h3>
+              <h2><Compass size={16} />Architecture drift</h2>
               <div className="right"><button className="btn sm ghost" onClick={() => go(drift ? "map" : "design")}>{drift ? "Open map" : "Design"}<ArrowRight size={13} /></button></div>
             </div>
             <div className="card-pad">
@@ -118,7 +118,7 @@ export default function Overview() {
       <div className="grid" style={{ gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)" }}>
         <div className="card">
           <div className="card-head">
-            <h3><Layers size={16} />Stack</h3>
+            <h2><Layers size={16} />Stack</h2>
             <div className="right"><span className="badge outline">Python {r.stack.python ?? "?"}</span></div>
           </div>
           <table className="table">
@@ -137,7 +137,7 @@ export default function Overview() {
         </div>
         <div className="card">
           <div className="card-head">
-            <h3><Flame size={16} />Upgrades worth a look</h3>
+            <h2><Flame size={16} />Upgrades worth a look</h2>
             <div className="right"><button className="btn sm ghost" onClick={() => go("releases")}>All releases<ArrowRight size={13} /></button></div>
           </div>
           {releases == null ? <div className="card-pad"><Spinner /></div> : upgrades.length === 0 ? (

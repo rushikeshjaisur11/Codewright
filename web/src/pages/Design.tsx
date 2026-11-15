@@ -124,7 +124,7 @@ export default function Design() {
       {/* interview */}
       {(!proposal || showInterview) && <div className="card" style={{ display: "flex", flexDirection: "column" }}>
         <div className="card-head">
-          <h3><PenTool size={16} />Design interview</h3>
+          <h2><PenTool size={16} />Design interview</h2>
           <div className="right">
             {proposal && <button className="btn sm" onClick={() => setShowInterview(false)}>Hide</button>}
             <button className="btn sm ghost" onClick={restart}><RotateCcw size={13} />Restart</button>
@@ -210,7 +210,7 @@ export default function Design() {
           </div>
 
           <div className="card" style={{ height: 500, overflow: "hidden" }}>
-            <div className="card-head"><h3><Network size={16} />{cand.name}</h3><div className="right faint" style={{ fontSize: 12.5 }}>click a candidate above to compare</div></div>
+            <div className="card-head"><h2><Network size={16} />{cand.name}</h2><div className="right faint" style={{ fontSize: 12.5 }}>click a candidate above to compare</div></div>
             <div style={{ height: 448 }}>
               <Graph nodes={cand.components.map((x) => ({ id: x.id, label: x.label, kind: x.kind, tech: x.tech }))}
                 edges={cand.edges} />
@@ -219,7 +219,7 @@ export default function Design() {
 
           <div className="grid" style={{ gridTemplateColumns: "minmax(0, 1.25fr) minmax(0, 1fr)" }}>
             <div className="card">
-              <div className="card-head"><h3><Boxes size={16} />Components</h3></div>
+              <div className="card-head"><h2><Boxes size={16} />Components</h2></div>
               <table className="table">
                 <tbody>
                   {cand.components.map((x) => (
@@ -251,7 +251,7 @@ export default function Design() {
 
           <div className="card">
             <div className="card-head">
-              <h3><Calculator size={16} />Capacity math</h3>
+              <h2><Calculator size={16} />Capacity math</h2>
               <div className="right">
                 {Object.keys(edits).length > 0 && <button className="btn sm primary" disabled={busy} onClick={() => applyAssumptions()}>Recalculate</button>}
               </div>
@@ -287,7 +287,7 @@ export default function Design() {
           </div>
 
           <div className="card">
-            <div className="card-head"><h3><FileText size={16} />Decision records</h3><div className="right faint" style={{ fontSize: 12.5 }}>for the recommended design</div></div>
+            <div className="card-head"><h2><FileText size={16} />Decision records</h2><div className="right faint" style={{ fontSize: 12.5 }}>for the recommended design</div></div>
             <div className="card-pad col" style={{ gap: 8 }}>
               {proposal.decisions.map((d) => (
                 <details key={d.id} className="adr">
@@ -306,7 +306,7 @@ export default function Design() {
 
           <div className="grid" style={{ gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)" }}>
             <div className="card">
-              <div className="card-head"><h3><Database size={16} />Data model</h3></div>
+              <div className="card-head"><h2><Database size={16} />Data model</h2></div>
               <div className="card-pad col" style={{ gap: 10 }}>
                 {proposal.data_model.entities.map((e) => (
                   <div key={e.name}><b>{e.name}</b><div className="mono muted" style={{ fontSize: 12 }}>{e.fields.join(" · ")}</div></div>
@@ -315,7 +315,7 @@ export default function Design() {
               </div>
             </div>
             <div className="card">
-              <div className="card-head"><h3><Network size={16} />API outline</h3></div>
+              <div className="card-head"><h2><Network size={16} />API outline</h2></div>
               <table className="table">
                 <tbody>
                   {proposal.data_model.endpoints.map((e) => (
@@ -327,7 +327,7 @@ export default function Design() {
           </div>
 
           <div className="card">
-            <div className="card-head"><h3>Pinned versions</h3><div className="right faint" style={{ fontSize: 12.5 }}>latest from PyPI at design time</div></div>
+            <div className="card-head"><h2>Pinned versions</h2><div className="right faint" style={{ fontSize: 12.5 }}>latest from PyPI at design time</div></div>
             <div className="card-pad chips">
               {Object.entries(proposal.versions).map(([k, v]) => (
                 <span key={k} className="badge outline mono" title={proposal.version_source[k]}>{k}=={v}{proposal.version_source[k] === "fallback" ? " *" : ""}</span>

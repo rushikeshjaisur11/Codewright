@@ -4,7 +4,16 @@ import {
   Background, BackgroundVariant, Controls, Edge, Handle, MarkerType, MiniMap, Node, NodeProps, Position,
   ReactFlow, ReactFlowProvider, useReactFlow,
 } from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
+import flowCss from "@xyflow/react/dist/style.css?raw";
+
+// React Flow's stylesheet sets `outline: none` on focused nodes, edges and selections, which hides
+// keyboard focus. Load it without those declarations so the app's :focus-visible ring applies.
+if (typeof document !== "undefined" && !document.getElementById("cw-flow-css")) {
+  const el = document.createElement("style");
+  el.id = "cw-flow-css";
+  el.textContent = flowCss.replace(/outline:\s*none\s*;?/g, "");
+  document.head.prepend(el);
+}
 import { AlertCircle, Flame, FlaskConical } from "lucide-react";
 import { KIND_STYLE } from "./ui";
 

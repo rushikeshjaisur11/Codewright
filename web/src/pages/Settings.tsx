@@ -39,7 +39,7 @@ export default function SettingsPage() {
       <div className="page-head"><div><h1>Settings</h1><p>Stored in <code>{data?.root}/.codewright/</code>, so the team shares them through git.</p></div></div>
 
       <div className="card">
-        <div className="card-head"><h3><Bot size={16} />Model</h3>
+        <div className="card-head"><h2><Bot size={16} />Model</h2>
           <div className="right">{s.llm.available ? <span className="badge green"><CheckCircle2 size={11} />available</span> : <span className="badge amber"><XCircle size={11} />not available</span>}</div>
         </div>
         <div className="card-pad col" style={{ gap: 12 }}>
@@ -60,7 +60,7 @@ export default function SettingsPage() {
       </div>
 
       <div className="card">
-        <div className="card-head"><h3>Team constraints</h3></div>
+        <div className="card-head"><h2>Team constraints</h2></div>
         <div className="card-pad col">
           <div className="muted" style={{ fontSize: 13 }}>One per line, e.g. “no new dependencies” or “must support Python 3.10”. Shared with coding agents through the MCP server.</div>
           <textarea className="textarea mono" rows={4} value={constraints} onChange={(e) => setConstraints(e.target.value)} />
@@ -69,7 +69,7 @@ export default function SettingsPage() {
       </div>
 
       <div className="card">
-        <div className="card-head"><h3><BellOff size={16} />Mute rules</h3></div>
+        <div className="card-head"><h2><BellOff size={16} />Mute rules</h2></div>
         {s.mutes.length === 0 ? <div className="card-pad muted">Nothing muted. Use “Mute intent” on a finding to hide that kind of suggestion in this repo.</div> : (
           <table className="table">
             <tbody>
@@ -86,7 +86,7 @@ export default function SettingsPage() {
       </div>
 
       <div className="card">
-        <div className="card-head"><h3><Plug size={16} />Coding agents and CI</h3></div>
+        <div className="card-head"><h2><Plug size={16} />Coding agents and CI</h2></div>
         <div className="card-pad col" style={{ gap: 12 }}>
           <div className="muted" style={{ fontSize: 13 }}>Add Codewright as an MCP server so Claude Code, Copilot or Devin can call <code>review</code>, <code>architecture_map</code>, <code>ask_code</code> and <code>check_drift</code>.</div>
           <div className="row" style={{ alignItems: "flex-start" }}>
