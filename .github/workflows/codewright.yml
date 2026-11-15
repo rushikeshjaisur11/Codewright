@@ -1,7 +1,8 @@
 name: Codewright
 
 # Codewright reviews its own pull requests with the Action in this repository (uses: ./),
-# so every PR exercises the Action end to end: install, review changed lines, SARIF upload.
+# so every PR exercises the Action end to end: install, review changed lines, SARIF output and
+# (where code scanning is enabled) the upload.
 on:
   pull_request:
 
@@ -20,4 +21,6 @@ jobs:
           fetch-depth: 0
       - uses: ./
         with:
-          upload-sarif: ${{ github.event.pull_request.head.repo.full_name == github.repository }}  # forks can't upload
+          # Upload only where code scanning is enabled (set the repository variable CODE_SCANNING=true);
+          # forks can't upload. The review and its summary run either way.
+          upload-sarif: ${{ vars.CODE_SCANNING == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}

@@ -81,6 +81,8 @@ permissions:
   contents: read
   security-events: write   # to upload code-scanning alerts
   actions: read            # needed by the upload in private repositories
+# Uploading needs code scanning enabled for the repository (in private repositories, GitHub Code
+# Security). Without it, pass `upload-sarif: false`; the review summary still appears on the run.
 jobs:
   codewright:
     runs-on: ubuntu-latest
