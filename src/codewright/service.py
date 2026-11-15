@@ -176,7 +176,8 @@ class Workspace:
         return design.drift(intent, self.amap().system(), r.graph)
 
     def releases(self) -> list[dict]:
-        return watcher.check(self.ensure().stack, self.root)
+        r = self.ensure()
+        return watcher.check(r.stack, self.root, graph=r.graph)
 
 
 # --------------------------------------------------------------------------- recent repos and folder browsing

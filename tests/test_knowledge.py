@@ -95,3 +95,27 @@ def test_extras_card_does_not_fit_when_the_package_is_installed(tmp_path):
     by_id = {c.id: c for c in cards.load()}
     fit = knowledge.fit(by_id["adk.extra-db"], stack.discover(tmp_path))
     assert fit == {"status": "unused", "detail": "sqlalchemy is already installed"}
+
+
+def test_upgrade_preview_shows_what_an_upgrade_would_change(tmp_path):
+    from codewright import graph, watcher
+
+    (tmp_path / "uv.lock").write_text(
+        'version = 1\n\n[[package]]\nname = "google-adk"\nversion = "1.39.1"\n'
+        '\n[[package]]\nname = "pydantic"\nversion = "1.10.13"\n'
+    )
+    (tmp_path / "agent.py").write_text(
+        "from google.adk.agents import RunConfig, SequentialAgent\n"
+        "from pydantic import BaseModel, validator\n\n"
+        "root_agent = SequentialAgent(name='p', sub_agents=[])\n"
+        "cfg = RunConfig(save_live_audio=True)\n\n"
+        "class M(BaseModel):\n    x: int\n\n    @validator('x')\n    def pos(cls, v):\n        return v\n"
+    )
+    g, st = graph.build(tmp_path), stack.discover(tmp_path)
+    adk = watcher.upgrade_preview(g, st, "google-adk", "2.14.1")
+    assert {n["card"] for n in adk["new"]} == {"adk.workflow", "adk.save-live-blob"}
+    assert next(n for n in adk["new"] if n["card"] == "adk.save-live-blob")["autofix"] is True
+    assert [r["card"] for r in adk["resolved"]] == ["adk.upgrade-to-2"]
+    pyd = watcher.upgrade_preview(g, st, "pydantic", "2.14.3")
+    assert [n["card"] for n in pyd["new"]] == ["pydantic.field-validator"] and pyd["resolved"] == []
+    assert watcher.upgrade_preview(g, st, "not-a-dependency", "1.0") == {"new": [], "resolved": []}

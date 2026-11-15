@@ -109,8 +109,10 @@ export interface ChatAnswer { answer: string; citations: Citation[]; knowledge?:
 export interface Release {
   name: string; installed: string | null; latest: string | null; released?: string;
   bump: "major" | "minor" | "patch" | "current" | "unknown"; new_since_last_check: boolean;
-  unlocks: { card: string; title: string }[];
+  unlocks: { card: string; title: string; topic?: string; reference?: boolean }[];
+  preview?: { new: PreviewItem[]; resolved: PreviewItem[] } | null;
 }
+export interface PreviewItem { card: string; title: string; file: string; line: number; autofix: boolean }
 
 export type FitStatus = "fits" | "upgrade" | "older" | "unused" | "unknown";
 export interface Card {

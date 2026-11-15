@@ -115,7 +115,8 @@ def check_drift(path: str) -> dict:
 
 @_tool
 def dependency_releases(path: str) -> list[dict]:
-    """Newer releases of the repo's dependencies, and which capability cards an upgrade would unlock."""
+    """Newer releases of the repo's dependencies: what an upgrade unlocks, and an upgrade preview of the
+    findings that would appear (things to fix) or go away in this repo at the latest version."""
     return _ws(path).releases()
 
 

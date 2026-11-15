@@ -97,13 +97,21 @@ def bump(installed: str | None, new: str) -> str:
     return "patch"
 
 
-def check(stack: Stack, root: str | Path | None = None, names: list[str] | None = None) -> list[dict]:
+def check(stack: Stack, root: str | Path | None = None, names: list[str] | None = None, graph=None) -> list[dict]:
+    """Newer releases per dependency, the cards an upgrade unlocks and, with the repo's code graph,
+    an upgrade preview: findings that would appear or go away at the latest version."""
     cache = _load_cache(root)
     previous = {k: v.get("version") for k, v in cache.items()}
     cards = card_store.load()
     out = []
     names = names or sorted(stack.dependencies)
     prefetch(names, cache)
+    libraries = {c.library for c in cards if c.library and c.intent != card_store.REFERENCE}
+    matches = None
+    if graph is not None:
+        from .intents import detect
+
+        matches = detect(graph)  # once, shared by every preview
     for name in names:
         dep = stack.dependencies.get(name)
         info = latest(name, cache)
@@ -121,7 +129,7 @@ def check(stack: Stack, root: str | Path | None = None, names: list[str] | None 
             continue
         installed = dep.version if dep else None
         unlocks = [
-            {"card": c.id, "title": c.title}
+            {"card": c.id, "title": c.title, "topic": c.topic, "reference": c.intent == card_store.REFERENCE}
             for c in cards
             if c.library == name
             and c.versions not in ("*", "")
@@ -137,11 +145,46 @@ def check(stack: Stack, root: str | Path | None = None, names: list[str] | None 
                 "bump": bump(installed, info["version"]),
                 "new_since_last_check": previous.get(name) not in (None, info["version"]),
                 "unlocks": unlocks,
+                "preview": (
+                    upgrade_preview(graph, stack, name, info["version"], matches, cards)
+                    if graph is not None and installed and installed != info["version"] and name in libraries
+                    else None
+                ),
             }
         )
     _save_cache(root, cache)
     order = {"major": 0, "minor": 1, "patch": 2, "unknown": 3, "current": 4}
     return sorted(out, key=lambda r: (order[r["bump"]], r["name"]))
+
+
+def upgrade_preview(graph, stack: Stack, name: str, version: str, matches=None, cards=None) -> dict:
+    """What the repo's own code would show if `name` were at `version`: findings that appear and disappear.
+
+    Re-runs card matching on the code already scanned with only that one version changed; no files
+    are re-parsed and nothing is installed.
+    """
+    import copy
+
+    from .intents import detect
+    from .suggest import make_findings
+
+    cards = cards if cards is not None else card_store.load()
+    matches = matches if matches is not None else detect(graph)
+    upgraded = copy.deepcopy(stack)
+    dep = upgraded.dependencies.get(name)
+    if dep is None:
+        return {"new": [], "resolved": []}
+    dep.version = version
+
+    def by_card(st):
+        return {(f.card_id, f.file, f.function): f for f in make_findings(matches, st, graph, cards)}
+
+    now, then = by_card(stack), by_card(upgraded)
+    row = lambda f: {"card": f.card_id, "title": f.title, "file": f.file, "line": f.line, "autofix": bool(f.patch)}  # noqa: E731
+    return {
+        "new": [row(f) for k, f in sorted(then.items()) if k not in now],
+        "resolved": [row(f) for k, f in sorted(now.items()) if k not in then],
+    }
 
 
 def latest_versions(names: list[str], fallback: dict[str, str], root: str | Path | None = None) -> dict[str, str]:
