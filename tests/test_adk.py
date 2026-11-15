@@ -37,7 +37,7 @@ def test_every_adk_card_cites_sources_and_a_when_not():
     adk = [c for c in cards.load() if c.library == "google-adk"]
     assert {c.id for c in adk} >= {
         "adk.workflow",
-        "adk.sequential-agent",
+        "adk.upgrade-to-2",
         "adk.run-async",
         "adk.persistent-sessions",
         "adk.instruction-provider",
@@ -51,6 +51,11 @@ def test_every_adk_card_cites_sources_and_a_when_not():
         assert critic.is_dotted_symbol(c.symbol) or (c.extra and c.symbol == f"google-adk[{c.extra}]"), c.id
         if c.snippet:
             compile(c.snippet, c.id, "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)  # snippets may be fragments
+    # Knowledge covers 2.x only: every card applies from 2.0 on, except the upgrade card for 1.x repos.
+    for c in adk:
+        if c.id != "adk.upgrade-to-2":
+            assert cards.version_matches("2.0.0", c.versions) or c.versions.startswith(">=2."), c.id
+        assert not cards.version_matches("1.39.1", c.versions) or c.id == "adk.upgrade-to-2", c.id
     topics = {c.topic for c in adk}
     assert len(topics) >= 8 and len([c for c in adk if c.intent == "reference"]) >= 35
 
@@ -126,7 +131,7 @@ def test_in_memory_sessions_flagged_only_in_a_server(tmp_path):
     assert "sqlite+aiosqlite" in f.risk + f.suggestion
 
 
-@pytest.mark.parametrize("version,expected", [("1.20.0", "adk.fast-api-app"), ("1.4.0", None)])
+@pytest.mark.parametrize("version,expected", [("2.14.1", "adk.fast-api-app"), ("1.39.1", None)])
 def test_hand_written_route_suggests_get_fast_api_app(tmp_path, version, expected):
     write_repo(
         tmp_path,
@@ -151,7 +156,7 @@ def test_hand_written_route_suggests_get_fast_api_app(tmp_path, version, expecte
     assert (f.card_id if f else None) == expected
 
 
-@pytest.mark.parametrize("version,expected", [("1.9.0", "adk.gemini-retry-options"), ("1.8.0", "tenacity.retry")])
+@pytest.mark.parametrize("version,expected", [("2.14.1", "adk.gemini-retry-options"), ("1.39.1", "tenacity.retry")])
 def test_retrying_an_agent_run_suggests_model_retry_options(tmp_path, version, expected):
     write_repo(
         tmp_path,

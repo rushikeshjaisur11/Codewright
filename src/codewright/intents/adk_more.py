@@ -407,3 +407,81 @@ def _import_targets(node: Node) -> list[str]:
         if c.type in ("dotted_name", "aliased_import") and (module is None or c.start_byte != module.start_byte)
     ]
     return [f"{base}.{n}" for n in names] or [base]
+
+
+# --------------------------------------------------------------------------- upgrading from 1.x
+
+
+@module_detector("adk-upgrade")
+def detect_adk_app(pf: ParsedFile) -> list[IntentMatch]:
+    """A module that defines an ADK `root_agent`: the place to report a google-adk 1.x install.
+
+    The match fires on any ADK app; the card's version range (<2.0) decides whether it is shown.
+    """
+    if not imports_adk(pf):
+        return []
+    for child in pf.root.children:
+        expr = child.named_children[0] if child.type == "expression_statement" and child.named_children else None
+        if expr is not None and expr.type == "assignment" and text(expr.child_by_field_name("left")) == "root_agent":
+            return [IntentMatch("adk-upgrade", _module_fn(pf, child), line(child), "defines an ADK root_agent", {})]
+    return []
+
+
+# --------------------------------------------------------------------------- 2.x pitfalls
+
+
+@detector("adk-session-events-append")
+def detect_session_events_append(pf, fn, node, graph):
+    """`ctx.session.events.append(event)`: appending events by hand bypasses the 2.x graph engine."""
+    if not imports_adk(pf) or (body := node.child_by_field_name("body")) is None:
+        return []
+    for call, _ in calls_in(body, pf):
+        f = call.child_by_field_name("function")
+        if f is None or f.type != "attribute" or text(f.child_by_field_name("attribute")) not in ("append", "extend"):
+            continue
+        obj = f.child_by_field_name("object")
+        if obj is not None and obj.type == "attribute" and text(obj.child_by_field_name("attribute")) == "events":
+            owner = text(obj.child_by_field_name("object"))
+            if "session" in owner.rsplit(".", 1)[-1].lower():
+                return [
+                    IntentMatch(
+                        "adk-session-events-append",
+                        fn,
+                        line(call),
+                        f"`{owner}.events.{text(f.child_by_field_name('attribute'))}()` adds events by hand",
+                        {},
+                    )
+                ]
+    return []
+
+
+@module_detector("adk-tool-catches-baseexception")
+def detect_tool_catches_baseexception(pf: ParsedFile) -> list[IntentMatch]:
+    """A tool whose `except BaseException` / bare `except:` swallows the error instead of re-raising it."""
+    if not imports_adk(pf):
+        return []
+    out = []
+    for fn in pf.module.functions:
+        node = pf.nodes.get(fn.qualname)
+        if fn.qualname not in tool_functions(pf) or node is None:
+            continue
+        for clause in walk(node):
+            if clause.type != "except_clause":
+                continue
+            caught = [c for c in clause.named_children if c.type != "block"]
+            names = text(caught[0]) if caught else ""
+            broad = not caught or "BaseException" in names
+            reraises = any(n.type == "raise_statement" for n in walk(clause))
+            if broad and not reraises:
+                what = "a bare `except:`" if not caught else "`except BaseException`"
+                out.append(
+                    IntentMatch(
+                        "adk-tool-catches-baseexception",
+                        fn,
+                        line(clause),
+                        f"tool `{fn.name}` catches {what} without re-raising",
+                        {},
+                    )
+                )
+                break
+    return out

@@ -88,7 +88,7 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 | --- | --- | --- |
 | 1. Stack discovery | `stack.py` | Reads `uv.lock`, `poetry.lock`, `Pipfile.lock`, `requirements*.txt`, `pyproject.toml`, `.python-version` and Dockerfiles. Lockfile versions beat declared ranges |
 | 2. Code graph | `graph.py` | Its own tree-sitter indexer: imports, classes, functions, decorators, call edges and entry points. Calls resolve through imports (relative imports and package re-exports included), enclosing scopes, `self`/`super()` and base classes; a call on an object of unknown type is matched by method name only when the name isn't one builtin types already have (`d.items()` never links to your `items`). Code reachable from an entry point is on the hot path |
-| 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand (31 intents) |
+| 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand (34 intents) |
 | 4. Capability cards | `cards/data/*.yaml` | Per library and version: the API, gain, effort, risk, "when not to", scale threshold and sources. Preference: already installed, then stdlib, then platform, then a new dependency |
 | 5. Suggestion | `suggest.py` | Picks the best card and writes the smallest safe diff when the code's shape allows it |
 | 6. Critic | `critic.py` | Drops findings missing a file, an API version, a gain, effort, risk, threshold, "when not to" or a source, and checks that the suggested symbol exists in the repo's own interpreter. A symbol whose library isn't installed there, or whose module needs an optional extra, counts as unchecked, not missing |
@@ -108,7 +108,7 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 | Blocking `requests` in `async def` | `httpx.AsyncClient` | |
 | Connection or client per request | SQLAlchemy engine reuse, psycopg/asyncpg pools, shared httpx client or requests Session | |
 | Polling loop over a jobs table | Postgres `FOR UPDATE SKIP LOCKED` + `LISTEN/NOTIFY` | |
-| Google ADK agents (15 intents) | See [Google ADK](#google-adk) | 2 of them |
+| Google ADK 2.x agents (18 intents) | See [Google ADK](#google-adk) | 2 of them |
 | `@app.on_event` | FastAPI lifespan | |
 | `session.query()` on SQLAlchemy 2.x | `select()` | |
 | Manual counting, grouping, thread fan-out | `Counter`, `defaultdict`, `ThreadPoolExecutor` | |
@@ -119,36 +119,39 @@ Add your own cards: put YAML files in a folder and pass `--cards that/folder`. E
 
 ### Google ADK
 
-For agents built on [google-adk](https://pypi.org/project/google-adk/), Codewright carries a knowledge base of 69 cards covering ADK 1.0 to 2.14: 30 with a detector and 39 reference entries.
+For agents built on [google-adk](https://pypi.org/project/google-adk/), Codewright carries a knowledge base of 68 cards for **ADK 2.x**: 30 with a detector and 38 reference entries. ADK 1.x is not covered. It has had no release since 1.39.1 (August 2026), so on a 1.x repo the only ADK suggestion is the upgrade, with what breaks on the way.
 
-Every card's lowest supported version is the first release that has the API. It was found by checking the source of one wheel per minor release on PyPI (55 releases). Every symbol was imported from google-adk 2.14.1, and every source was opened. The detectors were run on Google's own [adk-samples](https://github.com/google/adk-samples), and three false positives found there were fixed. The findings that remain there are all genuine. One of them: the `deep-search` sample builds its instruction with an f-string that reads today's date once, at import.
+A card whose lowest version is above 2.0 starts at the first 2.x release that has the API. That was found by checking the source of every 2.x minor release on PyPI. Every symbol was imported from google-adk 2.14.1, and every source was opened. Claims about behaviour were run against the real package: for example, that a `session.state` write on a fetched session is lost while `state_delta` persists. The detectors were run on Google's [adk-samples](https://github.com/google/adk-samples); the false positives found there were fixed, and the findings that remain are genuine. One of them: the `deep-search` sample builds its instruction with an f-string that reads today's date once, at import.
 
-| Found in your code | Suggests | Versions | Auto-patch |
-| --- | --- | --- | --- |
-| Sync `Runner.run` inside `async def` | `async for` over `Runner.run_async` | 1.0+ | yes |
-| Agent instruction f-string that calls something at import | An instruction function, or `{key}` state placeholders | 1.0+ | yes |
-| `SequentialAgent`/`ParallelAgent`/`LoopAgent`, or a hand-written driver loop | `Workflow` graphs on 2.x, `SequentialAgent` on 1.x | 1.0+ | |
-| In-memory session, artifact or memory service in a module that serves requests | `DatabaseSessionService`, `GcsArtifactService`, `VertexAiMemoryBankService` | 1.0+ / 1.5+ | |
-| `session.state[k] = v` on a session from the session service | `state_delta=` on `run_async`, or `EventActions(state_delta=...)` | 1.0+ | |
-| A tool writing to a module-level dict | `tool_context.state` with `user:`/`app:`/`temp:` scopes | 1.0+ | |
-| `json.loads(event.content.parts[0].text)` on the agent's reply | `output_schema=` + `output_key=` | 1.0+ | |
-| A tool that runs another agent through its own Runner | `AgentTool` | 1.0+ | |
-| A hand-written MCP client | `McpToolset` (or `MCPToolset` before 1.13) | 1.0+ | |
-| `session.events[-n:]` | `EventsCompactionConfig` (1.16+), `ContextFilterPlugin` (1.15) | 1.15+ | |
-| A web route that builds the Runner or agent per request | Build once at startup | 1.0+ | |
-| A web route that drives a Runner by hand | `get_fast_api_app` | 1.5+ | |
-| A tool polling a job in a sleep loop | `LongRunningFunctionTool` + resumability | 1.0+ | |
-| A retry loop around an agent run | `Gemini(retry_options=HttpRetryOptions(...))` | 1.9+ | |
-| Deprecated APIs: `global_instruction`, `Runner(plugins=)`, `VertexAiCodeExecutor`, `save_live_audio`, `ApiRegistry` | Their replacements, only from the version that deprecates them | 1.14+ | |
-| An import that needs an extra the lockfile lacks: `mcp`, `db`, `gcp`, `extensions`, `a2a` | The `google-adk[extra]` to add. 2.0 moved MCP, SQLAlchemy and Cloud clients out of the base install | 2.0+ | |
+| Found in your code | Suggests | Auto-patch |
+| --- | --- | --- |
+| Any ADK app on google-adk 1.x | Upgrade to 2.x: extras to add, the event schema change, what to re-test | |
+| Sync `Runner.run` inside `async def` | `async for` over `Runner.run_async` | yes |
+| Agent instruction f-string that calls something at import | An instruction function, or `{key}` state placeholders | yes |
+| `SequentialAgent`/`ParallelAgent`/`LoopAgent`, or a hand-written driver loop | `Workflow` graphs | |
+| In-memory session, artifact or memory service in a module that serves requests | `DatabaseSessionService`, `GcsArtifactService`, `VertexAiMemoryBankService` | |
+| `session.state[k] = v` on a session from the session service | `state_delta=` on `run_async`, or `EventActions(state_delta=...)` | |
+| `session.events.append(...)` | Yield the event; 2.x's graph engine must emit it | |
+| A tool catching `BaseException` or a bare `except:` without re-raising | Specific exceptions plus a node `RetryConfig`; `BaseException` swallows 2.x's pause for human input | |
+| A tool writing to a module-level dict | `tool_context.state` with `user:`/`app:`/`temp:` scopes | |
+| `json.loads(event.content.parts[0].text)` on the agent's reply | `output_schema=` + `output_key=` | |
+| A tool that runs another agent through its own Runner | `AgentTool` | |
+| A hand-written MCP client | `McpToolset` | |
+| `session.events[-n:]` | `EventsCompactionConfig` | |
+| A web route that builds the Runner or agent per request | Build once at startup | |
+| A web route that drives a Runner by hand | `get_fast_api_app` | |
+| A tool polling a job in a sleep loop | `LongRunningFunctionTool` + resumability | |
+| A retry loop around an agent run | `Gemini(retry_options=HttpRetryOptions(...))` | |
+| Deprecated APIs: `global_instruction`, `Runner(plugins=)`, `VertexAiCodeExecutor` (2.12+), `save_live_audio`, `ApiRegistry` (2.7.1+) | Their replacements | |
+| An import that needs an extra the lockfile lacks: `mcp`, `db`, `gcp`, `extensions`, `a2a` | The `google-adk[extra]` to add | |
 
-The reference entries cover the rest of ADK, grouped by topic:
+The reference entries cover the rest of ADK 2.x, grouped by topic:
 - **Agents and orchestration:** sub-agents, custom agents, Workflow routes, human input and retries, planners, A2A.
 - **Tools and MCP:** function tools, confirmation, OpenAPI, built-in tools and their limits, code execution, Skills, MCP Toolbox.
 - **Sessions, state and memory:** state templating, memory tools, SQLite sessions, rewind, artifacts.
 - **Callbacks and plugins:** callbacks, error callbacks, plugins, reflect-and-retry, logging.
-- **Runtime, context and apps:** `App`, context caching, resumability, `RunConfig` limits and streaming, cancellation, live streaming.
-- **Models, serving, evaluation and upgrading:** LiteLLM and Claude, the dev UI, Cloud Run and Agent Engine deployment, evaluation, OpenTelemetry tracing, and what changes in 2.x.
+- **Runtime, context and apps:** `App`, context caching, resumability, `RunConfig` limits and streaming, cancellation (2.11+), live streaming.
+- **Models, serving and evaluation:** LiteLLM and Claude, the dev UI, Cloud Run and Agent Engine deployment, evaluation, OpenTelemetry tracing.
 
 Reference entries never become findings. They show in the Knowledge base with whether they fit the repo's locked version, and appear on the Releases page as what an upgrade unlocks. Coding agents can query them through the `search_knowledge` MCP tool (for example "persist sessions" with `path` set) before writing ADK code.
 

@@ -119,7 +119,7 @@ def test_tool_that_runs_an_agent_suggests_agent_tool(tmp_path):
     assert "adk.agent-tool" in card_ids(tmp_path)
 
 
-@pytest.mark.parametrize("version,card", [("1.20.0", "adk.mcp-toolset"), ("1.10.0", "adk.mcp-toolset-1x")])
+@pytest.mark.parametrize("version,card", [("2.0.0", "adk.mcp-toolset"), ("1.39.1", None)])
 def test_hand_written_mcp_client_suggests_the_toolset_for_the_version(tmp_path, version, card):
     write_repo(
         tmp_path,
@@ -138,11 +138,12 @@ def test_hand_written_mcp_client_suggests_the_toolset_for_the_version(tmp_path, 
         adk=version,
         locked=("mcp",),
     )
-    assert card in card_ids(tmp_path)
+    mcp = {c for c in card_ids(tmp_path) if c.startswith("adk.mcp")}
+    assert mcp == ({card} if card else set())
 
 
-@pytest.mark.parametrize("version,card", [("1.20.0", "adk.events-compaction"), ("1.15.1", "adk.context-filter")])
-def test_slicing_history_suggests_compaction_or_a_filter(tmp_path, version, card):
+@pytest.mark.parametrize("version,card", [("2.0.0", "adk.events-compaction"), ("1.39.1", None)])
+def test_slicing_history_suggests_compaction(tmp_path, version, card):
     write_repo(
         tmp_path,
         {
@@ -155,7 +156,7 @@ def test_slicing_history_suggests_compaction_or_a_filter(tmp_path, version, card
         },
         adk=version,
     )
-    assert card in card_ids(tmp_path)
+    assert ("adk.events-compaction" in card_ids(tmp_path)) is bool(card)
 
 
 def test_runner_built_in_a_route(tmp_path):
@@ -226,12 +227,12 @@ def test_in_memory_artifact_and_memory_services_get_their_own_cards(tmp_path):
 @pytest.mark.parametrize(
     "src,version,card",
     [
-        ('LlmAgent(name="a", global_instruction="Be kind.")', "1.16.0", "adk.global-instruction-plugin"),
-        ('LlmAgent(name="a", global_instruction="Be kind.")', "1.15.1", None),  # not deprecated yet
-        ("Runner(agent=a, app_name='x', session_service=s, plugins=[p])", "1.14.1", "adk.app-plugins"),
+        ('LlmAgent(name="a", global_instruction="Be kind.")', "2.0.0", "adk.global-instruction-plugin"),
+        ('LlmAgent(name="a", global_instruction="Be kind.")', "1.39.1", None),  # 1.x: only the upgrade card
+        ("Runner(agent=a, app_name='x', session_service=s, plugins=[p])", "2.0.0", "adk.app-plugins"),
         ("VertexAiCodeExecutor()", "2.12.0", "adk.sandbox-code-executor"),
-        ("VertexAiCodeExecutor()", "2.11.0", None),
-        ("RunConfig(save_live_audio=True)", "1.19.0", "adk.save-live-blob"),
+        ("VertexAiCodeExecutor()", "2.11.0", None),  # not deprecated yet
+        ("RunConfig(save_live_audio=True)", "2.0.0", "adk.save-live-blob"),
     ],
 )
 def test_deprecated_apis_are_flagged_only_once_deprecated(tmp_path, src, version, card):
@@ -263,7 +264,7 @@ def test_missing_extra_flagged_from_the_lockfile(tmp_path):
 
 @pytest.mark.parametrize(
     "case",
-    ["mcp locked", "adk 1.x", "no lockfile", "extra requested"],
+    ["mcp locked", "adk 1.x", "no lockfile", "extra requested"],  # 1.x: knowledge covers 2.x only
 )
 def test_missing_extra_stays_quiet_without_evidence(tmp_path, case):
     if case == "mcp locked":
@@ -331,3 +332,67 @@ def test_quiet_on_correct_patterns_from_real_adk_apps(tmp_path):
     )
     quiet = {"adk.output-schema", "adk.state-delta", "adk.gemini-retry-options"}
     assert not card_ids(tmp_path) & quiet
+
+
+# ---------------------------------------------------------------- 2.x pitfalls
+
+
+def test_appending_to_session_events_suggests_yielding(tmp_path):
+    write_repo(
+        tmp_path,
+        {
+            "agent.py": """
+            from google.adk.agents import BaseAgent
+
+            class Custom(BaseAgent):
+                async def _run_async_impl(self, ctx):
+                    ctx.session.events.append(make_event())
+                    yield make_event()
+
+            def collect(log, event):
+                log.events.append(event)  # not a session
+            """
+        },
+    )
+    fs = [f for f in findings(tmp_path) if f.card_id == "adk.yield-events"]
+    assert [f.function for f in fs] == ["Custom._run_async_impl"]
+
+
+def test_tool_catching_baseexception_but_not_a_reraise_or_exception(tmp_path):
+    write_repo(
+        tmp_path,
+        {
+            "agent.py": """
+            from google.adk.agents import LlmAgent
+
+            def swallow(q: str) -> dict:
+                try:
+                    return lookup(q)
+                except BaseException:
+                    return {"status": "error"}
+
+            def bare(q: str) -> dict:
+                try:
+                    return lookup(q)
+                except:
+                    return {"status": "error"}
+
+            def cleans_up(q: str) -> dict:
+                try:
+                    return lookup(q)
+                except BaseException:
+                    close()
+                    raise
+
+            def handles(q: str) -> dict:
+                try:
+                    return lookup(q)
+                except KeyError:
+                    return {"status": "not found"}
+
+            root_agent = LlmAgent(name="a", tools=[swallow, bare, cleans_up, handles])
+            """
+        },
+    )
+    fs = [f for f in findings(tmp_path) if f.card_id == "adk.no-baseexception"]
+    assert sorted(f.function for f in fs) == ["bare", "swallow"]

@@ -348,22 +348,22 @@ CLOUD = {
 
 # Bundled fallbacks, used only when PyPI can't be reached. Shown as "fallback" in the UI.
 FALLBACK_VERSIONS = {
-    "fastapi": "0.115.0",
-    "uvicorn": "0.30.6",
-    "sqlalchemy": "2.0.36",
-    "psycopg": "3.2.3",
-    "pydantic-settings": "2.6.0",
-    "redis": "5.2.0",
-    "httpx": "0.27.2",
-    "tenacity": "9.0.0",
-    "google-adk": "1.0.0",
-    "google-genai": "1.0.0",
-    "pgvector": "0.3.6",
-    "pytest": "8.3.3",
-    "alembic": "1.14.0",
-    "litellm": "1.50.0",
-    "boto3": "1.35.0",
-    "google-cloud-tasks": "2.17.0",
+    "fastapi": "0.163.0",
+    "uvicorn": "0.54.0",
+    "sqlalchemy": "2.1.8",
+    "psycopg": "3.3.9",
+    "pydantic-settings": "2.16.3",
+    "redis": "8.1.0",
+    "httpx": "0.28.1",
+    "tenacity": "9.2.1",
+    "google-adk": "2.14.1",
+    "google-genai": "2.34.0",  # newest google-adk 2.14.1 accepts (<3)
+    "pgvector": "0.5.1",
+    "pytest": "9.2.0",
+    "alembic": "1.20.1",
+    "litellm": "1.109.1",
+    "boto3": "1.44.3",
+    "google-cloud-tasks": "2.26.0",
 }
 
 

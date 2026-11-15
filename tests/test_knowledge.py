@@ -5,6 +5,7 @@ from codewright import cards, knowledge, stack
 
 
 def adk_repo(tmp_path: Path, version: str) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "uv.lock").write_text(
         textwrap.dedent(f"""
         version = 1
@@ -29,17 +30,22 @@ def test_fit_says_what_needs_an_upgrade_and_what_is_unused(tmp_path):
     by_id = {c.id: c for c in cards.load()}
     assert knowledge.fit(by_id["adk.ref.cancel"], st)["status"] == "upgrade"  # abort_signal is 2.11.0+
     assert "needs >=2.11.0" in knowledge.fit(by_id["adk.ref.cancel"], st)["detail"]
-    assert knowledge.fit(by_id["adk.sequential-agent"], st)["status"] == "older"  # a 1.x card
+    assert knowledge.fit(by_id["adk.upgrade-to-2"], st)["status"] == "older"  # only for 1.x repos
     assert knowledge.fit(by_id["requests.shared-session"], st)["status"] == "unused"
     assert knowledge.fit(by_id["adk.ref.cancel"], None)["status"] == "unknown"
 
 
 def test_search_filters_by_library_and_fit(tmp_path):
-    st = stack.discover(adk_repo(tmp_path, "1.10.0"))
+    st = stack.discover(adk_repo(tmp_path / "v2", "2.9.0"))
     hits = knowledge.search("", cards.load(), st, library="google-adk", only_fitting=True, limit=None)
     assert hits and all(h["library"] == "google-adk" and h["fit"]["status"] == "fits" for h in hits)
-    assert "adk.workflow" not in {h["id"] for h in hits}  # Workflow is 2.0+
+    ids = {h["id"] for h in hits}
+    assert "adk.workflow" in ids and "adk.ref.cancel" not in ids  # abort_signal is 2.11.0+
     assert any(h["reference"] for h in hits) and any(not h["reference"] for h in hits)
+    # On 1.x, the only ADK knowledge that fits is the upgrade.
+    old = stack.discover(adk_repo(tmp_path / "v1", "1.39.1"))
+    hits = knowledge.search("", cards.load(), old, library="google-adk", only_fitting=True, limit=None)
+    assert [h["id"] for h in hits] == ["adk.upgrade-to-2"]
 
 
 def test_cards_api_returns_fit_for_a_workspace(tmp_path):

@@ -1,8 +1,9 @@
 # Capability cards: Google Agent Development Kit (google-adk).
 # Cards here are produced by the detectors in intents/adk.py and intents/adk_more.py.
 # Knowledge-only entries (intent: reference) are in google-adk-reference.yaml.
-# Every `versions` lower bound is the first release with the API, found by checking the
-# source of one wheel per minor release on PyPI, 1.0.0 to 2.14.1.
+# Knowledge covers google-adk 2.x only (1.x has had no release since 1.39.1, August 2026).
+# A `versions` lower bound above 2.0 is the first 2.x release with the API, found by checking
+# the source of every 2.x minor release on PyPI (2.0.0 to 2.14.1).
 
 - id: adk.workflow
   intent: agent-orchestrator
@@ -45,35 +46,6 @@
 
     root_agent = Workflow(name="pipeline", edges=[("START", planner, writer)])
 
-- id: adk.sequential-agent
-  intent: agent-orchestrator
-  topic: Agents and orchestration
-  title: Replace the hand-written agent loop with SequentialAgent
-  symbol: google.adk.agents.SequentialAgent
-  kind: library
-  library: google-adk
-  versions: ">=1.0,<2.0"
-  match:
-    deprecated_class: null
-  suggestion: >-
-    On ADK 1.x, wrap the agents in a SequentialAgent (or LoopAgent for repeats)
-    and pass data between them through session state with output_key.
-  gain: >-
-    One runner call instead of a driver loop; events, state and tracing flow
-    through ADK so the steps show up in the dev UI and evals.
-  effort: 2
-  impact: 3
-  risk: >-
-    These classes are deprecated in ADK 2.0; plan the move to graph workflows
-    when you upgrade.
-  when_not: >-
-    When the next step depends on the model's decision; use an LLM agent with
-    sub-agents instead.
-  threshold: >-
-    Once there are branches or human approval steps, upgrade to ADK 2.0 workflows.
-  sources:
-    - https://adk.dev/agents/workflow-agents/sequential-agents/
-
 - id: adk.run-async
   intent: adk-sync-run
   topic: Runtime, context and apps
@@ -81,7 +53,7 @@
   symbol: google.adk.runners.Runner.run_async
   kind: library
   library: google-adk
-  versions: ">=1.0"
+  versions: ">=2.0"
   autofix: true
   suggestion: >-
     Iterate the agent's events with `async for event in runner.run_async(...)`.
@@ -120,7 +92,7 @@
   symbol: google.adk.sessions.DatabaseSessionService
   kind: library
   library: google-adk
-  versions: ">=1.0"
+  versions: ">=2.0"
   suggestion: >-
     Give the Runner a DatabaseSessionService with an async database URL
     (postgresql+asyncpg://..., or sqlite+aiosqlite:///sessions.db on one
@@ -160,7 +132,7 @@
   symbol: google.adk.agents.llm_agent.InstructionProvider
   kind: library
   library: google-adk
-  versions: ">=1.0"
+  versions: ">=2.0"
   autofix: true
   suggestion: >-
     Pass a function as `instruction` (it receives a ReadonlyContext and returns
@@ -204,7 +176,7 @@
   symbol: google.adk.cli.fast_api.get_fast_api_app
   kind: library
   library: google-adk
-  versions: ">=1.5"
+  versions: ">=2.0"
   suggestion: >-
     Build the app with get_fast_api_app(agents_dir=..., session_service_uri=...,
     web=False) and add your own routes to the FastAPI app it returns.
@@ -248,7 +220,7 @@
   symbol: google.genai.types.HttpRetryOptions
   kind: library
   library: google-adk
-  versions: ">=1.9.0"
+  versions: ">=2.0"
   match:
     adk: true
   suggestion: >-
@@ -294,7 +266,7 @@
   symbol: google.adk.agents.LlmAgent
   kind: library
   library: google-adk
-  versions: ">=1.0"
+  versions: ">=2.0"
   suggestion: >-
     Give the agent `output_schema=` a Pydantic model and `output_key=` a state
     key. ADK asks the model for that schema, validates the reply and stores
@@ -307,9 +279,9 @@
   effort: 2
   impact: 3
   risk: >-
-    Before 1.11.0 an agent with output_schema can't use tools, and before
-    1.20.0 it can't have sub-agents or transfer control; on those versions
-    split the work into a tool-using agent and a formatting agent.
+    The schema is enforced on the final reply only; tools still run in
+    between. Keep the schema small, since every field is a chance for the
+    model to fail validation.
   when_not: >-
     When the reply is free text for a person, or the JSON is something the
     model is quoting rather than producing.
@@ -343,7 +315,7 @@
   symbol: google.adk.runners.Runner
   kind: library
   library: google-adk
-  versions: ">=1.0"
+  versions: ">=2.0"
   suggestion: >-
     Create the agent, the session service and the Runner once (at module level
     or in the app's lifespan) and reuse them in every request; pass the user
@@ -377,11 +349,11 @@
   symbol: google.adk.events.EventActions
   kind: library
   library: google-adk
-  versions: ">=1.0"
+  versions: ">=2.0"
   suggestion: >-
     Inside tools and callbacks, write to `tool_context.state` or
     `callback_context.state`. From application code, pass `state_delta=` to
-    run_async (1.7.0+), or append an Event with `EventActions(state_delta=...)`
+    run_async, or append an Event with `EventActions(state_delta=...)`
     through `session_service.append_event`.
   gain: >-
     A Session returned by the session service is a snapshot: assigning to its
@@ -417,7 +389,7 @@
   symbol: google.adk.tools.ToolContext
   kind: library
   library: google-adk
-  versions: ">=1.0"
+  versions: ">=2.0"
   suggestion: >-
     Take a `tool_context: ToolContext` parameter and use `tool_context.state`:
     plain keys belong to the session, `user:` keys to every session of that
@@ -454,7 +426,7 @@
   symbol: google.adk.memory.VertexAiMemoryBankService
   kind: library
   library: google-adk
-  versions: ">=1.5.0"
+  versions: ">=2.0"
   match:
     kind: memory
   suggestion: >-
@@ -485,7 +457,7 @@
   symbol: google.adk.artifacts.GcsArtifactService
   kind: library
   library: google-adk
-  versions: ">=1.0"
+  versions: ">=2.0"
   match:
     kind: artifacts
   suggestion: >-
@@ -502,7 +474,7 @@
     On google-adk 2.x it needs `google-adk[gcp]` for google-cloud-storage, and
     the service account needs access to the bucket.
   when_not: >-
-    For local development, where `FileArtifactService` (1.19.0+) writes to
+    For local development, where `FileArtifactService` writes to
     disk without a bucket.
   threshold: >-
     As soon as the app runs on more than one instance or users upload files.
@@ -525,7 +497,7 @@
   symbol: google.adk.apps.app.EventsCompactionConfig
   kind: library
   library: google-adk
-  versions: ">=1.16.0"
+  versions: ">=2.0"
   suggestion: >-
     Wrap the agent in an App with `events_compaction_config=EventsCompactionConfig(compaction_interval=..., overlap_size=...)`.
     ADK summarises older invocations into one event and keeps sending that summary.
@@ -557,34 +529,6 @@
         events_compaction_config=EventsCompactionConfig(compaction_interval=10, overlap_size=2),
     )
 
-- id: adk.context-filter
-  intent: adk-history-slice
-  topic: Runtime, context and apps
-  title: Keep only recent turns with ContextFilterPlugin instead of slicing events
-  symbol: google.adk.plugins.context_filter_plugin.ContextFilterPlugin
-  kind: library
-  library: google-adk
-  versions: ">=1.15.1,<1.16.0"
-  suggestion: >-
-    Register `ContextFilterPlugin(num_invocations_to_keep=...)` so every model
-    call sees only the most recent invocations.
-  gain: >-
-    One plugin trims the context for every agent and model call, instead of
-    slicing `session.events` wherever history is read. Upgrade to 1.16.0+ for
-    compaction, which summarises what it cuts.
-  effort: 1
-  impact: 2
-  risk: >-
-    Older turns are dropped, not summarised; the model forgets them.
-  when_not: >-
-    When the earliest turns carry the user's goal or constraints.
-  threshold: >-
-    Once long conversations raise latency or cost noticeably.
-  sources:
-    - https://github.com/google/adk-python/blob/main/src/google/adk/plugins/context_filter_plugin.py
-
-# --------------------------------------------------------------------------- tools and MCP
-
 - id: adk.agent-tool
   intent: adk-tool-runs-agent
   topic: Tools and MCP
@@ -592,7 +536,7 @@
   symbol: google.adk.tools.agent_tool.AgentTool
   kind: library
   library: google-adk
-  versions: ">=1.0"
+  versions: ">=2.0"
   suggestion: >-
     Pass `AgentTool(agent=specialist)` in the calling agent's tools. ADK runs
     the specialist in the same invocation and returns its final answer as the
@@ -635,7 +579,7 @@
   symbol: google.adk.tools.mcp_tool.McpToolset
   kind: library
   library: google-adk
-  versions: ">=1.13.0"
+  versions: ">=2.0"
   suggestion: >-
     Put `McpToolset(connection_params=StdioConnectionParams(...))` (or
     `StreamableHTTPConnectionParams(url=...)`) in the agent's tools, with
@@ -668,33 +612,6 @@
         tool_filter=["read_file", "list_directory"],
     )
 
-- id: adk.mcp-toolset-1x
-  intent: adk-hand-mcp-client
-  topic: Tools and MCP
-  title: Connect MCP servers with MCPToolset instead of a hand-written client
-  symbol: google.adk.tools.mcp_tool.MCPToolset
-  kind: library
-  library: google-adk
-  versions: ">=1.0,<1.13.0"
-  suggestion: >-
-    Put `MCPToolset(connection_params=...)` in the agent's tools, with
-    `tool_filter=[...]` to expose only the tools you want. From 1.13.0 the
-    class is also named McpToolset.
-  gain: >-
-    MCPToolset lists the server's tools, turns their schemas into function
-    declarations, calls them and manages the session. The hand-written client
-    and per-tool wrappers go away.
-  effort: 2
-  impact: 3
-  risk: >-
-    Every tool the server offers is exposed unless you filter.
-  when_not: >-
-    When you need one fixed call to an MCP server from application code.
-  threshold: >-
-    As soon as the agent uses more than one or two of the server's tools.
-  sources:
-    - https://adk.dev/tools-custom/mcp-tools/
-
 - id: adk.long-running-tool
   intent: adk-polling-tool
   topic: Tools and MCP
@@ -702,12 +619,12 @@
   symbol: google.adk.tools.LongRunningFunctionTool
   kind: library
   library: google-adk
-  versions: ">=1.0"
+  versions: ">=2.0"
   suggestion: >-
     Start the job and return its id at once from a `LongRunningFunctionTool`;
     when the job finishes, send its result back as a function response in a
-    new message. With `ResumabilityConfig(is_resumable=True)` on the App
-    (1.16.0+), the paused invocation resumes from there.
+    new message. With `ResumabilityConfig(is_resumable=True)` on the App,
+    the paused invocation resumes from there.
   gain: >-
     A sleep loop inside a tool holds the whole turn, the model call and the
     request open until the job is done, which times out behind load balancers
@@ -735,14 +652,14 @@
   symbol: google.adk.plugins.global_instruction_plugin.GlobalInstructionPlugin
   kind: library
   library: google-adk
-  versions: ">=1.16.0"
+  versions: ">=2.0"
   match:
     api: global_instruction
   suggestion: >-
     Move the text to `GlobalInstructionPlugin(global_instruction=...)` in the
     App's plugins and remove `global_instruction=` from the agent.
   gain: >-
-    `global_instruction` warns from 1.16.0 and will be removed; the plugin
+    `global_instruction` is deprecated and will be removed; the plugin
     applies the same instruction to every agent in the App from one place.
   effort: 1
   impact: 2
@@ -750,7 +667,7 @@
     The plugin applies to every agent in the App, not just the agent tree
     that had the field.
   when_not: >-
-    Never worth keeping the deprecated field once you're on 1.16.0 or later.
+    Never worth keeping: the field is deprecated on every 2.x release.
   threshold: >-
     Before upgrading to the release that removes the field.
   sources:
@@ -764,14 +681,14 @@
   symbol: google.adk.apps.App
   kind: library
   library: google-adk
-  versions: ">=1.14.1"
+  versions: ">=2.0"
   match:
     api: runner_plugins
   suggestion: >-
     Build `App(name=..., root_agent=..., plugins=[...])` and pass `app=` to the
     Runner instead of `agent=`, `app_name=` and `plugins=`.
   gain: >-
-    `Runner(plugins=...)` warns from 1.14.1. The App is also where compaction,
+    `Runner(plugins=...)` is deprecated. The App is also where compaction,
     context caching and resumability are configured, so the move sets those
     up too.
   effort: 1
@@ -779,7 +696,7 @@
   risk: >-
     The Runner raises if you pass both app= and plugins=.
   when_not: >-
-    Never worth keeping once you're on 1.14.1 or later.
+    Never worth keeping: the argument is deprecated on every 2.x release.
   threshold: >-
     Before upgrading to the release that removes the argument.
   sources:
@@ -822,20 +739,20 @@
   symbol: google.adk.agents.RunConfig
   kind: library
   library: google-adk
-  versions: ">=1.19.0"
+  versions: ">=2.0"
   match:
     api: save_live_audio
   suggestion: >-
     Pass `save_live_blob=` instead of `save_live_audio=`.
   gain: >-
-    `save_live_audio` warns from 1.19.0 and will be removed; `save_live_blob`
+    `save_live_audio` is deprecated and will be removed; `save_live_blob`
     is the same switch under its new name.
   effort: 1
   impact: 1
   risk: >-
     None beyond the rename.
   when_not: >-
-    Never worth keeping once you're on 1.19.0 or later.
+    Never worth keeping: the option is deprecated on every 2.x release.
   threshold: >-
     Before upgrading to the release that removes it.
   sources:
@@ -892,7 +809,7 @@
   effort: 1
   impact: 5
   risk: >-
-    None; this restores what 1.x installed by default.
+    None.
   when_not: >-
     Never: the import fails at startup.
   threshold: >-
@@ -922,7 +839,7 @@
   effort: 1
   impact: 5
   risk: >-
-    None; this restores what 1.x installed by default.
+    None.
   when_not: >-
     Never: sessions can't be created without it.
   threshold: >-
@@ -969,7 +886,7 @@
   symbol: "google-adk[extensions]"
   kind: library
   library: google-adk
-  versions: ">=1.0"
+  versions: ">=2.0"
   match:
     package: litellm
   unless_installed: [litellm]
@@ -1000,7 +917,7 @@
   symbol: "google-adk[extensions]"
   kind: library
   library: google-adk
-  versions: ">=1.0"
+  versions: ">=2.0"
   match:
     package: anthropic
   unless_installed: [anthropic]
@@ -1028,7 +945,7 @@
   symbol: "google-adk[a2a]"
   kind: library
   library: google-adk
-  versions: ">=1.6.1"
+  versions: ">=2.0"
   match:
     package: a2a-sdk
   unless_installed: [a2a-sdk]
@@ -1049,3 +966,98 @@
   sources:
     - https://adk.dev/a2a/quickstart-exposing/
     - https://adk.dev/a2a/quickstart-consuming/
+
+# --------------------------------------------------------------------------- upgrading and 2.x pitfalls
+
+- id: adk.upgrade-to-2
+  intent: adk-upgrade
+  topic: Upgrading
+  title: Upgrade from google-adk 1.x to 2.x
+  symbol: google.adk.Workflow
+  kind: library
+  library: google-adk
+  versions: "<2.0"
+  suggestion: >-
+    Move to google-adk 2.x. Before switching, add the extras your code
+    needs (`mcp`, `db`, `gcp`, `eval`, `a2a`, `extensions`), update any
+    custom session store that maps events to fixed columns (2.0 events add
+    `node_info` and `output`), stop appending to `session.events` by hand,
+    and re-run your evals. Then move SequentialAgent, ParallelAgent and
+    LoopAgent to Workflow.
+  gain: >-
+    1.x has had no release since 1.39.1 in August 2026, while 2.x keeps
+    shipping fixes and features: graph Workflows with routes, human input
+    and per-node retries, and a smaller base install. Codewright's ADK
+    knowledge only covers 2.x, so on 1.x this is the one suggestion it makes.
+  effort: 3
+  impact: 4
+  risk: >-
+    Imports fail until the extras are added; a custom session service with
+    rigid columns fails to store 2.x events; clients that validate event
+    JSON strictly reject the new fields.
+  when_not: >-
+    In the middle of a release you can't re-test; plan it as its own change.
+  threshold: >-
+    Now: every new ADK feature and fix lands on 2.x only.
+  sources:
+    - https://adk.dev/2.0/
+    - https://pypi.org/project/google-adk/#history
+
+- id: adk.yield-events
+  intent: adk-session-events-append
+  topic: Runtime, context and apps
+  title: Yield events instead of appending to session.events
+  symbol: google.adk.events.Event
+  kind: library
+  library: google-adk
+  versions: ">=2.0"
+  suggestion: >-
+    Yield the Event from your agent, node or callback and let the framework
+    persist it; to change state, put a `state_delta` in its EventActions.
+  gain: >-
+    In 2.x the workflow runner controls event emission to manage state,
+    routing and streaming. An event appended to the session list by hand
+    skips all of that: it isn't streamed, isn't saved by the session
+    service, and breaks the run's determinism.
+  effort: 1
+  impact: 4
+  risk: >-
+    Code that read its own appended event back in the same step now has to
+    use the yielded value instead.
+  when_not: >-
+    In a test that builds a Session by hand and never runs it.
+  threshold: >-
+    Any code path that runs on 2.x.
+  sources:
+    - https://adk.dev/2.0/
+    - https://adk.dev/events/
+
+- id: adk.no-baseexception
+  intent: adk-tool-catches-baseexception
+  topic: Tools and MCP
+  title: Don't catch BaseException in tools; let errors reach ADK
+  symbol: google.adk.workflow.RetryConfig
+  kind: library
+  library: google-adk
+  versions: ">=2.0"
+  suggestion: >-
+    Catch the specific exceptions the tool can handle (or `Exception`, then
+    re-raise what you can't handle), never `BaseException` or a bare
+    `except:`. Put retries on the node with `RetryConfig(max_attempts=...)`.
+  gain: >-
+    ADK 2.x pauses a run for human input by raising NodeInterruptedError,
+    a BaseException; a tool that catches it swallows the pause and the
+    workflow carries on as if nothing were asked. Errors the tool hides are
+    also never retried by the node's RetryConfig or reported to telemetry.
+  effort: 1
+  impact: 4
+  risk: >-
+    Errors now reach the model or the caller; make sure the agent can
+    explain a failed tool call.
+  when_not: >-
+    When the handler re-raises after cleaning up.
+  threshold: >-
+    Any tool in an app that uses human input, confirmations or retries.
+  sources:
+    - https://adk.dev/2.0/
+    - https://github.com/google/adk-python/blob/main/src/google/adk/workflow/_errors.py
