@@ -110,9 +110,9 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 
 | Step | Module | What it does |
 | --- | --- | --- |
-| 1. Stack discovery | `stack.py` | Reads `uv.lock`, `poetry.lock`, `Pipfile.lock`, `requirements*.txt`, `pyproject.toml`, `.python-version` and Dockerfiles. Lockfile versions beat declared ranges |
+| 1. Stack discovery | `stack.py` | Reads `uv.lock`, `poetry.lock`, `Pipfile.lock`, `requirements*.txt`, `pyproject.toml`, `.python-version` and Dockerfiles. Lockfile versions beat declared ranges. In a monorepo each file is judged on its nearest project's files, layered over the root's (so a uv workspace's root lock still supplies versions) |
 | 2. Code graph | `graph.py` | Its own tree-sitter indexer: imports, classes, functions, decorators, call edges and entry points. Calls resolve through imports (relative imports and package re-exports included), enclosing scopes, `self`/`super()` and base classes; a call on an object of unknown type is matched by method name only when the name isn't one builtin types already have (`d.items()` never links to your `items`). Code reachable from an entry point is on the hot path |
-| 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand (40 intents) |
+| 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand, plus whole-codebase architecture checks (48 intents) |
 | 4. Capability cards | `cards/data/*.yaml` | Per library and version: the API, gain, effort, risk, "when not to", scale threshold and sources. Preference: already installed, then stdlib, then platform, then a new dependency |
 | 5. Suggestion | `suggest.py` | Picks the best card and writes the smallest safe diff when the code's shape allows it |
 | 6. Critic | `critic.py` | Drops findings missing a file, an API version, a gain, effort, risk, threshold, "when not to" or a source, and checks that the suggested symbol exists in the repo's own interpreter. A symbol whose library isn't installed there, or whose module needs an optional extra, counts as unchecked, not missing |
@@ -144,6 +144,23 @@ Tools: `review`, `review_markdown`, `explain_finding`, `record_feedback`, `archi
 | Manual counting, grouping, thread fan-out | `Counter`, `defaultdict`, `ThreadPoolExecutor` | |
 | `os.system` | `subprocess.run` with an argument list | yes, for a plain command whose result is unused |
 | `+=` string building in a loop | `"".join()` | |
+| FastAPI `q: str = Query(None)`, `db: Session = Depends(get_db)` (FastAPI 0.95.1+) | `q: Annotated[str, Query()] = None`, and one `SessionDep = Annotated[...]` type for a dependency used in 3+ functions | yes, one patch per file |
+| Pydantic 2 required fields written `x: int = Field(gt=0)` or `Field(...)` | `x: Annotated[int, Field(gt=0)]`; fields with a default, default_factory or alias keep `= Field(...)` | yes, one patch per file |
+| The same type and Field constraints on 3+ Pydantic fields | One reusable `Annotated` type | |
+
+The FastAPI and Pydantic rewrites follow each library's own recommendation ("Prefer to use the Annotated version if possible"; the `= Field(...)` form "might trick users into thinking f has a default value"). Each was checked by importing the app or model before and after: identical OpenAPI schema (parameter order included), identical responses and validation errors, identical JSON schema and fields, in FastAPI 0.95.1, 0.100.1, 0.105.0 and 0.163.1 and Pydantic 2.0.3, 2.11.7 and 2.14.3. That testing also found two version traps, which Codewright handles. FastAPI 0.95.0 fails when an Annotated dependency is shared by two routes, so the card starts at 0.95.1. FastAPI 0.100 to 0.104 fail on Annotated parameters with Pydantic 2.12 or later, so for that combination Codewright says to upgrade FastAPI to 0.105 first and offers no patch. When the rewrite would put a required parameter after a defaulted one, a route nothing calls directly gets a leading `*` (FastAPI passes arguments by name); any other function is left as is and the finding says why.
+
+### Architecture review
+
+Whole-codebase checks that run over the code graph. Each one compares the codebase with itself rather than with a fixed rule, so a large or unusual repo is judged on its own terms. They only report: every suggested change (move a name, extract one copy, add a test, route a query through an existing layer) leaves behaviour as it is. Each finding starts with advice computed from the repo (which module, which callers, which test client), followed by the general practice.
+
+| Check | Fires when | Suggests |
+| --- | --- | --- |
+| Import cycle | Modules import each other, directly or around a loop | The cheapest cut: the link with the fewest names to move, preferring a top-level import (the one that can fail) and never a package `__init__` re-export. Names the exact names, including attributes used through `from . import mod` |
+| Layer bypass | A route queries the database itself while most of this repo's database routes (at least 3, and 60%) go through another module | Move the query into the module the other routes use, with the same session |
+| Untested hotspot | A function in this repo's top tenth by callers (5+), on a route, command or task path, with 3+ statements, that no test reaches, in a project that has tests | A characterization test, written the way the project's tests already are. Routes driven by `TestClient`/`ASGITransport`, commands driven by click's `CliRunner`, and apps loaded by file path count as tested |
+| Duplicate logic | Identical bodies (8+ lines, comments and docstrings aside) in the same project | Keep one copy in a module both import |
+| Private import | An `_underscore` name imported or used across top-level packages | A public name with the old one kept as an alias |
 
 Add your own cards: put YAML files in a folder and pass `--cards that/folder`. Each card needs `sources` and a `when_not`, or the critic drops its findings.
 

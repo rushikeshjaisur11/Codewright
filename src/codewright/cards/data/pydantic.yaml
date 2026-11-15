@@ -205,3 +205,66 @@
   sources:
     - https://docs.pydantic.dev/latest/migration/
     - https://docs.pydantic.dev/latest/concepts/config/
+
+- id: pydantic.annotated-field
+  intent: pydantic-annotated-field
+  topic: Pydantic
+  title: Declare required constrained fields with Annotated
+  symbol: pydantic.Field
+  kind: library
+  library: pydantic
+  versions: ">=2.0"
+  autofix: true
+  suggestion: >-
+    Write a required field as `qty: Annotated[int, Field(gt=0)]` instead of
+    `qty: int = Field(gt=0)`, and `name: str` instead of `name: str = Field(...)`. Fields
+    with a default, default_factory or alias keep the assignment form; for those Codewright
+    only drops a `...` default.
+  gain: >-
+    The Pydantic docs: the `f: <type> = Field(...)` form "might trick users into thinking f
+    has a default value, while in reality it is still required", and the ellipsis form "is
+    discouraged as it doesn't play well with static type checkers". The model is the
+    same: identical fields, validation and JSON schema (checked in Pydantic 2.0.3 and
+    2.14.3).
+  effort: 1
+  impact: 2
+  risk: >-
+    None at runtime. On Python 3.8, import Annotated from typing_extensions instead of
+    typing.
+  when_not: >-
+    Pydantic dataclasses, where a field without an assigned value must come before fields
+    with defaults (Codewright only rewrites BaseModel and BaseSettings subclasses).
+  threshold: >-
+    Any required field written with `= Field(...)`.
+  sources:
+    - https://docs.pydantic.dev/latest/concepts/fields/#the-annotated-pattern
+    - https://docs.pydantic.dev/latest/concepts/fields/#default-values
+
+- id: pydantic.reusable-annotated
+  intent: pydantic-repeated-constraints
+  topic: Pydantic
+  title: Name a constrained type once and reuse it
+  symbol: pydantic.Field
+  kind: library
+  library: pydantic
+  versions: ">=2.0"
+  suggestion: >-
+    Define the constrained type once, for example `Quantity = Annotated[int, Field(gt=0, le=1000)]`,
+    and use `qty: Quantity` wherever the same rule applies. Each field keeps its own default
+    and description.
+  gain: >-
+    The rule lives in one place: changing a limit changes it everywhere, and fields that
+    are meant to agree can't drift apart. The Pydantic docs list reusable types as an
+    advantage of the annotated pattern.
+  effort: 2
+  impact: 2
+  risk: >-
+    Fields that only share a limit by coincidence would then change together; name the
+    type after what it means, and leave unrelated fields alone.
+  when_not: >-
+    When the repeated limits mean different things in different models.
+  threshold: >-
+    The same type and constraints on three or more fields.
+  sources:
+    - https://docs.pydantic.dev/latest/concepts/fields/#the-annotated-pattern
+    - https://docs.pydantic.dev/latest/concepts/types/

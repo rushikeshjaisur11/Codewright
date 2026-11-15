@@ -1,4 +1,48 @@
-# FastAPI. Checked in FastAPI 0.100.1 and 0.163.1.
+# FastAPI. Checked in FastAPI 0.100.1 and 0.163.1 (Annotated parameters also in 0.95.0, 0.95.1, 0.105.0).
+
+- id: fastapi.annotated-params
+  intent: fastapi-annotated-params
+  topic: FastAPI
+  title: Declare parameters with Annotated
+  symbol: fastapi.Query
+  kind: library
+  library: fastapi
+  versions: ">=0.95.1"
+  autofix: true
+  suggestion: >-
+    Move the FastAPI marker into the type and keep the real default as the default:
+    `q: Annotated[str | None, Query(max_length=50)] = None` instead of
+    `q: str | None = Query(None, max_length=50)`, and `user: Annotated[User, Depends(current_user)]`
+    instead of `user: User = Depends(current_user)`. A dependency used in several routes
+    can then become one type, `CurrentUser = Annotated[User, Depends(current_user)]`.
+  gain: >-
+    The FastAPI docs recommend it ("Prefer to use the Annotated version if possible"):
+    the default is the actual default, so the function also works when called outside
+    FastAPI, and shared dependencies become reusable types. FastAPI reads both forms into
+    the same parameter: the OpenAPI schema and request handling don't change (checked in
+    FastAPI 0.95.1, 0.100.1, 0.105.0 and 0.163.1).
+  effort: 1
+  impact: 2
+  risk: >-
+    Code that calls the function directly without an argument now gets the real default
+    instead of a Query/Depends object, which is the point. A `None` default on a type that
+    isn't Optional (`model: str = Body(None)`) becomes visible to type checkers and linters
+    (ruff RUF013); Codewright keeps the type as written, because adding `| None` changes the
+    OpenAPI schema. Parameters with a mutable default (`Query([])`) are left as they are.
+    On Python 3.8, import Annotated from typing_extensions.
+  when_not: >-
+    FastAPI older than 0.95.1 (0.95.0 fails when an Annotated dependency is shared by two
+    routes), or FastAPI 0.100 to 0.104 with Pydantic 2.12 or later (fails on Annotated
+    parameters; Codewright withholds the patch and says to upgrade FastAPI first). When the
+    rewrite would put a required parameter after one with a default, a route nothing in the
+    repo calls directly gets a leading `*` (FastAPI passes arguments by name); any other
+    function is left as is.
+  threshold: >-
+    Any route or dependency declared with `= Depends(...)`, `= Query(...)` and the like.
+  sources:
+    - https://fastapi.tiangolo.com/tutorial/query-params-str-validations/#advantages-of-annotated
+    - https://fastapi.tiangolo.com/tutorial/dependencies/#share-annotated-dependencies
+    - https://fastapi.tiangolo.com/release-notes/#0950-2023-03-18
 
 - id: fastapi.ref.annotated-deps
   intent: reference

@@ -8,6 +8,7 @@ import subprocess
 import threading
 from dataclasses import asdict
 from pathlib import Path
+from typing import Annotated
 from urllib.parse import urlsplit
 
 from fastapi import Body, FastAPI, HTTPException, Request
@@ -92,7 +93,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         return [ws_summary(k, v) for k, v in svc.workspaces.items()]
 
     @app.post("/api/workspaces")
-    def open_workspace(path: str = Body(..., embed=True)):
+    def open_workspace(path: Annotated[str, Body(embed=True)]):
         try:
             wid, w = svc.open(path)
         except FileNotFoundError:
@@ -175,7 +176,9 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         }
 
     @app.post("/api/w/{wid}/review")
-    def start_review(wid: str, proof: bool = Body(True, embed=True), base: str = Body("", embed=True)):
+    def start_review(
+        wid: str, proof: Annotated[bool, Body(embed=True)] = True, base: Annotated[str, Body(embed=True)] = ""
+    ):
         w = ws(wid)
         if w.running:
             return ws_summary(wid, w)
@@ -189,7 +192,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         return ws_summary(wid, w)
 
     @app.post("/api/w/{wid}/watch")
-    def watch(wid: str, on: bool = Body(..., embed=True)):
+    def watch(wid: str, on: Annotated[bool, Body(embed=True)]):
         """Turn live re-review on save on or off for this workspace."""
         w = ws(wid)
         w.start_watch() if on else w.stop_watch()
@@ -206,7 +209,9 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         return result_payload(wid, ws(wid))
 
     @app.post("/api/w/{wid}/findings/{fid}/feedback")
-    def feedback(wid: str, fid: str, status: str = Body(..., embed=True), reason: str = Body("", embed=True)):
+    def feedback(
+        wid: str, fid: str, status: Annotated[str, Body(embed=True)], reason: Annotated[str, Body(embed=True)] = ""
+    ):
         try:
             return ws(wid).feedback(fid, status, reason)
         except KeyError:
@@ -217,10 +222,10 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     @app.post("/api/w/{wid}/mute")
     def mute(
         wid: str,
-        intent: str = Body(..., embed=True),
-        path: str = Body("", embed=True),
-        reason: str = Body("", embed=True),
-        undo: bool = Body(False, embed=True),
+        intent: Annotated[str, Body(embed=True)],
+        path: Annotated[str, Body(embed=True)] = "",
+        reason: Annotated[str, Body(embed=True)] = "",
+        undo: Annotated[bool, Body(embed=True)] = False,
     ):
         return ws(wid).mute(intent, path, reason, undo)
 
@@ -295,7 +300,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
             raise HTTPException(404, "file not found") from None
 
     @app.post("/api/w/{wid}/chat")
-    def chat(wid: str, question: str = Body(..., embed=True), history: list[dict] = Body([], embed=True)):
+    def chat(wid: str, question: Annotated[str, Body(embed=True)], history: list[dict] = Body([], embed=True)):
         return ws(wid).ask(question, history)
 
     @app.get("/api/w/{wid}/drift")
@@ -323,9 +328,9 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     @app.post("/api/w/{wid}/settings")
     def set_settings(
         wid: str,
-        model: str = Body(None, embed=True),
-        offline: bool = Body(None, embed=True),
-        constraints: list[str] = Body(None, embed=True),
+        model: Annotated[str | None, Body(embed=True)] = None,
+        offline: Annotated[bool | None, Body(embed=True)] = None,
+        constraints: Annotated[list[str] | None, Body(embed=True)] = None,
     ):
         w = ws(wid)
         cfg = LLMConfig.load(w.root)
@@ -363,7 +368,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
             raise HTTPException(404, "unknown design session") from None
 
     @app.post("/api/design/{sid}/answer")
-    def design_answer(sid: str, qid: str = Body(..., embed=True), value=Body(..., embed=True)):
+    def design_answer(sid: str, qid: Annotated[str, Body(embed=True)], value=Body(..., embed=True)):
         s = svc.design_session(sid)
         try:
             s.answer(qid, value)
@@ -372,7 +377,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         return design_state(s)
 
     @app.post("/api/design/{sid}/assumptions")
-    def design_assumptions(sid: str, overrides: dict = Body(..., embed=True)):
+    def design_assumptions(sid: str, overrides: Annotated[dict, Body(embed=True)]):
         s = svc.design_session(sid)
         for k, v in overrides.items():
             if k not in design.ASSUMPTIONS:
@@ -384,7 +389,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         return svc.propose(sid)
 
     @app.post("/api/design/{sid}/propose")
-    def design_propose(sid: str, workspace: str = Body("", embed=True)):
+    def design_propose(sid: str, workspace: Annotated[str, Body(embed=True)] = ""):
         root = svc.workspaces[workspace].root if workspace in svc.workspaces else None
         return svc.propose(sid, root)
 
@@ -415,7 +420,9 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         )
 
     @app.post("/api/design/{sid}/save")
-    def design_save(sid: str, workspace: str = Body(..., embed=True), candidate: str = Body("", embed=True)):
+    def design_save(
+        sid: str, workspace: Annotated[str, Body(embed=True)], candidate: Annotated[str, Body(embed=True)] = ""
+    ):
         w = ws(workspace)
         p = _proposal(sid)
         path = design.save_intended(w.root, design.intended(svc.design_session(sid), p, candidate or p["recommended"]))
