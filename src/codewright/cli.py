@@ -240,6 +240,19 @@ def mcp(
         [], "--public-host", help="Domain the server is reached at (repeatable); other Host headers are refused."
     ),
     no_auth: bool = typer.Option(False, "--no-auth", help="Serve --http on a non-local address without tokens."),
+    sso_issuer: str = typer.Option(
+        "", "--sso-issuer", help="Sign in through your identity provider: its OIDC issuer URL (Okta, Entra ID...)."
+    ),
+    sso_audience: str = typer.Option(
+        "", "--sso-audience", help="Audience access tokens must name (default: --public-url)."
+    ),
+    public_url: str = typer.Option(
+        "", "--public-url", help="This server's public /mcp URL (needed with --sso-issuer)."
+    ),
+    sso_scope: list[str] = typer.Option([], "--sso-scope", help="Scope every token must carry (repeatable)."),
+    allowed_domain: list[str] = typer.Option(
+        [], "--allowed-domain", help="Only users with an email in this domain (repeatable)."
+    ),
 ) -> None:
     """Run the MCP server: on stdio for one agent, or with --http as a shared server for a team."""
     if ctx.invoked_subcommand is not None:
@@ -257,7 +270,18 @@ def mcp(
     if any(len(t) < 16 for t in tokens):
         console.print("[red]Tokens must be at least 16 characters; `codewright mcp token` makes one.[/]")
         raise typer.Exit(2)
-    if not tokens and not is_loopback(host) and not no_auth:
+    sso = None
+    if sso_issuer:
+        from .sso import SSOVerifier
+
+        if not public_url.startswith("https://") and not is_loopback(host):
+            console.print(
+                "[red]--sso-issuer needs --public-url, the https URL clients use, e.g. https://cw.example.com/mcp[/]"
+            )
+            raise typer.Exit(2)
+        public_url = public_url or f"http://{host}:{port}/mcp"
+        sso = SSOVerifier(sso_issuer, sso_audience or public_url, list(allowed_domain), tokens)
+    if not tokens and not sso and not is_loopback(host) and not no_auth:
         console.print(
             f"[red]Refusing to serve {host} without a token.[/] Pass --token (make one with `codewright mcp token`) "
             "or set CODEWRIGHT_MCP_TOKENS; --no-auth only if something in front of it authenticates."
@@ -271,13 +295,24 @@ def mcp(
     hosts = () if no_git else tuple(h.lower() for h in git_host) or DEFAULT_GIT_HOSTS
     policy = Policy(shared=True, roots=roots, git_hosts=hosts, allow_proof=allow_proof)
     where = f"http://{host}:{port}/mcp"
-    console.print(f"Codewright MCP on [bold]{where}[/] ({'token required' if tokens else 'no token'})")
+    guard = "sign-in via " + sso_issuer if sso else ("token required" if tokens else "no token")
+    console.print(f"Codewright MCP on [bold]{where}[/] ({guard}{' + tokens' if sso and tokens else ''})")
     console.print(
         f"  repos: {', '.join(r.name for r in roots) or 'none'}; git: {', '.join(hosts) or 'off'}; "
         f"proof: {'on' if allow_proof else 'off'}"
     )
     console.print("  connect an agent: `codewright mcp config --url <public URL>`")
-    main(http=True, host=host, port=port, tokens=tokens, policy=policy, public_hosts=public_host or None)
+    main(
+        http=True,
+        host=host,
+        port=port,
+        tokens=tokens,
+        policy=policy,
+        public_hosts=public_host or None,
+        sso=sso,
+        public_url=public_url,
+        required_scopes=list(sso_scope),
+    )
 
 
 @mcp_app.command("token")

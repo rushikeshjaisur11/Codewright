@@ -236,8 +236,20 @@ def is_loopback(host: str) -> bool:
         return False
 
 
-def http_app(tokens: list[str], host: str = "127.0.0.1", public_hosts: list[str] | None = None):
-    """The Streamable HTTP app (at /mcp, plus /healthz), behind bearer tokens when any are given."""
+def http_app(
+    tokens: list[str],
+    host: str = "127.0.0.1",
+    public_hosts: list[str] | None = None,
+    sso=None,
+    public_url: str = "",
+    required_scopes: list[str] | None = None,
+):
+    """The Streamable HTTP app (at /mcp, plus /healthz), behind bearer tokens when any are given.
+
+    With `sso` (an SSOVerifier), sign-in goes through your identity provider: the MCP SDK guards /mcp
+    with the verifier and publishes the OAuth protected-resource metadata at `public_url`, which
+    MCP clients use to find where to sign in. Static tokens are then checked by the verifier too.
+    """
     from mcp.server.transport_security import TransportSecuritySettings
     from starlette.responses import JSONResponse
 
@@ -260,6 +272,22 @@ def http_app(tokens: list[str], host: str = "127.0.0.1", public_hosts: list[str]
         )
     else:  # a team server reached by IP or many names: the tokens are the guard
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    if sso is not None:
+        from mcp.server.auth.settings import AuthSettings
+
+        auth = AuthSettings(
+            issuer_url=sso.issuer,
+            resource_server_url=public_url,
+            required_scopes=required_scopes or None,
+            validate_token_resource=False,  # the verifier checks the audience itself
+        )
+        return server._lowlevel_server.streamable_http_app(
+            transport_security=security,
+            host=host,
+            auth=auth,
+            token_verifier=sso,
+            custom_starlette_routes=server._custom_starlette_routes,
+        )
     app = server.streamable_http_app(transport_security=security, host=host)
     return BearerAuth(app, tokens) if tokens else app
 
@@ -271,6 +299,9 @@ def main(
     tokens: list[str] | None = None,
     policy: Policy | None = None,
     public_hosts: list[str] | None = None,
+    sso=None,
+    public_url: str = "",
+    required_scopes: list[str] | None = None,
 ) -> None:
     global POLICY
     if policy is not None:
@@ -280,7 +311,8 @@ def main(
         return
     import uvicorn
 
-    uvicorn.run(http_app(tokens or [], host, public_hosts), host=host, port=port, log_level="warning")
+    app = http_app(tokens or [], host, public_hosts, sso, public_url, required_scopes)
+    uvicorn.run(app, host=host, port=port, log_level="warning", proxy_headers=True)
 
 
 if __name__ == "__main__":

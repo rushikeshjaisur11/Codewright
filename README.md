@@ -103,6 +103,8 @@ Codewright suggests; it never merges.
 
 Codewright is an MCP server, so Claude Code, Cursor, VS Code, Copilot, Devin and other agents can call it. Use it **locally** (nothing to host; it reviews folders on your machine) or run **one shared server for the team** (nobody installs anything).
 
+Each tagged release publishes a container image (`ghcr.io/rushikeshjaisur11/codewright`) and attaches the wheel to the GitHub release (`.github/workflows/release.yml`).
+
 **Local**, one line, nothing to install first (uv fetches it):
 
 ```bash
@@ -132,8 +134,17 @@ On a shared server, a tool's `repo` is one of:
 - a git URL on an allowed host (`https://github.com/org/repo`, `#branch` for a branch), cloned shallowly into the server's cache and refreshed when older than 5 minutes. Private repos use the server's `CODEWRIGHT_GIT_TOKEN`, `~/.netrc` or git credential helper. Set other hosts with `--git-host git.corp.example`, or turn this off with `--no-git`;
 - nothing: `review_files` reviews files the agent sends inline (the files it's editing plus `uv.lock`, `requirements.txt` or `pyproject.toml`, so versions match). Nothing is kept.
 
+**Sign-in with your identity provider (SSO).** Instead of handing out tokens, let people sign in through Okta, Microsoft Entra ID, Google, Keycloak or any OpenID Connect provider:
+
+```bash
+codewright mcp --http --host 0.0.0.0 --public-url https://codewright.example.com/mcp \
+  --sso-issuer https://login.example.com/oauth2/default --allowed-domain example.com --root /srv/repos/shop
+```
+
+The server then follows the MCP authorization model. It publishes `/.well-known/oauth-protected-resource` naming your provider, MCP clients that support OAuth send the user there to sign in, and each request carries the resulting access token. Codewright checks the token's signature against the provider's published keys, its issuer, audience (`--sso-audience`, default the public URL), expiry, optional scopes (`--sso-scope`) and the user's email domain (`--allowed-domain`). `--token` still works alongside, for CI and scripts. If your provider doesn't allow clients to register themselves, register one there for your MCP clients.
+
 What the shared server guards:
-- **Tokens.** Every request needs a bearer token; `/healthz` is the only open path. The server refuses to listen on a non-local address without a token unless you pass `--no-auth` (for when a gateway in front authenticates).
+- **Tokens or SSO.** Every request needs a bearer token or a signed-in user; `/healthz` and the OAuth metadata are the only open paths. The server refuses to listen on a non-local address without tokens or SSO unless you pass `--no-auth` (for when a gateway in front authenticates).
 - **No repository code runs.** Proof runs a repo's tests and installs its dependencies, so it's off unless you start with `--allow-proof`.
 - **Access.** Callers reach only the `--root` repos and allowed git hosts. Clones use https only (no `file://`, `ssh` or `ext::`), with no hooks and no LFS downloads. Inline files can't escape their throwaway folder.
 - **Host headers.** `--public-host codewright.example.com` refuses requests that don't use that name, and a server bound to localhost is protected against DNS rebinding.
