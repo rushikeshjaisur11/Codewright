@@ -271,6 +271,25 @@ input, textarea, select { font: inherit; color: var(--text); }
 .stages li.done .stage-dot { background: var(--green-soft); border-color: transparent; color: var(--green); }
 .stages li.now .stage-dot { border-color: var(--accent-line); color: var(--accent); }
 
+/* finding categories */
+.badge.cat { font-weight: 500; }
+.badge.cat.md { font-size: 12.5px; padding: 3px 9px; }
+.cat-architecture { color: var(--rose); background: var(--rose-soft); }
+.cat-agents { color: var(--accent); background: var(--accent-soft); }
+.cat-performance { color: var(--amber); background: var(--amber-soft); }
+.cat-reliability { color: var(--red); background: var(--red-soft); }
+.cat-upgrade { color: var(--teal); background: var(--teal-soft); }
+.cat-library { color: var(--text-2); background: var(--panel-2); }
+.cat-chips { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+.cat-chip { height: 28px; padding: 0 10px; border-radius: var(--r-btn); border: 1px solid var(--border); background: none; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-2); }
+.cat-chip:hover { border-color: var(--border-strong); color: var(--text); }
+.cat-chip.on { border-color: currentColor; background: none; }
+.cat-chip.on.cat-library { border-color: var(--text-2); color: var(--text); }
+.kind-row { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 0; cursor: pointer; }
+.kind-row:hover .grow + .mono { color: var(--text); }
+.fitem.arch { box-shadow: inset 3px 0 0 var(--rose); }
+
 /* AI page */
 .ai-arch { overflow: hidden; }
 .ai-arch-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; height: 540px; }

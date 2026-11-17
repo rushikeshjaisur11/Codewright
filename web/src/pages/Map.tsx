@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowDownRight, CheckCircle2, ChevronRight, Code2, Compass, CornerDownRight,
-  EyeOff, FileCode2, GitCommit, History, Layers, Search, Workflow, XCircle,
+  EyeOff, FileCode2, Network, GitCommit, History, Layers, Search, Workflow, XCircle,
 } from "lucide-react";
 import { useApp } from "../App";
 import { api, MapMeta, MapNode, MapView, ModulePage } from "../api";
@@ -22,7 +22,7 @@ export default function MapPage() {
   const [sel, setSel] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ id: string; n: number } | null>(null);
   const [page, setPage] = useState<ModulePage | null>(null);
-  const [overlay, setOverlay] = useState<Overlay>({ findings: true, hotspots: true, untested: false });
+  const [overlay, setOverlay] = useState<Overlay>({ arch: true, findings: true, hotspots: true, untested: false });
   const [dir, setDir] = useState<"LR" | "TB">("LR");
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [menu, setMenu] = useState<"" | "overlay" | "mermaid">("");
@@ -189,9 +189,9 @@ export default function MapPage() {
                 onClick={() => setMenu(menu === "overlay" ? "" : "overlay")}><Layers size={14} />Overlays</button>
               {menu === "overlay" && (
                 <div className="popover" style={{ top: 40, right: 0, width: 220, padding: 4 }}>
-                  {([["findings", "Review findings"], ["hotspots", "Hotspots (fan-in)"], ["untested", "Untested code"]] as const).map(([k, label]) => (
+                  {([["arch", "Architecture suggestions"], ["findings", "Other findings"], ["hotspots", "Hotspots (fan-in)"], ["untested", "Untested code"]] as const).map(([k, label]) => (
                     <label key={k} className="check popover-item">
-                      <input type="checkbox" checked={overlay[k]} onChange={(e) => setOverlay({ ...overlay, [k]: e.target.checked })} />{label}
+                      <input type="checkbox" checked={overlay[k] !== false} onChange={(e) => setOverlay({ ...overlay, [k]: e.target.checked })} />{label}
                     </label>
                   ))}
                 </div>
@@ -254,7 +254,8 @@ export default function MapPage() {
                 </button>
               )}
               {node.files[0] && <button className="btn sm" onClick={() => openCode(node.files[0].file, node.files[0].line)}><Code2 size={13} />Open code</button>}
-              {node.findings > 0 && <button className="btn sm" onClick={() => go("review", {})}>{node.findings} finding{node.findings > 1 ? "s" : ""}</button>}
+              {!!node.arch && <button className="btn sm" onClick={() => go("review", { cat: "architecture" })}><Network size={13} />{node.arch} architecture suggestion{node.arch > 1 ? "s" : ""}</button>}
+              {node.findings - (node.arch ?? 0) > 0 && <button className="btn sm" onClick={() => go("review", {})}>{node.findings - (node.arch ?? 0)} other finding{node.findings - (node.arch ?? 0) > 1 ? "s" : ""}</button>}
             </div>
             {(node.hotspot >= 2 || node.untested > 0) && (
               <div className="row wrap" style={{ gap: 6 }}>

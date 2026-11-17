@@ -75,6 +75,7 @@ class Node:
     hotspot: int = 0  # fan-in
     untested: int = 0
     detail: str = ""
+    arch: int = 0  # architecture findings in these files (a subset of `findings`)
 
 
 @dataclass
@@ -283,6 +284,9 @@ class ArchMap:
         self._tested = self._tested_names()
         self._findings_by_file = Counter(f.file for f in self.findings)
         self._findings_by_fn = Counter(f"{f.file}::{f.function}" for f in self.findings)
+        arch = [f for f in self.findings if getattr(f, "category", "") == "architecture"]
+        self._arch_by_file = Counter(f.file for f in arch)
+        self._arch_by_fn = Counter(f"{f.file}::{f.function}" for f in arch)
         self.unused = self._unused()
         hidden = {u["file"] for u in self.unused}
         shown = [p for p in self.modules.values() if p not in hidden]
@@ -466,6 +470,7 @@ class ArchMap:
                 "component",
                 files=[{"file": p, "line": 1} for p in sorted(paths)],
                 findings=sum(self._findings_by_file[p] for p in paths),
+                arch=sum(self._arch_by_file[p] for p in paths),
                 hotspot=hot,
                 untested=sum(self._fn_stats(p)[1] for p in paths),
                 detail=f"{len(paths)} modules · {fn_count} functions",
@@ -528,6 +533,7 @@ class ArchMap:
                     files=[{"file": p, "line": fn.def_line, "name": fn.qualname} for fn in pf.module.functions]
                     or [{"file": p, "line": 1}],
                     findings=self._findings_by_file[p],
+                    arch=self._arch_by_file[p],
                     hotspot=hot,
                     untested=untested,
                     detail=f"{len(pf.module.functions)} functions",
@@ -563,6 +569,7 @@ class ArchMap:
                 "entry" if key == entry else "function",
                 files=[{"file": path, "line": fn.def_line}],
                 findings=self._findings_by_fn[key],
+                arch=self._arch_by_fn[key],
                 hotspot=self._fan_in.get(key, 0),
                 untested=0 if fn.name in self._tested or fn.name.startswith("_") else 1,
                 detail=f"{path}:{fn.def_line}",

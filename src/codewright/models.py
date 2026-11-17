@@ -107,6 +107,43 @@ class Card:
     extra: str = ""  # with unless_installed: the `library[extra]` that would install them
 
 
+# What kind of advice a finding is, for tags and filters. Order is the display order.
+CATEGORIES = {
+    "architecture": "Architecture",
+    "agents": "Agents",
+    "performance": "Performance",
+    "reliability": "Reliability",
+    "upgrade": "Upgrade",
+    "library": "Use the library",
+}
+PERFORMANCE_INTENTS = {
+    "blocking-http-in-async",
+    "blocking-sleep-in-async",
+    "connection-per-request",
+    "memo-cache",
+    "string-concat-loop",
+    "manual-thread-fanout",
+    "poll-queue",
+}
+RELIABILITY_INTENTS = {"requests-no-timeout", "retry", "datetime-utcnow", "wall-clock-timing", "os-system"}
+
+
+def categorize(intent: str, card: Card | None = None) -> str:
+    """The category key of a finding with this intent and card."""
+    topic = card.topic if card else ""
+    if intent.startswith("arch-") or topic == "Architecture":
+        return "architecture"
+    if topic == "Upgrading" or intent.endswith(("-upgrade", "-deprecated-api")):
+        return "upgrade"
+    if intent.startswith(("adk-", "agent-")) or (card is not None and card.library == "google-adk"):
+        return "agents"
+    if intent in PERFORMANCE_INTENTS:
+        return "performance"
+    if intent in RELIABILITY_INTENTS:
+        return "reliability"
+    return "library"
+
+
 @dataclass
 class Finding:
     id: str
@@ -140,6 +177,7 @@ class Finding:
     span: tuple[int, int] = (0, 0)  # enclosing function's first and last line
     status: str | None = None  # feedback: accepted | rejected | muted
     card_id: str = ""
+    category: str = "library"  # see CATEGORIES: architecture, agents, performance, reliability, upgrade, library
     covered: bool = False  # a test reaches this function: run during proof, else by the call graph
     reached_by: list[str] = field(default_factory=list)  # test ids that ran it during proof (first few)
 
@@ -148,4 +186,5 @@ class Finding:
 
         d = asdict(self)
         d["proof"] = self.proof.value
+        d["category_label"] = CATEGORIES.get(self.category, self.category)
         return d

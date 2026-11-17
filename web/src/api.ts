@@ -34,7 +34,9 @@ export interface Finding {
   span: [number, number];
   status: "accepted" | "rejected" | "muted" | null;
   card_id: string;
+  category: Category; category_label: string;
 }
+export type Category = "architecture" | "agents" | "performance" | "reliability" | "upgrade" | "library";
 
 export interface Dependency { name: string; version: string | null; specifier: string | null; source: string }
 
@@ -78,7 +80,7 @@ export interface ReviewPayload extends WorkspaceInfo { result: ReviewData | null
 
 export interface MapNode {
   id: string; label: string; kind: string; files: { file: string; line: number; name?: string }[];
-  findings: number; hotspot: number; untested: number; detail: string;
+  findings: number; hotspot: number; untested: number; detail: string; arch?: number;
   instruction?: string; model?: string;
 }
 export interface MapEdge { source: string; target: string; label: string; weight: number }

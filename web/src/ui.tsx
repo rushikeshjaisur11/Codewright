@@ -1,6 +1,8 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Check, CheckCircle2, Copy, ExternalLink, Loader2, X } from "lucide-react";
-import type { Progress, Proof } from "./api";
+import {
+  AlertTriangle, Bot, Check, CheckCircle2, Copy, ExternalLink, Gauge, Loader2, Network, Package, ShieldCheck, TrendingUp, X,
+} from "lucide-react";
+import type { Category, Progress, Proof } from "./api";
 
 // ---------------------------------------------------------------- toasts
 type Toast = { id: number; text: string; kind: "ok" | "error" };
@@ -213,7 +215,7 @@ export const KIND_STYLE: Record<string, { color: string; soft: string; label: st
 };
 
 export function intentLabel(intent: string) {
-  return intent.replace(/-/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+  return intent.replace(/^arch-/, "").replace(/-/g, " ").replace(/^\w/, (c) => c.toUpperCase());
 }
 
 export function timeAgo(t: number | null) {
@@ -296,4 +298,21 @@ export function ReviewProgress({ name, progress }: { name: string; progress?: Pr
       </div>
     </div>
   );
+}
+
+// ---------------------------------------------------------------- finding categories
+export const CATEGORY: Record<Category, { label: string; cls: string; icon: typeof Network; help: string }> = {
+  architecture: { label: "Architecture", cls: "cat-architecture", icon: Network, help: "Structure across files: import cycles, layer bypasses, duplicated logic, private imports, untested hotspots" },
+  agents: { label: "Agents", cls: "cat-agents", icon: Bot, help: "How agents, tools, sessions and runners are built" },
+  performance: { label: "Performance", cls: "cat-performance", icon: Gauge, help: "Blocking calls, per-request setup, caching, fan-out" },
+  reliability: { label: "Reliability", cls: "cat-reliability", icon: ShieldCheck, help: "Timeouts, retries, clocks and shell calls" },
+  upgrade: { label: "Upgrade", cls: "cat-upgrade", icon: TrendingUp, help: "Deprecated APIs and what a newer version replaces" },
+  library: { label: "Use the library", cls: "cat-library", icon: Package, help: "Hand-written code the standard library or an installed package already provides" },
+};
+export const CATEGORY_ORDER: Category[] = ["architecture", "agents", "performance", "reliability", "upgrade", "library"];
+
+export function CategoryBadge({ category, size = "sm" }: { category: Category; size?: "sm" | "md" }) {
+  const c = CATEGORY[category] ?? CATEGORY.library;
+  const I = c.icon;
+  return <span className={`badge cat ${c.cls} ${size}`} title={c.help}><I size={size === "md" ? 12 : 11} />{c.label}</span>;
 }

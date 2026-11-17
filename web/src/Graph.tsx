@@ -29,9 +29,10 @@ export interface GNode {
   findings?: number;
   hotspot?: number;
   untested?: number;
+  arch?: number;
 }
 export interface GEdge { source: string; target: string; label?: string; weight?: number }
-export type Overlay = { findings: boolean; hotspots: boolean; untested: boolean };
+export type Overlay = { findings: boolean; hotspots: boolean; untested: boolean; arch?: boolean };
 type Dir = "LR" | "TB";
 type Pt = { x: number; y: number };
 
@@ -44,7 +45,7 @@ export const KIND_ICON: Record<string, LucideIcon> = {
 const NODE_W = 236;
 
 function flags(n: GNode, o: Overlay) {
-  return (o.findings && !!n.findings) || (o.hotspots && (n.hotspot ?? 0) >= 2) || (o.untested && !!n.untested);
+  return (o.findings && !!n.findings) || (o.hotspots && (n.hotspot ?? 0) >= 2) || (o.untested && !!n.untested) || (o.arch !== false && !!n.arch);
 }
 function nodeHeight(n: GNode, o: Overlay) {
   return 58 + (n.tech ? 18 : 0) + (flags(n, o) ? 26 : 0);
@@ -70,7 +71,8 @@ function CWNode({ data }: NodeProps<Node<CWData>>) {
       {data.tech && <div className="tech" title={data.tech}>{data.tech}</div>}
       {flags(data, data.overlay) && (
         <div className="flags">
-          {data.overlay.findings && !!data.findings && <span className="badge accent"><AlertCircle size={10} />{data.findings} finding{data.findings > 1 ? "s" : ""}</span>}
+          {data.overlay.arch !== false && !!data.arch && <span className="badge cat cat-architecture" title="Architecture suggestions in this code"><Network size={10} />{data.arch} architecture</span>}
+          {data.overlay.findings && !!data.findings && (data.findings - (data.overlay.arch !== false ? data.arch ?? 0 : 0)) > 0 && <span className="badge accent"><AlertCircle size={10} />{data.findings - (data.overlay.arch !== false ? data.arch ?? 0 : 0)} finding{data.findings - (data.overlay.arch !== false ? data.arch ?? 0 : 0) > 1 ? "s" : ""}</span>}
           {data.overlay.hotspots && (data.hotspot ?? 0) >= 2 && <span className="badge red"><Flame size={10} />fan-in {data.hotspot}</span>}
           {data.overlay.untested && !!data.untested && <span className="badge amber"><FlaskConical size={10} />{data.untested} untested</span>}
         </div>

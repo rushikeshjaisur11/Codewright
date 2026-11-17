@@ -11,7 +11,7 @@ from .cards import best_cards
 from .graph import CodeGraph, ParsedFile, text
 from .intents.detectors import snippet as code_snippet
 from .intents.detectors import walk
-from .models import Card, Finding, IntentMatch, Stack
+from .models import Card, Finding, IntentMatch, Stack, categorize
 from .stack import for_path
 
 
@@ -57,6 +57,7 @@ def make_findings(matches: list[IntentMatch], stack: Stack, graph: CodeGraph, ca
             hot_path=graph.key(fn) in hot,
             span=(fn.start_line, fn.end_line),
             card_id=card.id,
+            category=categorize(m.intent, card),
         )
         builder = PATCHERS.get(card.id)
         if builder is not None:

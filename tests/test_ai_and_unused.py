@@ -208,3 +208,37 @@ def test_ai_and_map_endpoints(tmp_path):
     hidden = client.get(f"/api/w/{wid}/map/system").json()
     shown = client.get(f"/api/w/{wid}/map/system?unused=true").json()
     assert len(shown["nodes"]) > len(hidden["nodes"])
+
+
+# --------------------------------------------------------------------------- finding categories
+
+
+def test_findings_are_tagged_by_kind(tmp_path):
+    from codewright.engine import review
+    from codewright.models import CATEGORIES, categorize
+    from codewright.report import to_markdown, to_pr_comment, to_sarif
+
+    assert categorize("arch-import-cycle") == "architecture"
+    assert categorize("adk-sync-run") == "agents"
+    assert categorize("adk-deprecated-api") == "upgrade"
+    assert categorize("blocking-sleep-in-async") == "performance"
+    assert categorize("requests-no-timeout") == "reliability"
+    assert categorize("memo-cache") == "performance" and categorize("manual-counter") == "library"
+
+    write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/a.py": "from pkg import b\n\ndef fa():\n    return b.fb()\n",
+            "pkg/b.py": "from pkg import a\n\ndef fb():\n    return a.fa\n",
+            "pkg/main.py": "from pkg import a\n\nif __name__ == '__main__':\n    a.fa()\n",
+        },
+    )
+    r = review(tmp_path, run_proof=False, top=None)
+    cycle = next(f for f in r.findings if f.intent == "arch-import-cycle")
+    assert cycle.category == "architecture" and cycle.to_dict()["category_label"] == "Architecture"
+    assert set(CATEGORIES) >= {f.category for f in r.findings}
+    assert "[Architecture]" in to_markdown(r) and "| Architecture |" in to_pr_comment(r)
+    assert '"architecture"' in to_sarif(r)
+    m = ArchMap(r.graph, r.findings)
+    assert any(n.arch for n in m.system().nodes + m.module(m.components()[0]).nodes)
