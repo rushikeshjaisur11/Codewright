@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import cards as card_store
-from . import critic, diffscope, graph, proof, proof_env, rank, stack
+from . import critic, diffscope, graph, proof, proof_env, rank, rules, stack
 from .feedback import Feedback
 from .intents import detect
 from .models import Finding, Stack
@@ -27,6 +27,7 @@ class ReviewResult:
     seconds: float = 0.0
     feedback: Feedback = field(default_factory=Feedback)
     test_env: str = ""  # which interpreter ran the tests during proof, and why
+    rules: dict = field(default_factory=dict)  # architecture rules and their violations (rules.summary)
 
 
 def review(
@@ -43,6 +44,8 @@ def review(
     full_suite: bool = False,
     build_env: bool = True,
     progress: Callable[[str, int, int], None] | None = None,
+    bench: bool = False,
+    bench_rounds: int = 3,
 ) -> ReviewResult:
     """`progress(stage, done, total)` reports each stage as it starts (stages: stack, graph, detect,
     check, baseline, proof, rank) and counts within it; total is 0 when the stage has nothing to count."""
@@ -58,9 +61,14 @@ def review(
     all_cards = card_store.load(extra_cards)
     findings = make_findings(matches, st, g, all_cards)
 
+    arch = rules.summary(g, root)
     if base:
         changed = diffscope.changed_lines(root, base)
         findings = [f for f in findings if diffscope.in_scope(f, f.span, changed)]
+        arch["violations"] = [v for v in arch["violations"] if v["line"] in changed.get(v["file"], ())]
+        arch["errors"] = sum(1 for v in arch["violations"] if v["severity"] == "error")
+        arch["warnings"] = sum(1 for v in arch["violations"] if v["severity"] == "warn")
+        arch["ok"] = not arch["errors"] and arch["error"] is None
 
     covered = g.test_reachable()
     for f in findings:
@@ -97,6 +105,8 @@ def review(
             importers=importers,
             full_suite=full_suite,
             progress=tell,
+            bench=bench,
+            bench_rounds=bench_rounds,
         )
         kept, broke = critic.review(kept)
         rejected += broke
@@ -104,7 +114,7 @@ def review(
         for f in kept:
             f.proof_detail = "proof skipped (--no-proof)"
     tell("rank", 0, 0)
-    weights = {f.intent: fb.intent_weight(f.intent) for f in kept}
+    weights = {f.id: fb.weight_for(f) for f in kept}
     return ReviewResult(
         st,
         g,
@@ -116,4 +126,5 @@ def review(
         round(time.perf_counter() - t0, 2),
         fb,
         test_env if run_proof else "",
+        arch,
     )

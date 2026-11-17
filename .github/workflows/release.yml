@@ -1,6 +1,6 @@
 name: Release
 
-# Tag a version to publish it:  git tag v0.3.0 && git push origin v0.3.0
+# Tag a version to publish it:  git tag v0.4.0 && git push origin v0.4.0
 # - a GitHub release with the wheel and sdist (installable with uv/pip from the release URL)
 # - a container image: ghcr.io/<owner>/codewright:<version> and :latest (linux/amd64 + arm64)
 # - PyPI, once a free project name is set in pyproject.toml ("codewright" is taken) and

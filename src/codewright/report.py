@@ -39,6 +39,7 @@ def to_json(result: ReviewResult) -> str:
             "rejected": [
                 {"id": f.id, "title": f.title, "file": f.file, "reason": f.rejected_reason} for f in result.rejected
             ],
+            "rules": result.rules or None,
         },
         indent=2,
     )
@@ -74,7 +75,23 @@ def to_markdown(result: ReviewResult) -> str:
             out.append(f"```diff\n{f.patch.rstrip()}\n```\n")
         elif f.snippet:
             out.append(f"```{f.snippet_lang}\n{f.snippet.rstrip()}\n```\n")
+    out += _rules_markdown(result)
     return "\n".join(out)
+
+
+def _rules_markdown(result: ReviewResult, heading: str = "##") -> list[str]:
+    r = result.rules or {}
+    if r.get("error"):
+        return [f"{heading} Architecture rules\n", f"Couldn't read the rules: {r['error']}\n"]
+    vs = r.get("violations") or []
+    if not r.get("rules"):
+        return []
+    if not vs:
+        return [f"{heading} Architecture rules\n", f"All {len(r['rules'])} rule(s) hold.\n"]
+    out = [f"{heading} Architecture rules: {r['errors']} error(s), {r['warnings']} warning(s)\n"]
+    for v in vs:
+        out.append(f"- **{v['severity']}** `{v['file']}:{v['line']}` ({v['rule']}): {v['message']}. {v['fix']}")
+    return [*out, ""]
 
 
 def print_terminal(result: ReviewResult, console: Console | None = None) -> None:
@@ -95,6 +112,7 @@ def print_terminal(result: ReviewResult, console: Console | None = None) -> None
     )
     if not result.findings:
         console.print("[green]No findings.[/] Nothing in this repo matched a capability card with proof-ready advice.")
+        print_rules(result.rules, console)
         return
 
     table = Table(show_lines=False)
@@ -112,6 +130,25 @@ def print_terminal(result: ReviewResult, console: Console | None = None) -> None
     console.print(table)
     for i, f in enumerate(result.findings, 1):
         console.print(_panel(i, f))
+    print_rules(result.rules, console)
+
+
+def print_rules(r: dict | None, console: Console) -> None:
+    r = r or {}
+    if r.get("error"):
+        console.print(f"[red]Rules:[/] {r['error']}")
+        return
+    if not r.get("rules"):
+        return
+    vs = r.get("violations") or []
+    if not vs:
+        console.print(f"[green]Architecture rules:[/] all {len(r['rules'])} hold.")
+        return
+    console.print(f"[bold]Architecture rules:[/] {r['errors']} error(s), {r['warnings']} warning(s)")
+    for v in vs:
+        style = "red" if v["severity"] == "error" else "yellow"
+        console.print(f"  [{style}]{v['severity']}[/] {v['file']}:{v['line']}  [{style}]{v['rule']}[/]  {v['message']}")
+        console.print(f"    [dim]{v['fix']}[/]")
 
 
 def _panel(i: int, f: Finding) -> Panel:
@@ -141,6 +178,7 @@ def to_pr_comment(result: ReviewResult) -> str:
     if not result.findings:
         return (
             f"### Codewright\n\nNo findings{scope}. {len(result.rejected)} candidate(s) were dropped by the critic.\n"
+            + "\n".join(_rules_markdown(result, "####"))
         )
     out = [
         f"### Codewright: {len(result.findings)} suggestion(s){scope}\n",
@@ -162,6 +200,7 @@ def to_pr_comment(result: ReviewResult) -> str:
             out.append(f"```diff\n{f.patch.rstrip()}\n```")
         out.append("Sources: " + " · ".join(f"[{j + 1}]({s})" for j, s in enumerate(f.sources)))
         out.append("</details>\n")
+    out += _rules_markdown(result, "####")
     out.append("<sub>Codewright suggests; humans decide. Nothing is merged automatically.</sub>")
     return "\n".join(out)
 
@@ -210,6 +249,33 @@ def to_sarif(result: ReviewResult) -> str:
                     "autoPatch": bool(f.patch),
                     "function": f.function,
                 },
+            }
+        )
+    for v in (result.rules or {}).get("violations") or []:
+        rule_id = f"codewright/rule/{v['rule']}"
+        if rule_id not in rules:
+            rules[rule_id] = {
+                "id": rule_id,
+                "name": "ArchitectureRule",
+                "shortDescription": {"text": f"Architecture rule {v['rule']} ({v['kind']})"},
+                "fullDescription": {"text": v["reason"] or f"Rule {v['rule']} from .codewright/rules.yaml"},
+                "help": {"text": v["fix"], "markdown": v["fix"]},
+                "properties": {"tags": ["codewright", "architecture-rule", v["kind"]], "precision": "very-high"},
+            }
+        results.append(
+            {
+                "ruleId": rule_id,
+                "level": "error" if v["severity"] == "error" else "warning",
+                "message": {"text": f"{v['message']}. {v['fix']}"},
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {"uri": v["file"], "uriBaseId": "%SRCROOT%"},
+                            "region": {"startLine": max(v["line"], 1)},
+                        }
+                    }
+                ],
+                "partialFingerprints": {"codewrightRule": f"{v['rule']}:{v['file']}:{v['target']}"},
             }
         )
     sarif = {

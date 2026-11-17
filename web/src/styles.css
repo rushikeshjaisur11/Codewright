@@ -343,6 +343,8 @@ input, textarea, select { font: inherit; color: var(--text); }
 .sep { height: 1px; background: var(--border); margin: 12px 0; }
 
 .table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.table-scroll { overflow-x: auto; max-width: 100%; }
+.grid > * { min-width: 0; } /* let wide tables scroll inside their card instead of widening the page */
 .table th { text-align: left; font-size: 13px; color: var(--text-3); font-weight: 500; padding: 10px 20px; border-bottom: 1px solid var(--border); }
 .table td { padding: 11px 20px; border-bottom: 1px solid var(--border); vertical-align: top; }
 .table tr:last-child td { border-bottom: 0; }

@@ -73,6 +73,18 @@ START_CALLS = re.compile(
     r"(^|\.)(run|run_app|run_server|run_polling|start_polling|launch|serve|serve_forever|run_forever|"
     r"main|start|cli|app|kickoff|run_until_complete|polling|infinity_polling|worker_main)$"
 )
+# Decorators that wrap a function without registering it with anything that runs it.
+WRAPPER_DECORATORS = re.compile(
+    r"^(functools\.)?(cache|lru_cache|cached_property|wraps|singledispatch|total_ordering)\b"
+    r"|^(staticmethod|classmethod|property|abstractmethod|abc\.abstractmethod|dataclass|dataclasses\.dataclass"
+    r"|contextmanager|contextlib\.\w+|overload|typing\.overload|override)\b"
+)
+
+
+def _is_handler(fn: Function) -> bool:
+    return any(not WRAPPER_DECORATORS.match(d) for d in fn.decorators)
+
+
 ENTRY_FILENAMES = {
     "app.py",
     "main.py",
@@ -252,7 +264,7 @@ def detect(graph: CodeGraph) -> dict[str, AppEntry]:
                 callees.update(c for c in graph.resolver.callees(pf, pseudo, call) if c != key)
         # Decorated handlers (routes, commands, tools) in an app file are run by the app too.
         callees.update(
-            f"{path}::{fn.qualname}" for fn in pf.module.functions if fn.decorators and "." not in fn.qualname
+            f"{path}::{fn.qualname}" for fn in pf.module.functions if _is_handler(fn) and "." not in fn.qualname
         )
         # Kept off graph.edges and graph.entry_points: detectors read those as "who calls this function",
         # and a route handler is not called by code. hot_functions, the Map and the inspector use these.

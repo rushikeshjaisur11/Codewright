@@ -1,8 +1,43 @@
 import { useEffect, useState } from "react";
-import { AlertCircle, ArrowRight, Network, CheckCircle2, Compass, FileCode2, Flame, GitPullRequest, Layers, ShieldCheck, ThumbsUp, XCircle } from "lucide-react";
+import {
+  AlertCircle, ArrowRight, BellOff, CheckCircle2, Compass, FileCode2, Flame, GitPullRequest, Layers, MessagesSquare, Network,
+  ShieldCheck, ThumbsUp, XCircle,
+} from "lucide-react";
 import { useApp } from "../App";
-import { api, Drift, Release } from "../api";
-import { CATEGORY, CATEGORY_ORDER, CategoryBadge, Empty, ProofBadge, Spinner, Stat, intentLabel } from "../ui";
+import { api, Drift, Insight, Release } from "../api";
+import { CATEGORY, CATEGORY_ORDER, CategoryBadge, Empty, Inline, ProofBadge, Spinner, Stat, intentLabel, useToast } from "../ui";
+
+function Insights({ items }: { items: Insight[] }) {
+  const { wid, reload } = useApp();
+  const toast = useToast();
+  const mute = async (i: Insight) => {
+    if (!wid) return;
+    await api.mute(wid, i.intent, i.path);
+    toast(`Muted ${i.title}${i.path ? ` under ${i.path}` : ""}`);
+    reload();
+  };
+  return (
+    <div className="card">
+      <div className="card-head"><h2><MessagesSquare size={16} />What your team's verdicts say</h2></div>
+      <div className="card-pad col" style={{ gap: 12 }}>
+        {items.map((i, n) => (
+          <div key={n} className="row" style={{ alignItems: "flex-start", gap: 10 }}>
+            <span className={`badge ${i.kind === "mute" ? "amber" : i.kind === "trusted" ? "green" : "outline"}`} style={{ marginTop: 2 }}>
+              {i.kind === "mute" ? "Rejected" : i.kind === "trusted" ? "Trusted" : "Reasons"}
+            </span>
+            <div className="grow" style={{ fontSize: 13.5 }}>
+              <Inline text={i.message} />
+              {i.kind === "mute" && i.reasons.length > 0 && (
+                <div className="faint" style={{ fontSize: 12.5, marginTop: 2 }}>Reasons: {i.reasons.map((r) => `"${r.reason}" (${r.count})`).join(", ")}</div>
+              )}
+            </div>
+            {i.kind === "mute" && <button className="btn sm" onClick={() => mute(i)}><BellOff size={13} />Mute{i.path ? ` in ${i.path}` : ""}</button>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function Overview() {
   const { data, go, wid } = useApp();
@@ -138,6 +173,27 @@ export default function Overview() {
 
           <div className="card">
             <div className="card-head">
+              <h2><ShieldCheck size={16} />Architecture rules</h2>
+              <div className="right"><button className="btn sm ghost" onClick={() => go("rules")}>{r.rules?.rules.length ? "Open" : "Set up"}<ArrowRight size={13} /></button></div>
+            </div>
+            <div className="card-pad">
+              {!r.rules || (!r.rules.rules.length && !r.rules.error) ? (
+                <span className="muted">No rules yet. Write the ones today's code keeps in one click, and every review and CI run checks them.</span>
+              ) : r.rules.error ? <span className="muted">Couldn't read the rules: {r.rules.error}</span>
+              : r.rules.ok && !r.rules.warnings ? (
+                <div className="row"><CheckCircle2 size={16} color="var(--green)" /><span>All {r.rules.rules.length} rule(s) hold.</span></div>
+              ) : (
+                <div className="col">
+                  <div className="row">{r.rules.errors ? <XCircle size={16} color="var(--red)" /> : <AlertCircle size={16} color="var(--amber)" />}
+                    <b>{r.rules.errors} error(s), {r.rules.warnings} warning(s)</b></div>
+                  {r.rules.violations.slice(0, 4).map((v, i) => <div key={i} className="muted mono" style={{ fontSize: 12 }}>{v.file}:{v.line} {v.rule}</div>)}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="card-head">
               <h2><Compass size={16} />Architecture drift</h2>
               <div className="right"><button className="btn sm ghost" onClick={() => go(drift ? "map" : "design")}>{drift ? "Open map" : "Design"}<ArrowRight size={13} /></button></div>
             </div>
@@ -157,6 +213,8 @@ export default function Overview() {
           </div>
         </div>
       </div>
+
+      {(m.insights?.length ?? 0) > 0 && <Insights items={m.insights!} />}
 
       <div className="grid" style={{ gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)" }}>
         <div className="card">

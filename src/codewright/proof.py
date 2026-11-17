@@ -210,10 +210,14 @@ def run_tests(
     trace_out: Path | None = None,
     original: Path | None = None,
     selection: list[str] | None = None,
+    plugins: list[tuple[Path, str]] | None = None,
 ) -> TestRun:
     cmd = [python, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", *(selection or [])]
     env = dict(os.environ)
     paths = _src_dirs(workdir)
+    for folder, name in plugins or []:  # extra pytest plugins: (folder that holds it, module name)
+        paths.append(str(folder))
+        cmd += ["-p", name]
     if trace_out is not None:
         plugin_dir = trace_out.parent / "plugin"
         plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -314,12 +318,13 @@ def prove(
     importers: dict[str, list[str]] | None = None,
     full_suite: bool = False,
     progress: Callable[[str, int, int], None] | None = None,
+    bench: bool = False,
+    bench_rounds: int = 3,
 ) -> TestRun | None:
     """importers maps a source file to the test files that import it, directly or through other modules.
 
     `progress(stage, done, total)` is called when the baseline run starts ("baseline") and after each
-    patched run ("proof").
-    """
+    patched run ("proof"). With `bench`, verified patches are also timed before and after (see ``perf.py``)."""
     root = Path(root)
     with_patch = [f for f in findings if f.patch]
     for f in findings:
@@ -422,4 +427,9 @@ def prove(
                 f.proof_detail = "tests fail after the change:\n" + after.output[-800:]
             if f.id in retried and after is not None and after.ok:
                 f.proof_detail += " (passed when re-run on its own)"
+        if bench:
+            from . import perf
+
+            selections = {f.id: [] if full_suite else select_tests(f, trace, importers or {}) for f in with_patch}
+            perf.measure(with_patch, base, tmp, python, selections, rounds=bench_rounds, timeout=timeout)
         return baseline

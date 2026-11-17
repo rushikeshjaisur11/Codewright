@@ -165,6 +165,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
                 "test_env": r.test_env,
                 "base": r.base,
                 "findings": findings,
+                "rules": r.rules,
                 "rejected": [f.to_dict() for f in r.rejected],
                 "muted": [f.to_dict() for f in r.muted],
                 "metrics": {
@@ -181,7 +182,10 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
 
     @app.post("/api/w/{wid}/review")
     def start_review(
-        wid: str, proof: Annotated[bool, Body(embed=True)] = True, base: Annotated[str, Body(embed=True)] = ""
+        wid: str,
+        proof: Annotated[bool, Body(embed=True)] = True,
+        base: Annotated[str, Body(embed=True)] = "",
+        bench: Annotated[bool, Body(embed=True)] = False,
     ):
         w = ws(wid)
         if w.running:
@@ -189,7 +193,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
 
         def run():
             with contextlib.suppress(Exception):  # the error is recorded on w.error
-                w.run_review(proof=proof, base=base or None)
+                w.run_review(proof=proof, base=base or None, bench=bench)
 
         w.running = True
         threading.Thread(target=run, daemon=True).start()
@@ -257,6 +261,21 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
             raise HTTPException(409, f"patch did not apply: {proc.stderr.strip() or proc.stdout.strip()}") from None
         w.feedback(fid, "accepted", "applied from the web UI")
         return {"applied": True, "file": f.file}
+
+    @app.post("/api/w/{wid}/apply")
+    def apply_many(
+        wid: str,
+        ids: list[str] | None = Body(None, embed=True),
+        verified_only: Annotated[bool, Body(embed=True)] = True,
+        dry_run: Annotated[bool, Body(embed=True)] = False,
+    ):
+        """Apply several findings' patches as one change. Only on an explicit click; nothing is committed."""
+        try:
+            return ws(wid).apply_findings(ids, verified_only=verified_only, dry_run=dry_run)
+        except ValueError as e:
+            raise HTTPException(404, str(e)) from None
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
 
     @app.get("/api/w/{wid}/report.md", response_class=PlainTextResponse)
     def report_md(wid: str):
@@ -342,6 +361,86 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     @app.get("/api/w/{wid}/releases")
     def releases(wid: str):
         return ws(wid).releases()
+
+    # ------------------------------------------------------------------ rules, dependencies, migrations, plans
+    @app.get("/api/w/{wid}/rules")
+    def get_rules(wid: str):
+        return ws(wid).rules()
+
+    @app.post("/api/w/{wid}/rules/init")
+    def init_rules(wid: str, overwrite: Annotated[bool, Body(embed=True)] = False):
+        try:
+            return ws(wid).rules_init(overwrite)
+        except FileExistsError as e:
+            raise HTTPException(409, str(e)) from None
+
+    @app.post("/api/w/{wid}/rules/fix")
+    def fix_rules(
+        wid: str,
+        keys: list[str] | None = Body(None, embed=True),
+        dry_run: Annotated[bool, Body(embed=True)] = False,
+    ):
+        """Apply rule violations' fixes. Only on an explicit click; nothing is committed."""
+        try:
+            return ws(wid).fix_violations(keys, dry_run=dry_run)
+        except ValueError as e:
+            raise HTTPException(404, str(e)) from None
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+
+    @app.get("/api/w/{wid}/deps")
+    def get_deps(wid: str, online: bool = True):
+        return ws(wid).deps(online=online)
+
+    @app.get("/api/w/{wid}/migrations")
+    def list_migrations(wid: str):
+        from .migrate import CATALOG
+
+        return {
+            "applicable": ws(wid).migrations(),
+            "catalog": [{"name": m.name, "title": m.title, "library": m.library} for m in CATALOG.values()],
+        }
+
+    @app.post("/api/w/{wid}/migrations/{name}/plan")
+    def plan_migration(wid: str, name: str, batch: Annotated[int, Body(embed=True)] = 5):
+        try:
+            return ws(wid).migration_plan(name, batch=max(1, min(batch, 50)))
+        except ValueError as e:
+            raise HTTPException(404, str(e)) from None
+
+    @app.get("/api/w/{wid}/migrations/{name}")
+    def migration_status(wid: str, name: str):
+        try:
+            return ws(wid).migration_status(name)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(404, str(e)) from None
+
+    @app.get("/api/w/{wid}/migrations/{name}/steps/{n}")
+    def migration_step(wid: str, name: str, n: int):
+        try:
+            return ws(wid).migration_step(name, n)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(404, str(e)) from None
+
+    @app.post("/api/w/{wid}/migrations/{name}/steps/{n}/apply")
+    def migration_apply(wid: str, name: str, n: int):
+        """Apply one step's combined patch to the working tree. Only on an explicit click; nothing is committed."""
+        try:
+            return ws(wid).migration_apply(name, n)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(404, str(e)) from None
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+
+    @app.post("/api/w/{wid}/critique")
+    def critique(wid: str, text: Annotated[str, Body(embed=True)]):
+        if not text.strip():
+            raise HTTPException(400, "paste a plan to review")
+        return ws(wid).critique(text[:200_000])
+
+    @app.get("/api/w/{wid}/insights")
+    def insights(wid: str):
+        return ws(wid).insights()
 
     # ------------------------------------------------------------------ settings
     @app.get("/api/w/{wid}/settings")
