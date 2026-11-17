@@ -271,6 +271,13 @@ input, textarea, select { font: inherit; color: var(--text); }
 .stages li.done .stage-dot { background: var(--green-soft); border-color: transparent; color: var(--green); }
 .stages li.now .stage-dot { border-color: var(--accent-line); color: var(--accent); }
 
+/* AI page */
+.ai-arch { overflow: hidden; }
+.ai-arch-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; height: 540px; }
+.ai-arch-canvas { position: relative; min-height: 0; }
+.ai-arch-side { border-left: 1px solid var(--border); background: var(--bg-elev); padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
+@media (max-width: 900px) { .ai-arch-body { grid-template-columns: 1fr; height: auto; } .ai-arch-canvas { height: 420px; } .ai-arch-side { border-left: 0; border-top: 1px solid var(--border); } }
+
 /* model setup */
 .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
 .choice { text-align: left; padding: 12px 14px; border-radius: var(--r-lg); border: 1px solid var(--border); background: transparent;

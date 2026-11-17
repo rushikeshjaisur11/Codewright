@@ -11,6 +11,7 @@ Review findings, fan-in hotspots and untested functions.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
 from collections import Counter, defaultdict
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from .graph import CodeGraph, is_test_file
 from .models import Finding
+from .stack import SKIP_DIRS
 
 # import prefix -> (external system label, kind)
 EXTERNAL = [
@@ -218,8 +220,55 @@ def resolve_relative(target: str, from_path: str) -> str:
     return ".".join([*base, rest] if rest else base)
 
 
+# Folders whose files are scripts, docs or samples rather than part of the running system.
+TOOLING_DIRS = {
+    "scripts",
+    "script",
+    "tools",
+    "examples",
+    "example",
+    "samples",
+    "sample",
+    "docs",
+    "doc",
+    "benchmarks",
+    "bench",
+    "migrations",
+    "alembic",
+    "notebooks",
+    "sandbox",
+    "playground",
+    "demo",
+    "demos",
+    "experiments",
+}
+LAUNCH_PREFIXES = ("run_", "start_", "serve", "worker", "consume", "listen", "poll_", "main_")
+TOOLING_FILES = {"setup.py", "noxfile.py", "fabfile.py", "tasks.py", "conftest.py"}
+# Files at the repo root that start the app by module name or path (uvicorn app.main:app, gunicorn, Procfile...).
+LAUNCH_FILES = (
+    "pyproject.toml",
+    "setup.cfg",
+    "Dockerfile",
+    "Procfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+    "Makefile",
+    "app.yaml",
+    "fly.toml",
+    "render.yaml",
+    "tox.ini",
+)
+
+
+def is_tooling(path: str) -> bool:
+    parts = path.split("/")
+    return parts[-1] in TOOLING_FILES or any(p in TOOLING_DIRS for p in parts[:-1])
+
+
 class ArchMap:
-    def __init__(self, graph: CodeGraph, findings: list[Finding] | None = None):
+    def __init__(self, graph: CodeGraph, findings: list[Finding] | None = None, include_unused: bool = False):
         self.g = graph
         self.findings = findings or []
         self.modules = {module_name(p): p for p in graph.files if not is_test_file(p)}
@@ -234,6 +283,116 @@ class ArchMap:
         self._tested = self._tested_names()
         self._findings_by_file = Counter(f.file for f in self.findings)
         self._findings_by_fn = Counter(f"{f.file}::{f.function}" for f in self.findings)
+        self.unused = self._unused()
+        hidden = {u["file"] for u in self.unused}
+        shown = [p for p in self.modules.values() if p not in hidden]
+        # Never hide everything: a repo of loose scripts still gets a map.
+        self.shown = set(self.modules.values()) if include_unused or not shown else set(shown)
+
+    # ----------------------------------------------------------------- what is part of the architecture
+    def _launch_text(self) -> str:
+        """Config and launch files that can start a module by name: the root ones, plus deploy and
+        compose files, shell scripts and agent configs (langgraph.json...) anywhere in the repo."""
+        root = Path(self.g.root)
+        out = []
+        for name in LAUNCH_FILES:
+            with contextlib.suppress(OSError):
+                out.append((root / name).read_text(errors="replace"))
+        seen = 0
+        for pattern in ("*.yml", "*.yaml", "*.json", "*.toml", "*.cfg", "*.ini", "*.sh", "Procfile*", "Dockerfile*"):
+            for f in root.rglob(pattern):
+                rel = f.relative_to(root).parts
+                if any(x in SKIP_DIRS or (x.startswith(".") and x != ".github") for x in rel[:-1]):
+                    continue
+                if f.name in ("package-lock.json", "uv.lock") or seen >= 300:
+                    continue
+                with contextlib.suppress(OSError):
+                    if f.stat().st_size < 200_000:
+                        out.append(f.read_text(errors="replace"))
+                        seen += 1
+        return "\n".join(out)
+
+    def _launched_outside(self, path: str) -> bool:
+        """A module the repo never calls but something outside it likely starts: an ADK `root_agent`,
+        or a top-level `run_*`/`start_*`/`serve*`/`worker*`/`consume*` function nothing in the repo calls."""
+        pf = self.g.files[path]
+        if b"root_agent =" in pf.source or b"root_agent=" in pf.source:
+            return True
+        for fn in pf.module.functions:
+            if "." in fn.qualname or fn.name.startswith("_"):
+                continue
+            if fn.name.startswith(LAUNCH_PREFIXES) and self._fan_in.get(f"{path}::{fn.qualname}", 0) == 0:
+                return True
+        return False
+
+    def _unused(self) -> list[dict]:
+        """Modules the running system never loads, each with why: {file, reason}.
+
+        In use: entry points (routes, CLI commands, `main`), `__main__` blocks and `__main__.py`
+        outside script folders, modules named in pyproject/Dockerfile/Procfile, ADK `root_agent`
+        modules, and everything they import, directly or through other modules. A repo with no
+        entry point at all is a library, so every module outside script folders is in use.
+        """
+        files = list(self.modules.values())
+        launch = self._launch_text()
+        roots = set()
+        for p in files:
+            if is_tooling(p):
+                continue
+            pf = self.g.files[p]
+            mod = module_name(p)
+            names = [mod, *importable_names(mod)]
+            if (
+                any(k.partition("::")[0] == p for k in self.g.entry_points)
+                or pf.module.has_main_guard
+                or p.endswith(("__main__.py", "wsgi.py", "asgi.py"))
+                or self._launched_outside(p)
+                or any(f"{n}:" in launch or f"-m {n}" in launch for n in names if n)
+                or p in launch
+            ):
+                roots.add(p)
+        if not roots:
+            roots = {p for p in files if not is_tooling(p)}
+        imports = {p: self._module_imports(p)[0] for p in files}
+        used, stack = set(), list(roots)
+        while stack:
+            p = stack.pop()
+            if p in used:
+                continue
+            used.add(p)
+            parts = module_name(p).split(".")
+            for i in range(1, len(parts)):  # importing a.b.c runs a/__init__ and a/b/__init__
+                parent = self.modules.get(".".join(parts[:i]))
+                if parent and parent not in used:
+                    stack.append(parent)
+            stack.extend(self.modules[m] for m in imports[p] if self.modules[m] not in used)
+        # Dynamic imports: a module named in a string by code in use (importlib, plugin lists).
+        sources = b"\n".join(self.g.files[p].source for p in used)
+        for p in files:
+            if p not in used and not is_tooling(p):
+                mod = module_name(p)
+                if any(f"{q}{n}".encode() in sources for n in [mod, *importable_names(mod)] if "." in n for q in "\"'"):
+                    used.add(p)
+        tested_only = set()
+        for path in self.g.files:
+            if is_test_file(path):
+                for mod in self._module_imports(path)[0]:
+                    tested_only.add(self.modules[mod])
+        out = []
+        for p in sorted(files):
+            if p in used:
+                continue
+            pf = self.g.files[p]
+            if p.endswith("__init__.py") and not pf.module.functions and not pf.module.imports:
+                continue  # an empty package marker: nothing to show either way
+            if is_tooling(p):
+                reason = "script, docs or example folder"
+            elif p in tested_only:
+                reason = "only tests import it"
+            else:
+                reason = "nothing in use imports it"
+            out.append({"file": p, "reason": reason, "functions": len(pf.module.functions)})
+        return out
 
     # ----------------------------------------------------------------- helpers
     def _comp(self, path: str) -> str:
@@ -288,7 +447,8 @@ class ArchMap:
     def system(self) -> View:
         comps: dict[str, list[str]] = defaultdict(list)
         for path in self.modules.values():
-            comps[self._comp(path)].append(path)
+            if path in self.shown:
+                comps[self._comp(path)].append(path)
         nodes: dict[str, Node] = {}
         edges: Counter = Counter()
         ext_edges: Counter = Counter()
@@ -355,7 +515,7 @@ class ArchMap:
         return View("system", "System", list(nodes.values()), out_edges)
 
     def module(self, component: str) -> View:
-        paths = sorted(p for p in self.modules.values() if self._comp(p) == component)
+        paths = sorted(p for p in self.shown if self._comp(p) == component)
         nodes, edges = [], []
         for p in paths:
             pf = self.g.files[p]
@@ -375,7 +535,7 @@ class ArchMap:
             )
             internal, external = self._module_imports(p)
             for mod in internal:
-                if self._comp(self.modules[mod]) == component:
+                if self.modules[mod] in self.shown and self._comp(self.modules[mod]) == component:
                     edges.append(Edge(f"m:{module_name(p)}", f"m:{mod}", "imports"))
             for label_kind in {self._external_for(t) for t in external} - {None}:
                 nid = f"x:{label_kind[0]}"
@@ -497,7 +657,7 @@ class ArchMap:
         }
 
     def components(self) -> list[str]:
-        return sorted({self._comp(p) for p in self.modules.values()})
+        return sorted({self._comp(p) for p in self.shown})
 
 
 # --------------------------------------------------------------------------- snapshots / changes

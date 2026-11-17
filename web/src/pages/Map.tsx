@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown, ArrowLeft, ArrowRight, ArrowDownRight, CheckCircle2, ChevronRight, Code2, Compass, CornerDownRight,
-  FileCode2, GitCommit, History, Layers, Search, Workflow, XCircle,
+  EyeOff, FileCode2, GitCommit, History, Layers, Search, Workflow, XCircle,
 } from "lucide-react";
 import { useApp } from "../App";
 import { api, MapMeta, MapNode, MapView, ModulePage } from "../api";
@@ -28,6 +28,7 @@ export default function MapPage() {
   const [menu, setMenu] = useState<"" | "overlay" | "mermaid">("");
   const [q, setQ] = useState("");
   const [qOpen, setQOpen] = useState(false);
+  const [showUnused, setShowUnused] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const has = !!data?.result;
 
@@ -42,10 +43,10 @@ export default function MapPage() {
     setSel(null);
     setHidden(new Set());
     setDir(here.level === "flow" ? "TB" : "LR");
-    api.map(wid, here.level, here.target).then(setView)
+    api.map(wid, here.level, here.target, showUnused).then(setView)
       .catch((e) => { setView(null); toast(e.message, "error"); })
       .finally(() => setLoading(false));
-  }, [wid, has, here.level, here.target, toast]);
+  }, [wid, has, here.level, here.target, showUnused, toast]);
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
@@ -332,6 +333,28 @@ export default function MapPage() {
                 })}
               </div>
             </div>
+            {meta && meta.unused.length > 0 && here.level !== "flow" && (
+              <div className="card card-pad">
+                <div className="section-title"><EyeOff size={13} />Not part of the running system</div>
+                <p className="muted" style={{ margin: "0 0 10px", fontSize: 13 }}>
+                  {meta.unused.length} file{meta.unused.length > 1 ? "s" : ""} that no entry point, launch config or agent loads. {showUnused ? "Shown on the map." : "Left off the map."}
+                </p>
+                <label className="row" style={{ cursor: "pointer", fontSize: 13, marginBottom: 10 }}>
+                  <input type="checkbox" checked={showUnused} onChange={(e) => setShowUnused(e.target.checked)} />Show them on the map
+                </label>
+                <div className="conn">
+                  {meta.unused.slice(0, 40).map((u) => (
+                    <button key={u.file} className="conn-row" onClick={() => openCode(u.file, 1)} title={u.file} style={{ alignItems: "flex-start" }}>
+                      <FileCode2 size={13} className="faint" style={{ marginTop: 3, flex: "none" }} />
+                      <span className="grow" style={{ minWidth: 0 }}>
+                        <span className="mono" style={{ fontSize: 12, display: "block", wordBreak: "break-all" }}>{u.file}</span>
+                        <span className="faint" style={{ fontSize: 11.5 }}>{u.reason}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {meta?.drift !== undefined && (
               <div className="card card-pad">
                 <div className="section-title">Design drift</div>

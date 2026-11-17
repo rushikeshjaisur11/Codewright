@@ -1,6 +1,6 @@
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BookOpen, Compass, GitPullRequest, LayoutDashboard, MessageSquareCode, Moon, Package,
+  BookOpen, Bot, Compass, GitPullRequest, LayoutDashboard, MessageSquareCode, Moon, Package,
   PenTool, Play, Radio, Settings as SettingsIcon, Sun, X,
 } from "lucide-react";
 import { api, ReviewPayload, WorkspaceInfo } from "./api";
@@ -11,12 +11,13 @@ const Overview = lazy(() => import("./pages/Overview"));
 const Review = lazy(() => import("./pages/Review"));
 const MapPage = lazy(() => import("./pages/Map"));
 const Chat = lazy(() => import("./pages/Chat"));
+const AiPage = lazy(() => import("./pages/Ai"));
 const Design = lazy(() => import("./pages/Design"));
 const Releases = lazy(() => import("./pages/Releases"));
 const Knowledge = lazy(() => import("./pages/Knowledge"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
 
-export type Page = "overview" | "review" | "map" | "chat" | "design" | "releases" | "knowledge" | "settings";
+export type Page = "overview" | "review" | "map" | "ai" | "chat" | "design" | "releases" | "knowledge" | "settings";
 
 interface Ctx {
   wid: string | null;
@@ -33,7 +34,7 @@ export const useApp = () => useContext(AppCtx);
 function parseHash(): { page: Page; params: URLSearchParams } {
   const h = window.location.hash.replace(/^#\/?/, "");
   const [p, qs] = h.split("?");
-  const pages: Page[] = ["overview", "review", "map", "chat", "design", "releases", "knowledge", "settings"];
+  const pages: Page[] = ["overview", "review", "map", "ai", "chat", "design", "releases", "knowledge", "settings"];
   return { page: (pages.includes(p as Page) ? p : "overview") as Page, params: new URLSearchParams(qs || "") };
 }
 
@@ -167,6 +168,7 @@ export default function App() {
     { page: "overview", label: "Overview", icon: <LayoutDashboard size={17} /> },
     { page: "review", label: "Review", icon: <GitPullRequest size={17} />, count: r?.findings.length },
     { page: "map", label: "Map", icon: <Compass size={17} /> },
+    { page: "ai", label: "AI & agents", icon: <Bot size={17} /> },
     { page: "chat", label: "Code chat", icon: <MessageSquareCode size={17} /> },
     { page: "design", label: "Design", icon: <PenTool size={17} /> },
   ];
@@ -176,7 +178,7 @@ export default function App() {
     { page: "settings", label: "Settings", icon: <SettingsIcon size={17} /> },
   ];
   const titles: Record<Page, string> = {
-    overview: "Overview", review: "Review", map: "Map", chat: "Code chat", design: "Design",
+    overview: "Overview", review: "Review", map: "Map", ai: "AI & agents", chat: "Code chat", design: "Design",
     releases: "Releases", knowledge: "Knowledge base", settings: "Settings",
   };
 
@@ -247,6 +249,7 @@ export default function App() {
             {route.page === "overview" && <Overview />}
             {route.page === "review" && <Review />}
             {route.page === "map" && <MapPage />}
+            {route.page === "ai" && <AiPage />}
             {route.page === "chat" && <Chat />}
             {route.page === "design" && <Design />}
             {route.page === "releases" && <Releases />}

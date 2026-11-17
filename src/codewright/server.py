@@ -279,14 +279,16 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         m = w.amap()
         return {
             "components": m.components(),
+            "unused": m.unused,
             "entry_points": m.entry_points(),
             "changes": changes_since(w.root, m.system()),
             "drift": w.drift(),
         }
 
     @app.get("/api/w/{wid}/map/{level}")
-    def map_view(wid: str, level: str, target: str = ""):
-        m = ws(wid).amap()
+    def map_view(wid: str, level: str, target: str = "", unused: bool = False):
+        """`unused=true` also draws modules the running system never loads (see ArchMap.unused)."""
+        m = ws(wid).amap(include_unused=unused)
         if level not in ("system", "module", "flow"):
             raise HTTPException(400, "level must be system, module or flow")
         try:
@@ -312,6 +314,10 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     @app.post("/api/w/{wid}/chat")
     def chat(wid: str, question: Annotated[str, Body(embed=True)], history: list[dict] = Body([], embed=True)):
         return ws(wid).ask(question, history)
+
+    @app.get("/api/w/{wid}/ai")
+    def ai(wid: str):
+        return ws(wid).ai()
 
     @app.get("/api/w/{wid}/drift")
     def drift(wid: str):

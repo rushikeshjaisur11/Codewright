@@ -6,8 +6,8 @@ import {
 } from "@xyflow/react";
 import flowCss from "@xyflow/react/dist/style.css?raw";
 import {
-  AlertCircle, Boxes, Braces, Clock, Cloud, Cog, Database, FileCode2, Flame, FlaskConical, Globe, HardDrive, Inbox,
-  LogIn, LucideIcon, Server, Sparkles, Users, Zap,
+  AlertCircle, Bot, Boxes, Braces, Clock, Cloud, Cog, Database, FileCode2, Flame, FlaskConical, Globe, HardDrive, Inbox,
+  LogIn, LucideIcon, Network, Server, Sparkles, Users, Wrench, Zap,
 } from "lucide-react";
 import { KIND_STYLE } from "./ui";
 
@@ -38,7 +38,7 @@ type Pt = { x: number; y: number };
 export const KIND_ICON: Record<string, LucideIcon> = {
   component: Boxes, module: FileCode2, function: Braces, entry: LogIn, service: Server, worker: Cog,
   database: Database, vector: Database, cache: Zap, queue: Inbox, scheduler: Clock, http: Globe, llm: Sparkles,
-  ingress: Users, storage: HardDrive, cloud: Cloud,
+  ingress: Users, storage: HardDrive, cloud: Cloud, agent: Bot, workflow: Network, tool: Wrench,
 };
 
 const NODE_W = 236;

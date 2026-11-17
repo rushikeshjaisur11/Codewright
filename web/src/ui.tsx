@@ -207,6 +207,9 @@ export const KIND_STYLE: Record<string, { color: string; soft: string; label: st
   ingress: { color: "var(--green)", soft: "var(--green-soft)", label: "Clients" },
   storage: { color: "var(--teal)", soft: "var(--teal-soft)", label: "Storage" },
   cloud: { color: "var(--amber)", soft: "var(--amber-soft)", label: "Cloud" },
+  agent: { color: "var(--accent)", soft: "var(--accent-soft)", label: "Agent" },
+  workflow: { color: "var(--teal)", soft: "var(--teal-soft)", label: "Workflow" },
+  tool: { color: "var(--amber)", soft: "var(--amber-soft)", label: "Tool" },
 };
 
 export function intentLabel(intent: string) {

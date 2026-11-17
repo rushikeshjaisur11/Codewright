@@ -79,6 +79,7 @@ export interface ReviewPayload extends WorkspaceInfo { result: ReviewData | null
 export interface MapNode {
   id: string; label: string; kind: string; files: { file: string; line: number; name?: string }[];
   findings: number; hotspot: number; untested: number; detail: string;
+  instruction?: string; model?: string;
 }
 export interface MapEdge { source: string; target: string; label: string; weight: number }
 export interface MapView { level: string; title: string; nodes: MapNode[]; edges: MapEdge[]; mermaid: string }
@@ -91,8 +92,9 @@ export interface Drift {
   violations: { rule: string; reason: string; file: string; import: string }[];
 }
 
+export interface UnusedFile { file: string; reason: string; functions: number }
 export interface MapMeta {
-  components: string[]; entry_points: EntryPoint[];
+  components: string[]; entry_points: EntryPoint[]; unused: UnusedFile[];
   changes: { since: number | null; added_nodes: string[]; removed_nodes: string[]; added_edges: string[]; removed_edges: string[] };
   drift: Drift | null;
 }
@@ -145,6 +147,26 @@ export interface Settings {
 
 export interface IndexState {
   url: string; source: string; is_pypi: boolean; repo: string | null; machine: string | null; env_override: boolean;
+}
+
+// ---- AI page
+export type AiRole = "agents" | "model calls" | "tools" | "runs agents" | "calls AI code" | "imports";
+export interface AiFile {
+  file: string; sdks: string[]; roles: AiRole[]; agents: string[]; model_calls: number; tools: string[];
+  via: string[]; findings: number; unused: string;
+}
+export interface AiAgent {
+  id: string; name: string; var: string; file: string; line: number; framework: string; kind: string;
+  model: string; instruction: string; tools: { label: string; file: string; line: number; agent?: string; builtin?: boolean }[];
+  children: string[]; child_names: string[]; steps: { name: string; file: string; line: number }[];
+}
+export interface AiModelCall { file: string; function: string; line: number; api: string; provider: string; model: string }
+export interface AiReport {
+  files: AiFile[]; agents: AiAgent[]; model_calls: AiModelCall[];
+  runs: { file: string; function: string; line: number; agent: string; how: string }[];
+  architecture: { nodes: MapNode[]; edges: MapEdge[] };
+  summary: { files: number; need_model: number; agents: number; workflows: number; tools: number; model_calls: number;
+    models: string[]; frameworks: string[] };
 }
 
 // ---- design
@@ -218,7 +240,9 @@ export const api = {
   reportMd: (id: string) => req<string>("GET", `${w(id)}/report.md`),
   prComment: (id: string) => req<string>("GET", `${w(id)}/pr-comment.md`),
   mapMeta: (id: string) => req<MapMeta>("GET", `${w(id)}/map/meta`),
-  map: (id: string, level: string, target = "") => req<MapView>("GET", `${w(id)}/map/${level}?target=${q(target)}`),
+  map: (id: string, level: string, target = "", unused = false) =>
+    req<MapView>("GET", `${w(id)}/map/${level}?target=${q(target)}${unused ? "&unused=true" : ""}`),
+  ai: (id: string) => req<AiReport>("GET", `${w(id)}/ai`),
   module: (id: string, path: string) => req<ModulePage>("GET", `${w(id)}/module?path=${q(path)}`),
   source: (id: string, path: string) => req<{ file: string; text: string }>("GET", `${w(id)}/source?path=${q(path)}`),
   chat: (id: string, question: string, history: { role: string; content: string }[]) =>

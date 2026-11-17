@@ -188,9 +188,20 @@ class Workspace:
         return fb.stats()
 
     # --------------------------------------------------------------- map
-    def amap(self) -> archmap.ArchMap:
+    def amap(self, include_unused: bool = False) -> archmap.ArchMap:
         r = self.ensure()
-        return archmap.ArchMap(r.graph, r.findings)
+        return archmap.ArchMap(r.graph, r.findings, include_unused=include_unused)
+
+    def ai(self) -> dict:
+        """Files that need a model and the agent architecture (see aimap)."""
+        from . import aimap
+
+        r = self.ensure()
+        out = aimap.build(r.graph, r.findings)
+        unused = {u["file"]: u["reason"] for u in self.amap().unused}
+        for f in out["files"]:
+            f["unused"] = unused.get(f["file"], "")
+        return out
 
     def ask(self, question: str, history: list[dict] | None = None) -> dict:
         self.ensure()

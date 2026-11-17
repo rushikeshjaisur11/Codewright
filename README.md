@@ -34,7 +34,8 @@ The web app only answers requests addressed to `localhost`, and refuses requests
 | --- | --- |
 | Overview | Findings, proof rate, acceptance rate, hot-path count, stack, drift and upgrades at a glance |
 | Review | Filterable findings with evidence, the suggested API and version, gain, risk, "when not to", scale threshold, proof, diff and sources. Accept, reject (with a reason), mute an intent, copy or apply a patch, PR mode and PR-comment export |
-| Map | System, module and request-flow diagrams generated from the code graph, laid out with ELK (layered, orthogonal edges). Hover a box to trace its connections, double-click to drill in (breadcrumbs take you back), press `/` to find a node, filter by kind, switch direction. Every box links to its files and lines; overlays show findings, fan-in hotspots and untested code. Monorepos (`packages/*`, `src/` layouts) are split into their real packages. Mermaid export, drift panel and "changes this week" |
+| Map | System, module and request-flow diagrams generated from the code graph, laid out with ELK (layered, orthogonal edges). Hover a box to trace its connections, double-click to drill in (breadcrumbs take you back), press `/` to find a node, filter by kind, switch direction. Every box links to its files and lines; overlays show findings, fan-in hotspots and untested code. Files the running system never loads (nothing in use imports them, only tests do, or they live in `scripts/`, `docs/` or `examples/`) are left off and listed beside the map, with a switch to show them. Monorepos (`packages/*`, `src/` layouts) are split into their real packages. Mermaid export, drift panel and "changes this week" |
+| AI & agents | The files that need a model, and the agent architecture drawn from the code: which route or job runs each agent, its sub-agents and handoffs, its tools and model, plus LangGraph workflows and direct model calls. Google ADK, OpenAI Agents SDK, Pydantic AI, CrewAI, LangChain/LangGraph, smolagents, AutoGen, LlamaIndex, and the Anthropic, OpenAI, Gemini and LiteLLM SDKs |
 | Code chat | Questions about the code, answered with citations you can click open |
 | Design | Interview → three candidate architectures with fit scores, a diagram, components with exact versions from PyPI, editable capacity assumptions, decision records, data model and API outline. Download the design doc or a starter repo, or save the design as the repo's intended architecture |
 | Releases | Newer versions of each dependency, what an upgrade unlocks, and an upgrade preview for this repo: the findings an upgrade would add (things to fix first, with auto-patches marked) or resolve, from re-matching the code already scanned against the new version |
@@ -62,6 +63,9 @@ codewright review . -f sarif -o codewright.sarif   # for GitHub code scanning an
 codewright review . --base origin/main -f pr -o comment.md   # PR mode: changed code only
 codewright check .                          # exit 1 when code drifts from .codewright/design.json
 codewright map . --level flow               # Mermaid diagram of a request flow
+codewright map . --unused                    # also draw files the running system never loads
+codewright agents .                         # files that need a model, and the agents, tools and models
+codewright agents . --mermaid               # the agent architecture as Mermaid
 codewright watch . --rescan                 # new dependency releases; re-review when one appears
 codewright feedback <finding-id> rejected --reason "not worth the churn"
 codewright stack .                          # what versions it thinks you run
@@ -152,7 +156,7 @@ What the shared server guards:
 - **Access.** Callers reach only the `--root` repos and allowed git hosts. Clones use https only (no `file://`, `ssh` or `ext::`), with no hooks and no LFS downloads. Inline files can't escape their throwaway folder.
 - **Host headers.** `--public-host codewright.example.com` refuses requests that don't use that name, and a server bound to localhost is protected against DNS rebinding.
 
-Tools: `review`, `review_files`, `review_markdown`, `explain_finding`, `record_feedback`, `architecture_map`, `ask_code`, `check_drift`, `dependency_releases`, `search_knowledge` (what the installed version of a library offers for a task, before writing code against it), `list_repos`.
+Tools: `review`, `review_files`, `review_markdown`, `explain_finding`, `record_feedback`, `architecture_map`, `ai_architecture` (agents, tools, models and the files that need a model), `ask_code`, `check_drift`, `dependency_releases`, `search_knowledge` (what the installed version of a library offers for a task, before writing code against it), `list_repos`.
 
 ## How a review works
 
