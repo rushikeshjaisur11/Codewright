@@ -34,6 +34,72 @@ export interface Finding {
   span: [number, number];
   status: "accepted" | "rejected" | "muted" | null;
   card_id: string;
+  perf?: Perf | null;
+}
+
+export interface Perf {
+  verdict: "faster" | "slower" | "no-change" | "too-small" | "failed";
+  before_ms: number; after_ms: number; calls_before: number; calls_after: number;
+  tests_before_s: number; tests_after_s: number; rounds: number; speedup: number; note: string;
+}
+
+export interface Insight {
+  kind: "mute" | "trusted" | "reasons"; intent: string; title: string; path: string;
+  accepted: number; rejected: number; rate: number | null; reasons: { reason: string; count: number }[]; message: string;
+}
+
+export interface Rule {
+  id: string; kind: "forbid-import" | "only-in" | "layers" | "no-blocking-in-async"; reason: string;
+  severity: "error" | "warn"; paths: string[]; imports: string[]; exclude: string[];
+  layers: { name: string; paths: string[] }[]; calls: string[]; source: string;
+}
+export interface Violation {
+  rule: string; kind: string; severity: "error" | "warn"; file: string; line: number;
+  message: string; reason: string; fix: string; target: string; patch?: string | null;
+}
+export interface ApplyResult { patch: string; applied: string[]; skipped: string[]; files: string[]; rules?: RulesSummary }
+export interface RulesSummary {
+  rules: Rule[]; violations: Violation[]; errors: number; warnings: number; ok: boolean;
+  error: string | null; file: string | null;
+}
+
+export interface DepRow {
+  name: string; version: string | null; group: string; source: string; imports: string[];
+  files: number; test_files: number; requires: number; unique: number; license: string; released: string; flags: string[];
+}
+export interface DepFinding {
+  kind: "overlap" | "stdlib" | "unused" | "license" | "abandoned" | "heavy";
+  title: string; deps: string[]; detail: string; suggestion: string; saves: number; effort: number; severity: "info" | "warn";
+}
+export interface DepAudit {
+  python: string; declared: number; locked: number; lockfile: string | null;
+  dependencies: DepRow[]; findings: DepFinding[]; could_remove: number;
+}
+
+export interface MigrationRow {
+  name: string; title: string; library: string | null; installed: string | null; target: string | null;
+  places: number; files: number; autofix: number; planned: boolean;
+}
+export interface MigrationItem { key: string; finding_id: string; title: string; file: string; line: number; autofix: boolean; intent: string }
+export interface MigrationStep {
+  n: number; files: string[]; items: MigrationItem[]; tests: string[]; depends_on: number[];
+  done: boolean; remaining: number; autofix: number;
+}
+export interface MigrationPlan {
+  name: string; title: string; library: string | null; installed: string | null; target: string | null;
+  tools: string[]; notes: string; created: number; batch: number; steps: MigrationStep[]; total: number;
+  done_items?: number; progress?: number; next_step?: number | null; new_since_plan?: MigrationItem[];
+}
+export interface StepDetail { step: MigrationStep; patch: string; skipped: string[]; pr_body: string; findings: Finding[] }
+
+export interface PlanPoint {
+  level: "blocker" | "concern" | "ok";
+  topic: "dependencies" | "reuse" | "code" | "architecture" | "scale" | "completeness";
+  title: string; detail: string; evidence: string[]; quote: string;
+}
+export interface PlanReview {
+  verdict: "go" | "revise"; score: number; headline: string; points: PlanPoint[];
+  counts: { blocker: number; concern: number; ok: number };
 }
 
 export interface Dependency { name: string; version: string | null; specifier: string | null; source: string }
@@ -44,12 +110,14 @@ export interface Metrics {
   per_intent: Record<string, { accepted: number; rejected: number; muted: number }>;
   mutes: { intent: string; path: string; reason: string }[];
   constraints: string[];
+  insights?: Insight[];
 }
 
 export interface ReviewData {
   stack: { python: string | null; sources: string[]; docker_images: string[]; dependencies: Dependency[] };
   files: number; functions: number; entry_points: number; intent_matches: number; seconds: number;
   base: string | null; findings: Finding[]; rejected: Finding[]; muted: Finding[]; metrics: Metrics;
+  rules?: RulesSummary;
 }
 
 export interface WorkspaceInfo {
@@ -192,7 +260,8 @@ export const api = {
   forgetRecent: (path: string) => req<{ forgot: string }>("DELETE", `/api/recent?path=${q(path)}`),
   folders: (path = "") => req<FolderListing>("GET", `/api/fs?path=${q(path)}`),
   review: (id: string) => req<ReviewPayload>("GET", `${w(id)}/review`),
-  runReview: (id: string, proof: boolean, base: string) => req<WorkspaceInfo>("POST", `${w(id)}/review`, { proof, base }),
+  runReview: (id: string, proof: boolean, base: string, bench = false) =>
+    req<WorkspaceInfo>("POST", `${w(id)}/review`, { proof, base, bench }),
   watch: (id: string, on: boolean) => req<WorkspaceInfo>("POST", `${w(id)}/watch`, { on }),
   revision: (id: string) => req<Revision>("GET", `${w(id)}/revision`),
   feedback: (id: string, fid: string, status: string, reason = "") =>
@@ -208,6 +277,23 @@ export const api = {
   chat: (id: string, question: string, history: { role: string; content: string }[]) =>
     req<ChatAnswer>("POST", `${w(id)}/chat`, { question, history }),
   releases: (id: string) => req<Release[]>("GET", `${w(id)}/releases`),
+  rules: (id: string) => req<RulesSummary>("GET", `${w(id)}/rules`),
+  applyMany: (id: string, ids: string[] | null, verified_only: boolean, dry_run: boolean) =>
+    req<ApplyResult>("POST", `${w(id)}/apply`, { ids, verified_only, dry_run }),
+  fixRules: (id: string, keys: string[] | null, dry_run: boolean) =>
+    req<ApplyResult>("POST", `${w(id)}/rules/fix`, { keys, dry_run }),
+  initRules: (id: string, overwrite = false) => req<RulesSummary>("POST", `${w(id)}/rules/init`, { overwrite }),
+  deps: (id: string, online: boolean) => req<DepAudit>("GET", `${w(id)}/deps?online=${online}`),
+  migrations: (id: string) =>
+    req<{ applicable: MigrationRow[]; catalog: { name: string; title: string; library: string | null }[] }>("GET", `${w(id)}/migrations`),
+  planMigration: (id: string, name: string, batch: number) =>
+    req<MigrationPlan>("POST", `${w(id)}/migrations/${q(name)}/plan`, { batch }),
+  migration: (id: string, name: string) => req<MigrationPlan>("GET", `${w(id)}/migrations/${q(name)}`),
+  migrationStep: (id: string, name: string, n: number) => req<StepDetail>("GET", `${w(id)}/migrations/${q(name)}/steps/${n}`),
+  applyStep: (id: string, name: string, n: number) =>
+    req<{ applied: boolean; files: string[]; status: MigrationPlan }>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/apply`),
+  critique: (id: string, text: string) => req<PlanReview>("POST", `${w(id)}/critique`, { text }),
+  insights: (id: string) => req<Insight[]>("GET", `${w(id)}/insights`),
   cards: (wid?: string | null) => req<Card[]>("GET", `/api/cards${wid ? `?workspace=${encodeURIComponent(wid)}` : ""}`),
   settings: (id: string) => req<Settings>("GET", `${w(id)}/settings`),
   saveSettings: (id: string, s: Partial<{ model: string; offline: boolean; constraints: string[] }>) =>

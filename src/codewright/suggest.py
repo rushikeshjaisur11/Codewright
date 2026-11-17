@@ -7,6 +7,7 @@ import hashlib
 
 from tree_sitter import Node
 
+from . import refactor
 from .cards import best_cards
 from .graph import CodeGraph, ParsedFile, text
 from .intents.detectors import snippet as code_snippet
@@ -61,6 +62,8 @@ def make_findings(matches: list[IntentMatch], stack: Stack, graph: CodeGraph, ca
         builder = PATCHERS.get(card.id)
         if builder is not None:
             finding.patch = builder(pf, m)
+        elif m.intent in refactor.PATCHERS:  # structural changes that span files
+            finding.patch = refactor.PATCHERS[m.intent](graph, m)
         elif card.autofix and m.data.get("edits"):
             finding.patch = _span_patch(pf, m)
         guard = PATCH_GUARDS.get(card.id)

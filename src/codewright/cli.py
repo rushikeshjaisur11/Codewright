@@ -66,6 +66,10 @@ def review(
         False, "--watch", "-w", help="Keep running: re-review on every save and print new and resolved findings."
     ),
     interval: float = typer.Option(1.0, "--interval", min=0.2, help="With --watch: seconds between checks for saves."),
+    bench: bool = typer.Option(
+        False, "--bench", help="Also time each verified patch: the tests that run it, before and after (best of N)."
+    ),
+    bench_rounds: int = typer.Option(3, "--bench-rounds", min=1, max=20, help="With --bench: runs per side."),
 ) -> None:
     """Review a repo: ranked, proven 'instead of X, use Y' findings."""
     from .engine import review as run_review
@@ -87,6 +91,8 @@ def review(
             proof_jobs=jobs,
             full_suite=full_suite,
             build_env=build_env,
+            bench=bench and proof,
+            bench_rounds=bench_rounds,
         )
     if sarif_output:
         sarif_output.write_text(to_sarif(result))
@@ -343,25 +349,324 @@ def mcp_config(
 
 @app.command()
 def check(path: Path = typer.Argument(Path("."), exists=True, file_okay=False)) -> None:
-    """Decisions as CI checks: exit 1 when the code drifts from .codewright/design.json."""
+    """Decisions as CI checks: exit 1 when a rule in .codewright/rules.yaml fails or the code drifts from
+    .codewright/design.json."""
+    from .report import print_rules
     from .service import Workspace
 
     ws = Workspace(path.resolve())
+    with _clean_errors():
+        ws.run_review(proof=False)
+    failed = False
+    r = ws.rules()
+    if r["rules"] or r["error"]:
+        print_rules(r, console)
+        failed = not r["ok"]
     d = ws.drift()
-    if d is None:
-        console.print("No intended architecture in .codewright/design.json; nothing to check.")
+    if d is None and not r["rules"] and not r["error"]:
+        if r["file"]:
+            console.print(f"{r['file']} has no rules yet, and there is no saved design; nothing to check.")
+            raise typer.Exit(0)
+        console.print(
+            "No rules in .codewright/rules.yaml and no intended architecture in .codewright/design.json; nothing "
+            "to check. `codewright rules init` writes the rules today's code keeps."
+        )
         raise typer.Exit(0)
-    if d["ok"]:
-        console.print(f"[green]OK[/] code matches the {d['design']} design.")
-        raise typer.Exit(0)
-    console.print(f"[red]Drift[/] from the {d['design']} design:")
-    for u in d["unplanned"]:
-        console.print(f"  unplanned {u['kind']}: {', '.join(u['systems'])}")
-    for v in d["violations"]:
-        console.print(f"  {v['file']}: {v['rule']} ({v['reason']})")
-    for m in d["not_built"]:
-        console.print(f"  [dim]not built yet: {', '.join(m['components'])}[/]")
-    raise typer.Exit(1)
+    if d is not None:
+        if d["ok"]:
+            console.print(f"[green]OK[/] code matches the {d['design']} design.")
+        else:
+            failed = True
+            console.print(f"[red]Drift[/] from the {d['design']} design:")
+            for u in d["unplanned"]:
+                console.print(f"  unplanned {u['kind']}: {', '.join(u['systems'])}")
+            for v in d["violations"]:
+                console.print(f"  {v['file']}: {v['rule']} ({v['reason']})")
+            for m in d["not_built"]:
+                console.print(f"  [dim]not built yet: {', '.join(m['components'])}[/]")
+    raise typer.Exit(1 if failed else 0)
+
+
+rules_app = typer.Typer(
+    help="Architecture rules in .codewright/rules.yaml: forbid-import, only-in, layers, no-blocking-in-async.",
+    invoke_without_command=True,
+)
+app.add_typer(rules_app, name="rules")
+
+
+@rules_app.callback()
+def rules_show(
+    ctx: typer.Context,
+    path: Path = typer.Option(Path("."), "--path", exists=True, file_okay=False, help="Repository."),
+    as_json: bool = typer.Option(False, "--json", help="Print rules and violations as JSON."),
+) -> None:
+    """Show the rules and what breaks them."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import graph as g
+    from . import rules as rules_mod
+    from .report import print_rules
+
+    r = rules_mod.summary(g.build(path), path.resolve())
+    if as_json:
+        print(json.dumps(r, indent=2))
+        return
+    if not r["rules"] and not r["error"]:
+        console.print("No rules yet. `codewright rules init` writes the ones today's code already keeps.")
+        return
+    for rule in r["rules"]:
+        what = (
+            " > ".join(x["name"] for x in rule["layers"])
+            if rule["kind"] == "layers"
+            else f"in {', '.join(rule['paths']) or '**'}"
+            + (f": {', '.join(rule['imports'])}" if rule["imports"] else "")
+        )
+        console.print(f"  [bold]{rule['id']}[/] {rule['kind']} {what} [dim]{rule['source']}[/]")
+    print_rules(r, console)
+
+
+@rules_app.command("init")
+def rules_init(
+    path: Path = typer.Option(Path("."), "--path", exists=True, file_okay=False, help="Repository."),
+    force: bool = typer.Option(False, "--force", help="Replace an existing rules.yaml."),
+) -> None:
+    """Write the rules today's code already keeps (one-way dependencies between packages), so new
+    back-edges fail `codewright check`. Edit the file to add layers, only-in and async rules."""
+    from .service import Workspace
+
+    ws = Workspace(path.resolve())
+    with _clean_errors():
+        try:
+            r = ws.rules_init(overwrite=force)
+        except FileExistsError as exc:
+            console.print(f"[yellow]{exc}[/]")
+            raise typer.Exit(1) from None
+    console.print(f"Wrote {r['file']} with {len(r['rules'])} rule(s); today's code breaks {r['errors']}.")
+
+
+@app.command()
+def deps(
+    path: Path = typer.Argument(Path("."), exists=True, file_okay=False),
+    offline: bool = typer.Option(False, "--offline", help="Don't ask the package index for release dates."),
+    python: str | None = typer.Option(None, help="Interpreter whose installed metadata gives licences and imports."),
+    as_json: bool = typer.Option(False, "--json", help="Print the audit as JSON."),
+) -> None:
+    """Dependency audit: overlapping libraries, standard-library replacements, unused, heavy, copyleft and
+    abandoned dependencies."""
+    from .service import Workspace
+
+    ws = Workspace(path.resolve())
+    with console.status("Auditing dependencies..."), _clean_errors():
+        ws.run_review(proof=False)
+        r = ws.deps(online=not offline, python=python)
+    if as_json:
+        print(json.dumps(r, indent=2))
+        return
+    console.print(
+        f"{r['declared']} declared, {r['locked']} locked ({r['lockfile'] or 'no lockfile'}), Python {r['python']}"
+    )
+    if not r["findings"]:
+        console.print("[green]Nothing to change.[/]")
+        return
+    for f in r["findings"]:
+        style = "yellow" if f["severity"] == "warn" else "cyan"
+        saves = f"  [dim](-{f['saves']} package(s))[/]" if f["saves"] else ""
+        console.print(f"[{style}]{f['kind']:9}[/] {f['title']}{saves}")
+        console.print(f"          [dim]{f['suggestion']}[/]")
+    if r["could_remove"]:
+        console.print(f"Removing what isn't needed takes {r['could_remove']} package(s) out of the install.")
+
+
+migrate_app = typer.Typer(
+    help="Planned migrations (Pydantic v2, SQLAlchemy 2, async I/O...): small steps, leaf modules first.",
+    no_args_is_help=True,
+)
+app.add_typer(migrate_app, name="migrate")
+MIGRATE_PATH = typer.Option(Path("."), "--path", exists=True, file_okay=False, help="Repository.")
+
+
+def _workspace(path: Path):
+    from .service import Workspace
+
+    ws = Workspace(path.resolve())
+    with console.status("Scanning..."), _clean_errors():
+        ws.run_review(proof=False)
+    return ws
+
+
+def _print_plan(data: dict) -> None:
+    head = f"[bold]{data['title']}[/]"
+    if data.get("library"):
+        head += f"  {data['library']} {data.get('installed') or '?'} → {data.get('target') or 'current'}"
+    console.print(head)
+    if "progress" in data:
+        console.print(
+            f"  {data['done_items']}/{data['total']} done ({data['progress']:.0%}); next step: {data['next_step']}"
+        )
+    for s in data["steps"]:
+        mark = "[green]done[/]" if s.get("done") else f"{s.get('remaining', len(s['items']))} left"
+        deps_on = f" after {', '.join(map(str, s['depends_on']))}" if s["depends_on"] else ""
+        console.print(
+            f"  step {s['n']}{deps_on}: {', '.join(s['files'])}  [dim]{len(s['items'])} change(s), "
+            f"{s['autofix']} auto-patch, {len(s['tests'])} test file(s)[/]  {mark}"
+        )
+    if data.get("new_since_plan"):
+        console.print(
+            f"  [yellow]{len(data['new_since_plan'])} new place(s) since the plan; re-plan to include them[/]"
+        )
+    for t in data.get("tools", []):
+        console.print(f"  [dim]tool: {t}[/]")
+
+
+@migrate_app.command("list")
+def migrate_list(path: Path = MIGRATE_PATH) -> None:
+    """Migrations that apply to this repo, and how much code each touches."""
+    from .migrate import CATALOG
+
+    rows = _workspace(path).migrations()
+    if not rows:
+        console.print(f"Nothing to migrate. Known migrations: {', '.join(CATALOG)}")
+    for r in rows:
+        ver = f"{r['library']} {r['installed'] or '?'} → {r['target'] or 'current'}" if r["library"] else "code only"
+        planned = "  [green]planned[/]" if r["planned"] else ""
+        console.print(
+            f"  [bold]{r['name']:16}[/] {r['title']}  [dim]{ver}; {r['places']} place(s) in {r['files']} file(s), "
+            f"{r['autofix']} auto-patch[/]{planned}"
+        )
+
+
+@migrate_app.command("plan")
+def migrate_plan(
+    name: str = typer.Argument(..., help="Migration name (see `codewright migrate list`)."),
+    path: Path = MIGRATE_PATH,
+    batch: int = typer.Option(5, "--batch", min=1, max=50, help="Files per step."),
+    target: str | None = typer.Option(None, "--target", help="Version to plan for (default: the migration's)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan without saving it."),
+) -> None:
+    """Plan a migration and save it to .codewright/migrations/<name>.json."""
+    ws = _workspace(path)
+    with _clean_errors():
+        data = ws.migration_plan(name, batch=batch, version=target, save=not dry_run)
+    _print_plan(data)
+    if not dry_run:
+        console.print(f"Saved .codewright/migrations/{name}.json. Next: `codewright migrate step {name} 1`.")
+
+
+@migrate_app.command("status")
+def migrate_status(name: str, path: Path = MIGRATE_PATH) -> None:
+    """Progress of a saved plan: a step is done when none of its changes remain in the code."""
+    ws = _workspace(path)
+    with _clean_errors():
+        _print_plan(ws.migration_status(name))
+
+
+@migrate_app.command("step")
+def migrate_step(
+    name: str,
+    n: int = typer.Argument(..., help="Step number."),
+    path: Path = MIGRATE_PATH,
+    apply: bool = typer.Option(False, "--apply", help="Apply the step's combined patch to the working tree."),
+    pr_body: bool = typer.Option(False, "--pr-body", help="Print a PR description for the step."),
+) -> None:
+    """Show one step: its changes and combined patch; --apply to apply it, --pr-body for the PR text."""
+    ws = _workspace(path)
+    with _clean_errors():
+        if apply:
+            r = ws.migration_apply(name, n)
+            console.print(f"Applied step {n} to {', '.join(r['files'])}. Nothing is committed.")
+            _print_plan(r["status"])
+            return
+        s = ws.migration_step(name, n)
+    if pr_body:
+        print(s["pr_body"])
+        return
+    console.print(s["pr_body"])
+    if s["patch"]:
+        print(s["patch"])
+    if s["skipped"]:
+        console.print(f"[yellow]{len(s['skipped'])} patch(es) didn't apply on top of the others; do those by hand[/]")
+
+
+@app.command()
+def apply(
+    path: Path = typer.Argument(Path("."), exists=True, file_okay=False),
+    finding: list[str] = typer.Option(
+        [], "--id", help="Finding id to apply (repeatable). Default: every verified one."
+    ),
+    unverified: bool = typer.Option(False, "--unverified", help="Also apply patches the tests didn't prove."),
+    rule_fixes: bool = typer.Option(False, "--rules", help="Apply the fixes for architecture-rule violations instead."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the combined patch without applying it."),
+    python: str | None = typer.Option(None, help="Interpreter for the tests (default: the repo's environment)."),
+) -> None:
+    """Apply fixes to the working tree as one change: findings' patches (proved by the tests first) or
+    architecture-rule fixes. Nothing is committed; review the diff with git."""
+    from .engine import review as run_review
+    from .service import Workspace
+
+    ws = Workspace(path.resolve())
+    with console.status("Reviewing (with proof)..." if not rule_fixes else "Scanning..."), _clean_errors():
+        if rule_fixes:
+            ws.run_review(proof=False)
+        else:
+            ws.result = run_review(path, run_proof=not unverified or bool(finding), top=None, python=python)
+    try:
+        with _clean_errors():
+            r = (
+                ws.fix_violations(dry_run=dry_run)
+                if rule_fixes
+                else ws.apply_findings(finding or None, verified_only=not unverified and not finding, dry_run=dry_run)
+            )
+    except ValueError as exc:
+        console.print(f"[yellow]{exc}[/]")
+        raise typer.Exit(1) from None
+    if dry_run:
+        print(r["patch"])
+        return
+    console.print(f"Applied {len(r['applied'])} fix(es) to {', '.join(r['files'])}. Nothing is committed: `git diff`.")
+    if r["skipped"]:
+        console.print(f"[yellow]{len(r['skipped'])} didn't apply on top of the others: {', '.join(r['skipped'])}[/]")
+
+
+@app.command()
+def critique(
+    plan: Path = typer.Argument(..., help="The plan to review (Markdown or text), or - for stdin."),
+    path: Path = typer.Option(Path("."), "--path", exists=True, file_okay=False, help="Repository it would change."),
+    as_json: bool = typer.Option(False, "--json", help="Print the review as JSON."),
+) -> None:
+    """Review a plan, RFC or agent proposal against the repo before any code is written."""
+    import sys
+
+    text = sys.stdin.read() if str(plan) == "-" else plan.read_text()
+    ws = _workspace(path)
+    r = ws.critique(text)
+    if as_json:
+        print(json.dumps(r, indent=2))
+        return
+    style = "green" if r["verdict"] == "go" else "yellow"
+    console.print(f"[{style}]{r['verdict'].upper()}[/] {r['headline']} (score {r['score']})")
+    for p in r["points"]:
+        s = {"blocker": "red", "concern": "yellow", "ok": "green"}[p["level"]]
+        console.print(f"  [{s}]{p['level']:8}[/] [bold]{p['title']}[/]  [dim]{p['topic']}[/]")
+        console.print(f"           {p['detail']}")
+        if p["quote"]:
+            console.print(f"           [dim]> {p['quote'][:140]}[/]")
+    raise typer.Exit(1 if r["counts"]["blocker"] else 0)
+
+
+@app.command()
+def insights(path: Path = typer.Argument(Path("."), exists=True, file_okay=False)) -> None:
+    """What the team's accept/reject verdicts say: checks to mute, checks it trusts, common reasons."""
+    ws = _workspace(path)
+    rows = ws.insights()
+    if not rows:
+        console.print("Not enough verdicts yet: accept or reject findings (`codewright feedback`) to see patterns.")
+    for i in rows:
+        console.print(f"  [bold]{i['kind']:8}[/] {i['message']}")
+        if i["kind"] == "mute":
+            scope = f" --path {i['path']}" if i["path"] else ""
+            console.print(
+                f"           [dim]Codewright web app → Review → mute, or keep rejecting ({i['intent']}{scope})[/]"
+            )
 
 
 @app.command()

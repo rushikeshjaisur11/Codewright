@@ -60,11 +60,11 @@ class Workspace:
     _watch_stop: threading.Event | None = None
 
     # --------------------------------------------------------------- review
-    def run_review(self, *, proof: bool = True, base: str | None = None) -> ReviewResult:
+    def run_review(self, *, proof: bool = True, base: str | None = None, bench: bool = False) -> ReviewResult:
         with self.lock:
             self.running, self.error, self.progress = True, None, "scanning"
             try:
-                self.result = review(self.root, run_proof=proof, top=None, base=base)
+                self.result = review(self.root, run_proof=proof, top=None, base=base, bench=bench and proof)
                 self.revision += 1
                 self.index = CodeIndex(self.result.graph)
                 self.last_run = time.time()
@@ -178,6 +178,174 @@ class Workspace:
     def releases(self) -> list[dict]:
         r = self.ensure()
         return watcher.check(r.stack, self.root, graph=r.graph)
+
+    # --------------------------------------------------------------- architecture rules
+    def rules(self) -> dict:
+        from . import rules as rules_mod
+
+        return rules_mod.summary(self.ensure().graph, self.root)
+
+    def rules_init(self, overwrite: bool = False) -> dict:
+        """Write the rules today's code keeps (dependency directions between packages)."""
+        from . import rules as rules_mod
+
+        p = rules_mod.rules_path(self.root)
+        if p.exists() and not overwrite:
+            raise FileExistsError(f"{p.relative_to(self.root)} exists; pass overwrite to replace it")
+        inferred = rules_mod.infer(self.ensure().graph)
+        rules_mod.save(self.root, inferred)
+        out = self.rules()
+        if self.result is not None:
+            self.result.rules = out
+        return out
+
+    # --------------------------------------------------------------- applying patches
+    def _apply(self, patch: str) -> None:
+        from .proof import apply_patch
+
+        if not apply_patch(self.root, patch):
+            raise RuntimeError("the patch did not apply; the files changed since the review. Run the review again")
+
+    def apply_findings(
+        self, ids: list[str] | None = None, *, verified_only: bool = True, dry_run: bool = False
+    ) -> dict:
+        """Apply several findings' patches as one change (nothing is committed), then re-review.
+
+        Without `ids`: every shown finding with a patch that isn't rejected; with `verified_only`, only those
+        the tests proved."""
+        from .refactor import combine
+
+        r = self.ensure()
+        pool = r.findings if ids is None else [f for f in r.findings + r.rejected + r.muted if f.id in set(ids)]
+        chosen = [
+            f
+            for f in pool
+            if f.patch
+            and (ids is not None or f.status != "rejected")
+            and (not verified_only or f.proof.value == "verified")
+        ]
+        if not chosen:
+            raise ValueError(
+                "no patch to apply" + (" among verified findings; run the review with proof" if verified_only else "")
+            )
+        ordered = sorted(chosen, key=lambda f: (f.file, -f.line))  # bottom-up within a file
+        patch, skipped = combine(self.root, [(f.id, f.patch) for f in ordered])
+        applied = [f.id for f in ordered if f.id not in skipped]
+        out = {"patch": patch, "applied": applied, "skipped": skipped, "files": _patched_files(patch)}
+        if dry_run or not patch:
+            return out
+        self._apply(patch)
+        fb = Feedback.load(self.root)
+        for f in ordered:
+            if f.id in applied:
+                fb.record(f, "accepted", "applied from Codewright")
+        fb.save(self.root)
+        self.run_review(proof=False)
+        return out
+
+    def fix_violations(self, keys: list[str] | None = None, *, dry_run: bool = False) -> dict:
+        """Apply the fixes of rule violations that have one (all, or those whose `file:line:rule` key is given)."""
+        from . import rules as rules_mod
+        from .refactor import combine
+
+        r = self.ensure()
+        vs = rules_mod.check(r.graph, rules_mod.load(self.root))
+        chosen = [v for v in vs if v.patch and (keys is None or f"{v.file}:{v.line}:{v.rule}" in set(keys))]
+        if not chosen:
+            raise ValueError("no violation with an automatic fix")
+        ordered = sorted(chosen, key=lambda v: (v.file, -v.line))
+        patch, skipped = combine(self.root, [(f"{v.file}:{v.line}:{v.rule}", v.patch) for v in ordered])
+        applied = [f"{v.file}:{v.line}:{v.rule}" for v in ordered if f"{v.file}:{v.line}:{v.rule}" not in skipped]
+        out = {"patch": patch, "applied": applied, "skipped": skipped, "files": _patched_files(patch)}
+        if dry_run or not patch:
+            return out
+        self._apply(patch)
+        self.run_review(proof=False)
+        out["rules"] = self.rules()
+        return out
+
+    # --------------------------------------------------------------- dependencies
+    def deps(self, online: bool = True, python: str | None = None) -> dict:
+        from . import deps as deps_mod
+        from . import proof_env
+
+        r = self.ensure()
+        # python="" means: don't run any interpreter (licences and import names then come from the tables).
+        # Only the repo's own environment describes its packages; Codewright's own would mislead.
+        if python is None:
+            env = proof_env.resolve(self.root, None, build=False)
+            python = env.python if env.source.startswith("the repo's") else ""
+        py = python
+        return deps_mod.audit(self.root, r.graph, r.stack, python=py, online=online)
+
+    # --------------------------------------------------------------- migrations
+    def migrations(self) -> list[dict]:
+        from . import migrate
+
+        r = self.ensure()
+        return migrate.overview(r.graph, r.stack, self.root)
+
+    def migration_plan(self, name: str, batch: int = 5, version: str | None = None, save: bool = True) -> dict:
+        from . import migrate
+
+        r = self.ensure()
+        data = migrate.plan(name, self.root, r.graph, r.stack, batch=batch, version=version)
+        if save:
+            migrate.save(self.root, data)
+            return migrate.status(self.root, name, r.graph, r.stack)
+        return data
+
+    def migration_status(self, name: str) -> dict:
+        from . import migrate
+
+        r = self.ensure()
+        return migrate.status(self.root, name, r.graph, r.stack)
+
+    def migration_step(self, name: str, n: int) -> dict:
+        from . import migrate
+
+        r = self.ensure()
+        step, found = migrate.step_findings(self.root, name, n, r.graph, r.stack)
+        patch, skipped = migrate.combined_patch(self.root, found)
+        data = migrate.status(self.root, name, r.graph, r.stack)
+        return {
+            "step": next(s for s in data["steps"] if s["n"] == n),
+            "patch": patch,
+            "skipped": skipped,
+            "pr_body": migrate.pr_body(data, step, patch),
+            "findings": [f.to_dict() for f in found],
+        }
+
+    def migration_apply(self, name: str, n: int) -> dict:
+        """Apply a step's combined patch to the working tree (nothing is committed), then re-scan."""
+        from .proof import apply_patch
+
+        step = self.migration_step(name, n)
+        if not step["patch"]:
+            raise ValueError(f"step {n} has nothing to patch automatically; make its changes by hand")
+        if not apply_patch(self.root, step["patch"]):
+            raise RuntimeError("the step's patch did not apply; the files changed since the plan was made")
+        self.run_review(proof=False)
+        return {"applied": True, "files": step["step"]["files"], "status": self.migration_status(name)}
+
+    # --------------------------------------------------------------- proposal review
+    def critique(self, text: str) -> dict:
+        from . import critique as critique_mod
+
+        r = self.ensure()
+        fb = Feedback.load(self.root)
+        return critique_mod.review(text, self.root, r.graph, r.stack, constraints=fb.constraints)
+
+    def insights(self) -> list[dict]:
+        r = self.ensure()
+        titles = {f.intent: f.title for f in r.findings + r.muted}
+        return Feedback.load(self.root).insights(titles)
+
+
+def _patched_files(patch: str) -> list[str]:
+    import re
+
+    return sorted(set(re.findall(r"^\+\+\+ b/(.+)$", patch, re.M)))
 
 
 # --------------------------------------------------------------------------- recent repos and folder browsing
