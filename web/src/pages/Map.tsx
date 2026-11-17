@@ -334,7 +334,8 @@ export default function MapPage() {
                 <div className="conn">
                   {meta.entry_points.map((e) => (
                     <button key={e.id} className="conn-row" onClick={() => goTo("flow", e.id, e.name, here.level === "flow")}>
-                      <Workflow size={13} className="faint" /><span className="grow truncate mono" style={{ fontSize: 12 }}>{e.trigger}</span>
+                      <Workflow size={13} className="faint" /><span className="grow truncate mono" style={{ fontSize: 12 }} title={e.reasons?.join("; ")}>{e.trigger}</span>
+                      {e.app && <span className="badge green" style={{ flex: "none" }}>{e.framework}</span>}
                     </button>
                   ))}
                 </div>

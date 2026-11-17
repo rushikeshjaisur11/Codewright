@@ -271,7 +271,7 @@ def test_every_box_on_both_maps_has_details(tmp_path):
     comp = client.get(f"/api/w/{wid}/inspect", params={"id": "c:app.main", "level": "system"}).json()
     sections = {s["title"]: s["items"] for s in comp["sections"]}
     assert {i["label"] for i in sections["Depends on"]} >= {"app.llm", "app.agent"}
-    assert sections["Entry points"][0]["flow"] == "app/main.py::chat"
+    assert {i["flow"] for i in sections["Entry points"]} == {"app/main.py::<module>", "app/main.py::chat"}
     fn = client.get(f"/api/w/{wid}/inspect", params={"id": "app/main.py::chat", "level": "flow"}).json()
     assert fn["code"]["text"].startswith("@api.post") and "summarize" in {
         i["label"] for s in fn["sections"] for i in s["items"]

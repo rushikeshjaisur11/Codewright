@@ -85,7 +85,10 @@ export interface MapNode {
 }
 export interface MapEdge { source: string; target: string; label: string; weight: number }
 export interface MapView { level: string; title: string; nodes: MapNode[]; edges: MapEdge[]; mermaid: string }
-export interface EntryPoint { id: string; name: string; file: string; line: number; trigger: string }
+export interface EntryPoint {
+  id: string; name: string; file: string; line: number; trigger: string;
+  app?: boolean; framework?: string; reasons?: string[];
+}
 
 export interface Drift {
   design: string; ok: boolean;

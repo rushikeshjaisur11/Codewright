@@ -159,7 +159,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
                 },
                 "files": len(r.graph.files),
                 "functions": sum(1 for _ in r.graph.functions()),
-                "entry_points": len(r.graph.entry_points),
+                "entry_points": len(r.graph.entry_points) + len(r.graph.app_entries),
                 "intent_matches": r.total_matches,
                 "seconds": r.seconds,
                 "test_env": r.test_env,

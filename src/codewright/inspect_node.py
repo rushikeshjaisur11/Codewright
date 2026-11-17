@@ -361,6 +361,32 @@ def map_node(m: ArchMap, level: str, target: str, node_id: str) -> dict:
             "ask": f"Where and how does this repo use {label}?",
         }
 
+    if node_id.endswith("::<module>"):  # a file that starts the app
+        path = node_id.partition("::")[0]
+        e = g.app_entries.get(path)
+        if e is None:
+            return _unknown(node_id)
+        runs = [c for c in e.calls if not is_test_file(c.partition("::")[0])]
+        return {
+            "id": node_id,
+            "label": e.trigger,
+            "kind": "entry",
+            "summary": f"{path} starts the app ({e.framework}): it " + "; ".join(e.reasons) + ".",
+            "facts": [
+                {"label": "Started with", "value": e.trigger, "mono": True},
+                {"label": "App", "value": e.framework},
+                {"label": "File", "value": f"{path}:{e.line}", "mono": True},
+                {"label": "Runs", "value": _n(len(runs), "function")},
+            ],
+            "sections": [
+                {"title": "Why it is an entry point", "items": [{"label": r} for r in e.reasons]},
+                {"title": "Runs", "items": [_fn_item(c, ids) for c in runs[:MAX_ITEMS]]},
+            ],
+            "findings": _findings(m.findings, lambda f: f.file == path),
+            "code": _preview(g, path, max(1, e.line - 3), e.line + PREVIEW_LINES - 4),
+            "ask": f"What happens when the app starts from {path}?",
+        }
+
     if "::" in node_id:  # a function on the flow view
         pf, fn = _fn(g, node_id)
         if fn is None:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import time
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
@@ -340,22 +341,33 @@ class ArchMap:
         files = list(self.modules.values())
         launch = self._launch_text()
         roots = set()
+        weak = set()  # roots only because of their file name (app.py nobody imports): not proof of an app
         for p in files:
             if is_tooling(p):
                 continue
             pf = self.g.files[p]
             mod = module_name(p)
             names = [mod, *importable_names(mod)]
+            base = p.rsplit("/", 1)[-1]
+            entry = self.g.app_entries.get(p)
+            if (
+                entry is not None
+                and all(r.startswith("is named") for r in entry.reasons)
+                and not any(k.partition("::")[0] == p for k in self.g.entry_points)
+            ):
+                weak.add(p)
             if (
                 any(k.partition("::")[0] == p for k in self.g.entry_points)
+                or p in self.g.app_entries
                 or pf.module.has_main_guard
                 or p.endswith(("__main__.py", "wsgi.py", "asgi.py"))
                 or self._launched_outside(p)
                 or any(f"{n}:" in launch or f"-m {n}" in launch for n in names if n)
                 or p in launch
+                or (p.count("/") <= 3 and re.search(rf"(^|[\s\"'/=\[,]){re.escape(base)}\b", launch) is not None)
             ):
                 roots.add(p)
-        if not roots:
+        if not roots - weak:  # a library: consumers may import any module
             roots = {p for p in files if not is_tooling(p)}
         imports = {p: self._module_imports(p)[0] for p in files}
         used, stack = set(), list(roots)
@@ -559,6 +571,21 @@ class ArchMap:
             if key in nodes:
                 continue
             path, _, qual = key.partition("::")
+            if qual == "<module>" and path in self.g.app_entries:
+                e = self.g.app_entries[path]
+                nodes[key] = Node(
+                    key,
+                    e.trigger,
+                    "entry",
+                    files=[{"file": path, "line": e.line}],
+                    findings=self._findings_by_file[path],
+                    detail=f"{e.framework} · {path}",
+                )
+                for callee in e.calls:
+                    if not is_test_file(callee.partition("::")[0]):
+                        edges.append(Edge(key, callee, "runs"))
+                        frontier.append((callee, d + 1))
+                continue
             pf = self.g.files.get(path)
             fn = next((f for f in pf.module.functions if f.qualname == qual), None) if pf else None
             if fn is None:
@@ -593,7 +620,14 @@ class ArchMap:
                 nid = f"x:{label}"
                 nodes.setdefault(nid, Node(nid, label, kind, detail=kind))
                 edges.append(Edge(key, nid, "uses"))
-        return View("flow", f"Request flow: {entry.partition('::')[2]}", list(nodes.values()), edges)
+        title = entry.partition("::")[2]
+        if title == "<module>":
+            title = (
+                self.g.app_entries[entry.partition("::")[0]].trigger
+                if entry.partition("::")[0] in self.g.app_entries
+                else entry
+            )
+        return View("flow", f"Request flow: {title}", list(nodes.values()), edges)
 
     def view(self, level: str, target: str = "") -> View:
         """The system, module or flow view, defaulting the target. Raises ValueError with what is available."""
@@ -617,10 +651,35 @@ class ArchMap:
         raise ValueError("level must be system, module or flow")
 
     def entry_points(self) -> list[dict]:
+        """Apps first (files started directly: `uvicorn app:app`, `streamlit run app.py`...), then routes,
+        commands and handlers. A `main` run only from its file's `__main__` block is folded into that file."""
         out = []
+        apps = self.g.app_entries
+        for path in sorted(apps):
+            e = apps[path]
+            if is_test_file(path) or is_tooling(path):
+                continue
+            out.append(
+                {
+                    "id": f"{path}::<module>",
+                    "name": path,
+                    "file": path,
+                    "line": e.line,
+                    "trigger": e.trigger,
+                    "framework": e.framework,
+                    "reasons": e.reasons,
+                    "app": True,
+                }
+            )
         for key in sorted(self.g.entry_points):
             path, _, qual = key.partition("::")
-            fn = next(f for f in self.g.files[path].module.functions if f.qualname == qual)
+            if qual == "<module>":
+                continue
+            if qual == "main" and path in apps and key in apps[path].calls:
+                continue
+            fn = next((f for f in self.g.files[path].module.functions if f.qualname == qual), None)
+            if fn is None:
+                continue
             route = next((d for d in fn.decorators if "(" in d), fn.decorators[0] if fn.decorators else "main")
             out.append({"id": key, "name": qual, "file": path, "line": fn.def_line, "trigger": route})
         return out
