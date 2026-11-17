@@ -253,6 +253,21 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         w.feedback(fid, "accepted", "applied from the web UI")
         return {"applied": True, "file": f.file}
 
+    @app.post("/api/w/{wid}/apply")
+    def apply_many(
+        wid: str,
+        ids: list[str] | None = Body(None, embed=True),
+        verified_only: Annotated[bool, Body(embed=True)] = True,
+        dry_run: Annotated[bool, Body(embed=True)] = False,
+    ):
+        """Apply several findings' patches as one change. Only on an explicit click; nothing is committed."""
+        try:
+            return ws(wid).apply_findings(ids, verified_only=verified_only, dry_run=dry_run)
+        except ValueError as e:
+            raise HTTPException(404, str(e)) from None
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+
     @app.get("/api/w/{wid}/report.md", response_class=PlainTextResponse)
     def report_md(wid: str):
         return to_markdown(ws(wid).ensure())
@@ -326,6 +341,20 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         try:
             return ws(wid).rules_init(overwrite)
         except FileExistsError as e:
+            raise HTTPException(409, str(e)) from None
+
+    @app.post("/api/w/{wid}/rules/fix")
+    def fix_rules(
+        wid: str,
+        keys: list[str] | None = Body(None, embed=True),
+        dry_run: Annotated[bool, Body(embed=True)] = False,
+    ):
+        """Apply rule violations' fixes. Only on an explicit click; nothing is committed."""
+        try:
+            return ws(wid).fix_violations(keys, dry_run=dry_run)
+        except ValueError as e:
+            raise HTTPException(404, str(e)) from None
+        except RuntimeError as e:
             raise HTTPException(409, str(e)) from None
 
     @app.get("/api/w/{wid}/deps")

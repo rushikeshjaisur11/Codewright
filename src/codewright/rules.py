@@ -86,6 +86,7 @@ class Violation:
     reason: str
     fix: str
     target: str = ""  # what was imported or called
+    patch: str | None = None  # a unified diff that fixes it, when the change is mechanical
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -440,6 +441,8 @@ def _blocking(rule: Rule, graph: CodeGraph) -> list[Violation]:
                 continue
             if _inside_to_thread(call):
                 continue
+            from .refactor import blocking_call
+
             out.append(
                 Violation(
                     rule.id,
@@ -451,6 +454,7 @@ def _blocking(rule: Rule, graph: CodeGraph) -> list[Violation]:
                     rule.reason or "every request on this worker waits while it runs",
                     f"Use {table[name]}; for code with no async version, `await asyncio.to_thread({name}, ...)`.",
                     name,
+                    blocking_call(pf, call, name),
                 )
             )
     return out

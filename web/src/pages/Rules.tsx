@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, Code2, FileCode2, ShieldCheck, Wand2, XCircle } from "lucide-react";
 import { useApp } from "../App";
-import { api, Rule, RulesSummary } from "../api";
-import { Empty, Inline, Spinner, useToast } from "../ui";
+import { api, ApplyResult, Rule, RulesSummary } from "../api";
+import { CopyButton, DiffView, Empty, Inline, Modal, Spinner, useToast } from "../ui";
 
 const KIND_LABEL: Record<Rule["kind"], string> = {
   "forbid-import": "Forbidden import",
@@ -44,6 +44,23 @@ export default function Rules() {
   const toast = useToast();
   const [s, setS] = useState<RulesSummary | null>(null);
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<{ keys: string[] | null; res: ApplyResult } | null>(null);
+
+  const showFix = async (keys: string[] | null) => {
+    if (!wid) return;
+    try { setPreview({ keys, res: await api.fixRules(wid, keys, true) }); } catch (e) { toast((e as Error).message, "error"); }
+  };
+  const applyFix = async () => {
+    if (!wid || !preview) return;
+    setBusy(true);
+    try {
+      const r = await api.fixRules(wid, preview.keys, false);
+      if (r.rules) setS(r.rules);
+      toast(`Fixed ${r.applied.length} violation(s) in ${r.files.join(", ")}. Nothing is committed.`);
+      setPreview(null);
+      reload();
+    } catch (e) { toast((e as Error).message, "error"); } finally { setBusy(false); }
+  };
 
   useEffect(() => {
     if (!wid) return;
@@ -85,6 +102,17 @@ export default function Rules() {
         </div>
       </div>
 
+      {preview && (
+        <Modal title={`Apply ${preview.res.applied.length} fix(es)?`} onClose={() => setPreview(null)} footer={<>
+          <button className="btn" onClick={() => setPreview(null)}>Cancel</button>
+          <CopyButton text={preview.res.patch} label="Copy patch" />
+          <button className="btn primary" disabled={busy} onClick={applyFix}>{busy ? <Spinner size={14} /> : <Wand2 size={14} />}Apply to working tree</button>
+        </>}>
+          <p className="muted" style={{ marginTop: 0 }}>Nothing is committed. Run the tests afterwards: these fixes aren't proven by them.</p>
+          <DiffView patch={preview.res.patch} />
+        </Modal>
+      )}
+
       {s.error && <div className="callout red">Couldn't read the rules: {s.error}</div>}
 
       {!s.rules.length && !s.error ? (
@@ -102,7 +130,12 @@ export default function Rules() {
             <div className="card-head">
               <h2>{s.ok ? <CheckCircle2 size={16} color="var(--green)" /> : <XCircle size={16} color="var(--red)" />}
                 {s.violations.length ? `${s.errors} error(s), ${s.warnings} warning(s)` : `All ${s.rules.length} rule(s) hold`}</h2>
-              <div className="right faint mono" style={{ fontSize: 12 }}>{s.file ?? "design.json"}</div>
+              <div className="right row" style={{ gap: 8 }}>
+                {s.violations.some((v) => v.patch) && (
+                  <button className="btn sm" onClick={() => showFix(null)}><Wand2 size={13} />Fix all automatic ({s.violations.filter((v) => v.patch).length})</button>
+                )}
+                <span className="faint mono" style={{ fontSize: 12 }}>{s.file ?? "design.json"}</span>
+              </div>
             </div>
             {s.violations.length > 0 && (
               <div className="table-scroll"><table className="table">
@@ -122,6 +155,11 @@ export default function Rules() {
                       <td>
                         <div><Inline text={v.message} /></div>
                         <div className="muted" style={{ fontSize: 13, marginTop: 3 }}><Inline text={v.fix} /></div>
+                        {v.patch && (
+                          <button className="btn sm" style={{ marginTop: 6 }} onClick={() => showFix([`${v.file}:${v.line}:${v.rule}`])}>
+                            <Wand2 size={13} />Fix it
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}

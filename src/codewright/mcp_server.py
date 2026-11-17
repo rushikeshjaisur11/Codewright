@@ -132,6 +132,17 @@ def migration_step(repo: str, name: str, step: int) -> dict:
 
 
 @_tool
+def combined_patch(repo: str, finding_ids: list[str] | None = None, rule_fixes: bool = False) -> dict:
+    """One unified diff for several fixes, to apply yourself (`git apply`): the given findings' patches (or, with
+    none given, every verified one from the last review), or with `rule_fixes` the automatic fixes for
+    architecture-rule violations. Nothing is written. Run the review with proof first so patches are verified."""
+    ws = _ws(repo)
+    if rule_fixes:
+        return ws.fix_violations(dry_run=True)
+    return ws.apply_findings(finding_ids or None, verified_only=not finding_ids, dry_run=True)
+
+
+@_tool
 def feedback_insights(repo: str) -> list[dict]:
     """What the team's accept/reject verdicts say: checks it keeps rejecting (and where), checks it trusts, and
     the most common rejection reasons. Respect these when choosing what to change."""

@@ -20,8 +20,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import shutil
-import tempfile
 import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
@@ -368,31 +366,12 @@ def step_findings(root: str | Path, name: str, n: int, graph: CodeGraph, stack: 
 
 
 def combined_patch(root: str | Path, findings: list[Finding]) -> tuple[str, list[str]]:
-    """One diff for every auto-patchable finding of a step, applied in turn to a scratch copy of their files.
-    Returns (diff, ids of findings whose patch did not apply on top of the others)."""
-    from .proof import apply_patch
-    from .suggest import unified_diff
+    """One diff for every auto-patchable finding of a step. Returns (diff, ids whose patch didn't apply on top
+    of the others)."""
+    from .refactor import combine
 
-    root = Path(root)
-    patched = [f for f in findings if f.patch]
-    if not patched:
-        return "", []
-    skipped = []
-    with tempfile.TemporaryDirectory(prefix="codewright-migrate-") as tmp:
-        work = Path(tmp)
-        files = sorted({f.file for f in patched})
-        for rel in files:
-            (work / rel).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(root / rel, work / rel)
-        for f in sorted(patched, key=lambda f: (f.file, -f.line)):  # bottom-up keeps earlier lines in place
-            if not apply_patch(work, f.patch):
-                skipped.append(f.id)
-        out = []
-        for rel in files:
-            before = (root / rel).read_text().splitlines(keepends=True)
-            after = (work / rel).read_text().splitlines(keepends=True)
-            out.append(unified_diff(rel, before, after) or "")
-    return "".join(out), skipped
+    ordered = sorted((f for f in findings if f.patch), key=lambda f: (f.file, -f.line))  # bottom-up per file
+    return combine(root, [(f.id, f.patch) for f in ordered])
 
 
 def pr_body(data: dict, step: dict, patch: str) -> str:

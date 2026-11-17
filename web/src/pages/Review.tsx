@@ -25,6 +25,7 @@ export default function Review() {
   const [prMode, setPrMode] = useState(false);
   const [base, setBase] = useState("origin/main");
   const [report, setReport] = useState<string | null>(null);
+  const [bulk, setBulk] = useState<{ patch: string; applied: string[]; skipped: string[]; files: string[] } | null>(null);
 
   const list = useMemo(() => {
     if (!r) return [];
@@ -73,6 +74,21 @@ export default function Review() {
     } catch (e) { toast((e as Error).message, "error"); }
   }
 
+  async function previewAll() {
+    if (!wid) return;
+    try { setBulk(await api.applyMany(wid, null, true, true)); } catch (e) { toast((e as Error).message, "error"); }
+  }
+
+  async function applyAll() {
+    if (!wid || !bulk) return;
+    try {
+      const res = await api.applyMany(wid, bulk.applied, false, false);
+      toast(`Applied ${res.applied.length} patch(es) to ${res.files.length} file(s). Review the diff and commit it yourself.`);
+      setBulk(null);
+      await reload();
+    } catch (e) { toast((e as Error).message, "error"); }
+  }
+
   async function showReport(kind: "md" | "pr") {
     if (!wid) return;
     setReport(kind === "md" ? await api.reportMd(wid) : await api.prComment(wid));
@@ -91,6 +107,11 @@ export default function Review() {
           </p>
         </div>
         <div className="actions">
+          {r.findings.some((f) => f.patch && f.proof === "verified" && f.status !== "rejected") && (
+            <button className="btn" onClick={previewAll} title="Every verified patch, combined into one change you can inspect first">
+              <Wand2 size={14} />Apply all verified ({r.findings.filter((f) => f.patch && f.proof === "verified" && f.status !== "rejected").length})
+            </button>
+          )}
           <button className="btn" disabled={!!data?.running} onClick={() => runReview(true, "", true)}
             title="Run the review with proof, then time each verified patch: the tests that run it, before and after (best of 3)">
             <Gauge size={14} />Measure speed
@@ -190,11 +211,23 @@ export default function Review() {
         </Modal>
       )}
 
+      {bulk && (
+        <Modal title={`Apply ${bulk.applied.length} verified patch(es)?`} onClose={() => setBulk(null)}
+          footer={<><button className="btn" onClick={() => setBulk(null)}>Cancel</button>
+            <CopyButton text={bulk.patch} label="Copy patch" />
+            <button className="btn primary" onClick={applyAll}><Wand2 size={14} />Apply to working tree</button></>}>
+          <p className="muted" style={{ marginTop: 0 }}>Edits {bulk.files.map((f) => <code key={f} style={{ marginRight: 4 }}>{f}</code>)}. Each patch passed the tests on its own; run them again after applying. Nothing is committed.</p>
+          {bulk.skipped.length > 0 && <div className="callout amber">{bulk.skipped.length} patch(es) conflict with the others and are left out; apply them one at a time after this.</div>}
+          <DiffView patch={bulk.patch} />
+        </Modal>
+      )}
+
       {applying && (
         <Modal title="Apply this patch to your working tree?" onClose={() => setApplying(null)}
           footer={<><button className="btn" onClick={() => setApplying(null)}>Cancel</button>
             <button className="btn primary" onClick={() => applyPatch(applying)}><Wand2 size={14} />Apply patch</button></>}>
-          <p className="muted" style={{ marginTop: 0 }}>This edits <code>{applying.file}</code>. Nothing is committed or pushed; you review the diff and commit it.</p>
+          <p className="muted" style={{ marginTop: 0 }}>This edits {[...new Set([...(applying.patch ?? "").matchAll(/^\+\+\+ b\/(.+)$/gm)].map((m) => m[1]))].map((f) => <code key={f} style={{ marginRight: 4 }}>{f}</code>)}. Nothing is committed or pushed; you review the diff and commit it.</p>
+          {applying.patch && <DiffView patch={applying.patch} />}
           {applying.proof !== "verified" && <div className="callout amber">Not proven by tests yet. {applying.proof_detail}</div>}
         </Modal>
       )}

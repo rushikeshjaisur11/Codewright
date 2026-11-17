@@ -588,6 +588,46 @@ def migrate_step(
 
 
 @app.command()
+def apply(
+    path: Path = typer.Argument(Path("."), exists=True, file_okay=False),
+    finding: list[str] = typer.Option(
+        [], "--id", help="Finding id to apply (repeatable). Default: every verified one."
+    ),
+    unverified: bool = typer.Option(False, "--unverified", help="Also apply patches the tests didn't prove."),
+    rule_fixes: bool = typer.Option(False, "--rules", help="Apply the fixes for architecture-rule violations instead."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the combined patch without applying it."),
+    python: str | None = typer.Option(None, help="Interpreter for the tests (default: the repo's environment)."),
+) -> None:
+    """Apply fixes to the working tree as one change: findings' patches (proved by the tests first) or
+    architecture-rule fixes. Nothing is committed; review the diff with git."""
+    from .engine import review as run_review
+    from .service import Workspace
+
+    ws = Workspace(path.resolve())
+    with console.status("Reviewing (with proof)..." if not rule_fixes else "Scanning..."), _clean_errors():
+        if rule_fixes:
+            ws.run_review(proof=False)
+        else:
+            ws.result = run_review(path, run_proof=not unverified or bool(finding), top=None, python=python)
+    try:
+        with _clean_errors():
+            r = (
+                ws.fix_violations(dry_run=dry_run)
+                if rule_fixes
+                else ws.apply_findings(finding or None, verified_only=not unverified and not finding, dry_run=dry_run)
+            )
+    except ValueError as exc:
+        console.print(f"[yellow]{exc}[/]")
+        raise typer.Exit(1) from None
+    if dry_run:
+        print(r["patch"])
+        return
+    console.print(f"Applied {len(r['applied'])} fix(es) to {', '.join(r['files'])}. Nothing is committed: `git diff`.")
+    if r["skipped"]:
+        console.print(f"[yellow]{len(r['skipped'])} didn't apply on top of the others: {', '.join(r['skipped'])}[/]")
+
+
+@app.command()
 def critique(
     plan: Path = typer.Argument(..., help="The plan to review (Markdown or text), or - for stdin."),
     path: Path = typer.Option(Path("."), "--path", exists=True, file_okay=False, help="Repository it would change."),

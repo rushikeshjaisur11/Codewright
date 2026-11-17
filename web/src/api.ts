@@ -55,8 +55,9 @@ export interface Rule {
 }
 export interface Violation {
   rule: string; kind: string; severity: "error" | "warn"; file: string; line: number;
-  message: string; reason: string; fix: string; target: string;
+  message: string; reason: string; fix: string; target: string; patch?: string | null;
 }
+export interface ApplyResult { patch: string; applied: string[]; skipped: string[]; files: string[]; rules?: RulesSummary }
 export interface RulesSummary {
   rules: Rule[]; violations: Violation[]; errors: number; warnings: number; ok: boolean;
   error: string | null; file: string | null;
@@ -277,6 +278,10 @@ export const api = {
     req<ChatAnswer>("POST", `${w(id)}/chat`, { question, history }),
   releases: (id: string) => req<Release[]>("GET", `${w(id)}/releases`),
   rules: (id: string) => req<RulesSummary>("GET", `${w(id)}/rules`),
+  applyMany: (id: string, ids: string[] | null, verified_only: boolean, dry_run: boolean) =>
+    req<ApplyResult>("POST", `${w(id)}/apply`, { ids, verified_only, dry_run }),
+  fixRules: (id: string, keys: string[] | null, dry_run: boolean) =>
+    req<ApplyResult>("POST", `${w(id)}/rules/fix`, { keys, dry_run }),
   initRules: (id: string, overwrite = false) => req<RulesSummary>("POST", `${w(id)}/rules/init`, { overwrite }),
   deps: (id: string, online: boolean) => req<DepAudit>("GET", `${w(id)}/deps?online=${online}`),
   migrations: (id: string) =>

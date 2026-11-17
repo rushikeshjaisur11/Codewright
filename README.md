@@ -42,7 +42,7 @@ The web app only answers requests addressed to `localhost`, and refuses requests
 | Page | What it does |
 | --- | --- |
 | Overview | Findings, proof rate, acceptance rate, hot-path count, stack, rule violations, drift and upgrades at a glance, and what the team's verdicts say (with a one-click mute where they keep rejecting a check) |
-| Review | Filterable findings with evidence, the suggested API and version, gain, risk, "when not to", scale threshold, proof (and measured speed after **Measure speed**), diff and sources. Accept, reject (with a reason), mute an intent, copy or apply a patch, PR mode and PR-comment export |
+| Review | **Apply all verified** combines every proven patch into one change and shows the diff before writing it. Filterable findings with evidence, the suggested API and version, gain, risk, "when not to", scale threshold, proof (and measured speed after **Measure speed**), diff and sources. Accept, reject (with a reason), mute an intent, copy or apply a patch, PR mode and PR-comment export |
 | Map | System, module and request-flow diagrams generated from the code graph, laid out with ELK (layered, orthogonal edges). Hover a box to trace its connections, double-click to drill in (breadcrumbs take you back), press `/` to find a node, filter by kind, switch direction. Every box links to its files and lines; overlays show findings, fan-in hotspots and untested code. Monorepos (`packages/*`, `src/` layouts) are split into their real packages. Mermaid export, drift panel and "changes this week" |
 | Code chat | Questions about the code, answered with citations you can click open |
 | Design | Interview → three candidate architectures with fit scores, a diagram, components with exact versions from PyPI, editable capacity assumptions, decision records, data model and API outline. Download the design doc or a starter repo, or save the design as the repo's intended architecture |
@@ -72,6 +72,8 @@ codewright review . --watch                 # re-review on every save; prints ne
 codewright review . -f sarif -o codewright.sarif   # for GitHub code scanning and other SARIF viewers
 codewright review . --base origin/main -f pr -o comment.md   # PR mode: changed code only
 codewright review . --bench                 # also time each verified patch, before and after (best of 3)
+codewright apply .                          # apply every verified patch as one change (--dry-run prints it; --id to pick)
+codewright apply . --rules                  # apply the automatic fixes for rule violations
 codewright check .                          # exit 1 when a rule in .codewright/rules.yaml fails or code drifts from the design
 codewright rules init                       # write the dependency directions today's code keeps as rules
 codewright rules                            # rules and what breaks them
@@ -137,7 +139,7 @@ claude mcp add codewright -- uvx --from git+https://github.com/rushikeshjaisur11
 
 `codewright mcp config` prints the same setup for Cursor, VS Code, Claude Desktop and other clients.
 
-Tools: `review` (with `bench`), `review_files`, `explain_finding`, `record_feedback`, `search_knowledge`, `architecture_map`, `ask_code`, `check_drift`, `check_rules`, `review_plan`, `dependency_audit`, `migration_plan`, `migration_step`, `feedback_insights`, `dependency_releases`, `review_markdown` and `list_repos`. An agent can review its own plan with `review_plan` before writing code, and call `check_rules` before it finishes.
+Tools: `review` (with `bench`), `review_files`, `explain_finding`, `record_feedback`, `search_knowledge`, `architecture_map`, `ask_code`, `check_drift`, `check_rules`, `review_plan`, `combined_patch`, `dependency_audit`, `migration_plan`, `migration_step`, `feedback_insights`, `dependency_releases`, `review_markdown` and `list_repos`. An agent can review its own plan with `review_plan` before writing code, and call `check_rules` before it finishes.
 
 **Shared server for a team**, over Streamable HTTP at `/mcp`:
 
@@ -231,7 +233,13 @@ The FastAPI and Pydantic rewrites follow each library's own recommendation ("Pre
 
 ### Architecture review
 
-Whole-codebase checks that run over the code graph. Each one compares the codebase with itself rather than with a fixed rule, so a large or unusual repo is judged on its own terms. They only report: every suggested change (move a name, extract one copy, add a test, route a query through an existing layer) leaves behaviour as it is. Each finding starts with advice computed from the repo (which module, which callers, which test client), followed by the general practice.
+Whole-codebase checks that run over the code graph. Each one compares the codebase with itself rather than with a fixed rule, so a large or unusual repo is judged on its own terms. Every suggested change (move a name, extract one copy, add a test, route a query through an existing layer) leaves behaviour as it is, and three come with a patch that proof then runs the tests on (`refactor.py`):
+
+- **Import cycle**: the names the weakest link needs move to a new `<module>_shared.py` beside their module (with the helpers they use), the old module re-exports them, and the importer imports from the new one. Only when the moved code needs nothing from the cycle; otherwise, when the importer uses the names only inside functions, the import moves into those functions.
+- **Duplicate logic**: each extra copy becomes an import of the kept one, in the same place. Only when decorators, signature and async match, every global name the body uses means the same in both modules, and the import can't make a cycle.
+- **Private import**: a public alias where the name is defined (`slug = _slug`), and the importer uses it.
+
+Layer bypass and untested hotspots stay advice: moving a query or writing a test needs a person. Each finding starts with advice computed from the repo (which module, which callers, which test client), followed by the general practice.
 
 | Check | Fires when | Suggests |
 | --- | --- | --- |
@@ -268,7 +276,7 @@ rules:
     severity: warn                # reported, but doesn't fail `codewright check`
 ```
 
-Each violation names the file and line, and a way round it that keeps behaviour: the allowed module that already uses what was imported, the module that owns a restricted library, or the async call to use. `except:` exempts paths from a rule.
+Each violation names the file and line, and a way round it that keeps behaviour: the allowed module that already uses what was imported, the module that owns a restricted library, or the async call to use. `except:` exempts paths from a rule. Blocking calls in `async def` come with a fix (`await asyncio.sleep(...)`, or `await asyncio.to_thread(f, ...)`): **Fix it** / **Fix all automatic** on the Architecture rules page, or `codewright apply --rules`. The import rules need code moved by a person.
 
 ### Plans and migrations
 

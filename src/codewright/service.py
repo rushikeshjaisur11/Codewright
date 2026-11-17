@@ -199,6 +199,71 @@ class Workspace:
             self.result.rules = out
         return out
 
+    # --------------------------------------------------------------- applying patches
+    def _apply(self, patch: str) -> None:
+        from .proof import apply_patch
+
+        if not apply_patch(self.root, patch):
+            raise RuntimeError("the patch did not apply; the files changed since the review. Run the review again")
+
+    def apply_findings(
+        self, ids: list[str] | None = None, *, verified_only: bool = True, dry_run: bool = False
+    ) -> dict:
+        """Apply several findings' patches as one change (nothing is committed), then re-review.
+
+        Without `ids`: every shown finding with a patch that isn't rejected; with `verified_only`, only those
+        the tests proved."""
+        from .refactor import combine
+
+        r = self.ensure()
+        pool = r.findings if ids is None else [f for f in r.findings + r.rejected + r.muted if f.id in set(ids)]
+        chosen = [
+            f
+            for f in pool
+            if f.patch
+            and (ids is not None or f.status != "rejected")
+            and (not verified_only or f.proof.value == "verified")
+        ]
+        if not chosen:
+            raise ValueError(
+                "no patch to apply" + (" among verified findings; run the review with proof" if verified_only else "")
+            )
+        ordered = sorted(chosen, key=lambda f: (f.file, -f.line))  # bottom-up within a file
+        patch, skipped = combine(self.root, [(f.id, f.patch) for f in ordered])
+        applied = [f.id for f in ordered if f.id not in skipped]
+        out = {"patch": patch, "applied": applied, "skipped": skipped, "files": _patched_files(patch)}
+        if dry_run or not patch:
+            return out
+        self._apply(patch)
+        fb = Feedback.load(self.root)
+        for f in ordered:
+            if f.id in applied:
+                fb.record(f, "accepted", "applied from Codewright")
+        fb.save(self.root)
+        self.run_review(proof=False)
+        return out
+
+    def fix_violations(self, keys: list[str] | None = None, *, dry_run: bool = False) -> dict:
+        """Apply the fixes of rule violations that have one (all, or those whose `file:line:rule` key is given)."""
+        from . import rules as rules_mod
+        from .refactor import combine
+
+        r = self.ensure()
+        vs = rules_mod.check(r.graph, rules_mod.load(self.root))
+        chosen = [v for v in vs if v.patch and (keys is None or f"{v.file}:{v.line}:{v.rule}" in set(keys))]
+        if not chosen:
+            raise ValueError("no violation with an automatic fix")
+        ordered = sorted(chosen, key=lambda v: (v.file, -v.line))
+        patch, skipped = combine(self.root, [(f"{v.file}:{v.line}:{v.rule}", v.patch) for v in ordered])
+        applied = [f"{v.file}:{v.line}:{v.rule}" for v in ordered if f"{v.file}:{v.line}:{v.rule}" not in skipped]
+        out = {"patch": patch, "applied": applied, "skipped": skipped, "files": _patched_files(patch)}
+        if dry_run or not patch:
+            return out
+        self._apply(patch)
+        self.run_review(proof=False)
+        out["rules"] = self.rules()
+        return out
+
     # --------------------------------------------------------------- dependencies
     def deps(self, online: bool = True, python: str | None = None) -> dict:
         from . import deps as deps_mod
@@ -275,6 +340,12 @@ class Workspace:
         r = self.ensure()
         titles = {f.intent: f.title for f in r.findings + r.muted}
         return Feedback.load(self.root).insights(titles)
+
+
+def _patched_files(patch: str) -> list[str]:
+    import re
+
+    return sorted(set(re.findall(r"^\+\+\+ b/(.+)$", patch, re.M)))
 
 
 # --------------------------------------------------------------------------- recent repos and folder browsing

@@ -1,5 +1,6 @@
 # Architecture review: kind "practice" applies to any stack. Every change these suggest moves,
-# renames or tests code without changing what it does; none is auto-patched. Each finding
+# renames or tests code without changing what it does. Import cycles, duplicate logic and private
+# imports come with a patch when refactor.py can make the change safely; the others are advice. Each finding
 # starts with advice computed from the repo itself (which module, which callers, which test
 # style it already uses), followed by the general advice below.
 
