@@ -11,7 +11,9 @@ Review findings, fan-in hotspots and untested functions.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import re
 import time
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
@@ -19,6 +21,7 @@ from pathlib import Path
 
 from .graph import CodeGraph, is_test_file
 from .models import Finding
+from .stack import SKIP_DIRS
 
 # import prefix -> (external system label, kind)
 EXTERNAL = [
@@ -73,6 +76,7 @@ class Node:
     hotspot: int = 0  # fan-in
     untested: int = 0
     detail: str = ""
+    arch: int = 0  # architecture findings in these files (a subset of `findings`)
 
 
 @dataclass
@@ -218,8 +222,55 @@ def resolve_relative(target: str, from_path: str) -> str:
     return ".".join([*base, rest] if rest else base)
 
 
+# Folders whose files are scripts, docs or samples rather than part of the running system.
+TOOLING_DIRS = {
+    "scripts",
+    "script",
+    "tools",
+    "examples",
+    "example",
+    "samples",
+    "sample",
+    "docs",
+    "doc",
+    "benchmarks",
+    "bench",
+    "migrations",
+    "alembic",
+    "notebooks",
+    "sandbox",
+    "playground",
+    "demo",
+    "demos",
+    "experiments",
+}
+LAUNCH_PREFIXES = ("run_", "start_", "serve", "worker", "consume", "listen", "poll_", "main_")
+TOOLING_FILES = {"setup.py", "noxfile.py", "fabfile.py", "tasks.py", "conftest.py"}
+# Files at the repo root that start the app by module name or path (uvicorn app.main:app, gunicorn, Procfile...).
+LAUNCH_FILES = (
+    "pyproject.toml",
+    "setup.cfg",
+    "Dockerfile",
+    "Procfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yml",
+    "compose.yaml",
+    "Makefile",
+    "app.yaml",
+    "fly.toml",
+    "render.yaml",
+    "tox.ini",
+)
+
+
+def is_tooling(path: str) -> bool:
+    parts = path.split("/")
+    return parts[-1] in TOOLING_FILES or any(p in TOOLING_DIRS for p in parts[:-1])
+
+
 class ArchMap:
-    def __init__(self, graph: CodeGraph, findings: list[Finding] | None = None):
+    def __init__(self, graph: CodeGraph, findings: list[Finding] | None = None, include_unused: bool = False):
         self.g = graph
         self.findings = findings or []
         self.modules = {module_name(p): p for p in graph.files if not is_test_file(p)}
@@ -234,6 +285,130 @@ class ArchMap:
         self._tested = self._tested_names()
         self._findings_by_file = Counter(f.file for f in self.findings)
         self._findings_by_fn = Counter(f"{f.file}::{f.function}" for f in self.findings)
+        arch = [f for f in self.findings if getattr(f, "category", "") == "architecture"]
+        self._arch_by_file = Counter(f.file for f in arch)
+        self._arch_by_fn = Counter(f"{f.file}::{f.function}" for f in arch)
+        self.unused = self._unused()
+        hidden = {u["file"] for u in self.unused}
+        shown = [p for p in self.modules.values() if p not in hidden]
+        # Never hide everything: a repo of loose scripts still gets a map.
+        self.shown = set(self.modules.values()) if include_unused or not shown else set(shown)
+
+    # ----------------------------------------------------------------- what is part of the architecture
+    def _launch_text(self) -> str:
+        """Config and launch files that can start a module by name: the root ones, plus deploy and
+        compose files, shell scripts and agent configs (langgraph.json...) anywhere in the repo."""
+        root = Path(self.g.root)
+        out = []
+        for name in LAUNCH_FILES:
+            with contextlib.suppress(OSError):
+                out.append((root / name).read_text(errors="replace"))
+        seen = 0
+        for pattern in ("*.yml", "*.yaml", "*.json", "*.toml", "*.cfg", "*.ini", "*.sh", "Procfile*", "Dockerfile*"):
+            for f in root.rglob(pattern):
+                rel = f.relative_to(root).parts
+                if any(x in SKIP_DIRS or (x.startswith(".") and x != ".github") for x in rel[:-1]):
+                    continue
+                if f.name in ("package-lock.json", "uv.lock") or seen >= 300:
+                    continue
+                with contextlib.suppress(OSError):
+                    if f.stat().st_size < 200_000:
+                        out.append(f.read_text(errors="replace"))
+                        seen += 1
+        return "\n".join(out)
+
+    def _launched_outside(self, path: str) -> bool:
+        """A module the repo never calls but something outside it likely starts: an ADK `root_agent`,
+        or a top-level `run_*`/`start_*`/`serve*`/`worker*`/`consume*` function nothing in the repo calls."""
+        pf = self.g.files[path]
+        if b"root_agent =" in pf.source or b"root_agent=" in pf.source:
+            return True
+        for fn in pf.module.functions:
+            if "." in fn.qualname or fn.name.startswith("_"):
+                continue
+            if fn.name.startswith(LAUNCH_PREFIXES) and self._fan_in.get(f"{path}::{fn.qualname}", 0) == 0:
+                return True
+        return False
+
+    def _unused(self) -> list[dict]:
+        """Modules the running system never loads, each with why: {file, reason}.
+
+        In use: entry points (routes, CLI commands, `main`), `__main__` blocks and `__main__.py`
+        outside script folders, modules named in pyproject/Dockerfile/Procfile, ADK `root_agent`
+        modules, and everything they import, directly or through other modules. A repo with no
+        entry point at all is a library, so every module outside script folders is in use.
+        """
+        files = list(self.modules.values())
+        launch = self._launch_text()
+        roots = set()
+        weak = set()  # roots only because of their file name (app.py nobody imports): not proof of an app
+        for p in files:
+            if is_tooling(p):
+                continue
+            pf = self.g.files[p]
+            mod = module_name(p)
+            names = [mod, *importable_names(mod)]
+            base = p.rsplit("/", 1)[-1]
+            entry = self.g.app_entries.get(p)
+            if (
+                entry is not None
+                and all(r.startswith("is named") for r in entry.reasons)
+                and not any(k.partition("::")[0] == p for k in self.g.entry_points)
+            ):
+                weak.add(p)
+            if (
+                any(k.partition("::")[0] == p for k in self.g.entry_points)
+                or p in self.g.app_entries
+                or pf.module.has_main_guard
+                or p.endswith(("__main__.py", "wsgi.py", "asgi.py"))
+                or self._launched_outside(p)
+                or any(f"{n}:" in launch or f"-m {n}" in launch for n in names if n)
+                or p in launch
+                or (p.count("/") <= 3 and re.search(rf"(^|[\s\"'/=\[,]){re.escape(base)}\b", launch) is not None)
+            ):
+                roots.add(p)
+        if not roots - weak:  # a library: consumers may import any module
+            roots = {p for p in files if not is_tooling(p)}
+        imports = {p: self._module_imports(p)[0] for p in files}
+        used, stack = set(), list(roots)
+        while stack:
+            p = stack.pop()
+            if p in used:
+                continue
+            used.add(p)
+            parts = module_name(p).split(".")
+            for i in range(1, len(parts)):  # importing a.b.c runs a/__init__ and a/b/__init__
+                parent = self.modules.get(".".join(parts[:i]))
+                if parent and parent not in used:
+                    stack.append(parent)
+            stack.extend(self.modules[m] for m in imports[p] if self.modules[m] not in used)
+        # Dynamic imports: a module named in a string by code in use (importlib, plugin lists).
+        sources = b"\n".join(self.g.files[p].source for p in used)
+        for p in files:
+            if p not in used and not is_tooling(p):
+                mod = module_name(p)
+                if any(f"{q}{n}".encode() in sources for n in [mod, *importable_names(mod)] if "." in n for q in "\"'"):
+                    used.add(p)
+        tested_only = set()
+        for path in self.g.files:
+            if is_test_file(path):
+                for mod in self._module_imports(path)[0]:
+                    tested_only.add(self.modules[mod])
+        out = []
+        for p in sorted(files):
+            if p in used:
+                continue
+            pf = self.g.files[p]
+            if p.endswith("__init__.py") and not pf.module.functions and not pf.module.imports:
+                continue  # an empty package marker: nothing to show either way
+            if is_tooling(p):
+                reason = "script, docs or example folder"
+            elif p in tested_only:
+                reason = "only tests import it"
+            else:
+                reason = "nothing in use imports it"
+            out.append({"file": p, "reason": reason, "functions": len(pf.module.functions)})
+        return out
 
     # ----------------------------------------------------------------- helpers
     def _comp(self, path: str) -> str:
@@ -288,7 +463,8 @@ class ArchMap:
     def system(self) -> View:
         comps: dict[str, list[str]] = defaultdict(list)
         for path in self.modules.values():
-            comps[self._comp(path)].append(path)
+            if path in self.shown:
+                comps[self._comp(path)].append(path)
         nodes: dict[str, Node] = {}
         edges: Counter = Counter()
         ext_edges: Counter = Counter()
@@ -306,6 +482,7 @@ class ArchMap:
                 "component",
                 files=[{"file": p, "line": 1} for p in sorted(paths)],
                 findings=sum(self._findings_by_file[p] for p in paths),
+                arch=sum(self._arch_by_file[p] for p in paths),
                 hotspot=hot,
                 untested=sum(self._fn_stats(p)[1] for p in paths),
                 detail=f"{len(paths)} modules · {fn_count} functions",
@@ -355,7 +532,7 @@ class ArchMap:
         return View("system", "System", list(nodes.values()), out_edges)
 
     def module(self, component: str) -> View:
-        paths = sorted(p for p in self.modules.values() if self._comp(p) == component)
+        paths = sorted(p for p in self.shown if self._comp(p) == component)
         nodes, edges = [], []
         for p in paths:
             pf = self.g.files[p]
@@ -368,6 +545,7 @@ class ArchMap:
                     files=[{"file": p, "line": fn.def_line, "name": fn.qualname} for fn in pf.module.functions]
                     or [{"file": p, "line": 1}],
                     findings=self._findings_by_file[p],
+                    arch=self._arch_by_file[p],
                     hotspot=hot,
                     untested=untested,
                     detail=f"{len(pf.module.functions)} functions",
@@ -375,7 +553,7 @@ class ArchMap:
             )
             internal, external = self._module_imports(p)
             for mod in internal:
-                if self._comp(self.modules[mod]) == component:
+                if self.modules[mod] in self.shown and self._comp(self.modules[mod]) == component:
                     edges.append(Edge(f"m:{module_name(p)}", f"m:{mod}", "imports"))
             for label_kind in {self._external_for(t) for t in external} - {None}:
                 nid = f"x:{label_kind[0]}"
@@ -393,6 +571,21 @@ class ArchMap:
             if key in nodes:
                 continue
             path, _, qual = key.partition("::")
+            if qual == "<module>" and path in self.g.app_entries:
+                e = self.g.app_entries[path]
+                nodes[key] = Node(
+                    key,
+                    e.trigger,
+                    "entry",
+                    files=[{"file": path, "line": e.line}],
+                    findings=self._findings_by_file[path],
+                    detail=f"{e.framework} · {path}",
+                )
+                for callee in e.calls:
+                    if not is_test_file(callee.partition("::")[0]):
+                        edges.append(Edge(key, callee, "runs"))
+                        frontier.append((callee, d + 1))
+                continue
             pf = self.g.files.get(path)
             fn = next((f for f in pf.module.functions if f.qualname == qual), None) if pf else None
             if fn is None:
@@ -403,6 +596,7 @@ class ArchMap:
                 "entry" if key == entry else "function",
                 files=[{"file": path, "line": fn.def_line}],
                 findings=self._findings_by_fn[key],
+                arch=self._arch_by_fn[key],
                 hotspot=self._fan_in.get(key, 0),
                 untested=0 if fn.name in self._tested or fn.name.startswith("_") else 1,
                 detail=f"{path}:{fn.def_line}",
@@ -426,7 +620,14 @@ class ArchMap:
                 nid = f"x:{label}"
                 nodes.setdefault(nid, Node(nid, label, kind, detail=kind))
                 edges.append(Edge(key, nid, "uses"))
-        return View("flow", f"Request flow: {entry.partition('::')[2]}", list(nodes.values()), edges)
+        title = entry.partition("::")[2]
+        if title == "<module>":
+            title = (
+                self.g.app_entries[entry.partition("::")[0]].trigger
+                if entry.partition("::")[0] in self.g.app_entries
+                else entry
+            )
+        return View("flow", f"Request flow: {title}", list(nodes.values()), edges)
 
     def view(self, level: str, target: str = "") -> View:
         """The system, module or flow view, defaulting the target. Raises ValueError with what is available."""
@@ -450,10 +651,35 @@ class ArchMap:
         raise ValueError("level must be system, module or flow")
 
     def entry_points(self) -> list[dict]:
+        """Apps first (files started directly: `uvicorn app:app`, `streamlit run app.py`...), then routes,
+        commands and handlers. A `main` run only from its file's `__main__` block is folded into that file."""
         out = []
+        apps = self.g.app_entries
+        for path in sorted(apps):
+            e = apps[path]
+            if is_test_file(path) or is_tooling(path):
+                continue
+            out.append(
+                {
+                    "id": f"{path}::<module>",
+                    "name": path,
+                    "file": path,
+                    "line": e.line,
+                    "trigger": e.trigger,
+                    "framework": e.framework,
+                    "reasons": e.reasons,
+                    "app": True,
+                }
+            )
         for key in sorted(self.g.entry_points):
             path, _, qual = key.partition("::")
-            fn = next(f for f in self.g.files[path].module.functions if f.qualname == qual)
+            if qual == "<module>":
+                continue
+            if qual == "main" and path in apps and key in apps[path].calls:
+                continue
+            fn = next((f for f in self.g.files[path].module.functions if f.qualname == qual), None)
+            if fn is None:
+                continue
             route = next((d for d in fn.decorators if "(" in d), fn.decorators[0] if fn.decorators else "main")
             out.append({"id": key, "name": qual, "file": path, "line": fn.def_line, "trigger": route})
         return out
@@ -497,7 +723,7 @@ class ArchMap:
         }
 
     def components(self) -> list[str]:
-        return sorted({self._comp(p) for p in self.modules.values()})
+        return sorted({self._comp(p) for p in self.shown})
 
 
 # --------------------------------------------------------------------------- snapshots / changes

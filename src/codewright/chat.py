@@ -14,7 +14,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from .graph import CodeGraph, is_test_file
-from .llm import LLMConfig, complete
+from .llm import LLMConfig, LLMError, generate
 from .words import STOP, tokens
 
 
@@ -165,7 +165,10 @@ def _answer(index: CodeIndex, question: str, history, cfg, kn: list[dict]) -> di
             ]
         )
         msgs = [*list(history or [])[-6:], {"role": "user", "content": f"Passages:\n{context}\n\nQuestion: {question}"}]
-        text = complete(cfg, SYSTEM, msgs)
+        try:
+            text = generate(cfg, SYSTEM, msgs)
+        except LLMError as exc:  # fall back to the extractive answer, and say why
+            text, extra = "", {**extra, "llm_error": str(exc)}
         if text:
             return {"answer": text, "citations": citations, "mode": "llm", **extra}
     section = _knowledge_section(kn) if kn else ""

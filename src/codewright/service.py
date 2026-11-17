@@ -23,6 +23,39 @@ from .llm import LLMConfig
 from .llm import status as llm_status
 from .models import Finding
 
+# Review stages in order: key, what the UI says, and the share of the bar each takes (with proof, without).
+STAGES = [
+    ("stack", "Reading the stack and lockfiles", 3, 5),
+    ("graph", "Parsing files into the code graph", 17, 50),
+    ("detect", "Matching code against capability cards", 10, 30),
+    ("check", "Checking the suggested APIs exist in your versions", 10, 10),
+    ("baseline", "Running your tests once, before any change", 25, 0),
+    ("proof", "Running your tests against each patch", 32, 0),
+    ("rank", "Ranking findings", 3, 5),
+]
+
+
+def stage_progress(stage: str, done: int, total: int, *, proof: bool, started: float) -> dict:
+    """Where a review is, for the progress bar: the stage, its count and an overall percentage."""
+    steps = [s for s in STAGES if proof or s[3]]
+    keys = [s[0] for s in steps]
+    i = keys.index(stage) if stage in keys else 0
+    weights = [s[2] if proof else s[3] for s in steps]
+    before = sum(weights[:i])
+    inside = weights[i] * (done / total) if total else 0
+    return {
+        "stage": keys[i],
+        "label": steps[i][1],
+        "step": i + 1,
+        "steps": len(steps),
+        "stages": [{"key": k, "label": s[1]} for k, s in zip(keys, steps, strict=True)],
+        "done": done,
+        "total": total,
+        "percent": min(99, round(before + inside)),
+        "started": started,
+        "proof": proof,
+    }
+
 
 def snapshot(root: Path) -> dict[str, tuple[int, int]]:
     """(mtime, size) of every Python file a review scans; a change means re-review."""
@@ -50,7 +83,7 @@ class Workspace:
     result: ReviewResult | None = None
     index: CodeIndex | None = None
     running: bool = False
-    progress: str = ""
+    progress: dict | None = None  # stage_progress() of the review that is running
     error: str | None = None
     last_run: float | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -62,9 +95,17 @@ class Workspace:
     # --------------------------------------------------------------- review
     def run_review(self, *, proof: bool = True, base: str | None = None, bench: bool = False) -> ReviewResult:
         with self.lock:
-            self.running, self.error, self.progress = True, None, "scanning"
+            started = time.time()
+
+            def tell(stage: str, done: int, total: int) -> None:
+                self.progress = stage_progress(stage, done, total, proof=proof, started=started)
+
+            self.running, self.error = True, None
+            tell("stack", 0, 0)
             try:
-                self.result = review(self.root, run_proof=proof, top=None, base=base, bench=bench and proof)
+                self.result = review(
+                    self.root, run_proof=proof, top=None, base=base, progress=tell, bench=bench and proof
+                )
                 self.revision += 1
                 self.index = CodeIndex(self.result.graph)
                 self.last_run = time.time()
@@ -75,7 +116,7 @@ class Workspace:
                 self.error = f"{type(exc).__name__}: {exc}"
                 raise
             finally:
-                self.running, self.progress = False, ""
+                self.running, self.progress = False, None
 
     # --------------------------------------------------------------- live watch
     def start_watch(self, interval: float = 1.0) -> None:
@@ -149,9 +190,26 @@ class Workspace:
         return fb.stats()
 
     # --------------------------------------------------------------- map
-    def amap(self) -> archmap.ArchMap:
+    def amap(self, include_unused: bool = False) -> archmap.ArchMap:
         r = self.ensure()
-        return archmap.ArchMap(r.graph, r.findings)
+        return archmap.ArchMap(r.graph, r.findings, include_unused=include_unused)
+
+    def ai_map(self):
+        from . import aimap
+
+        r = self.ensure()
+        return aimap.AiMap(r.graph, r.findings)
+
+    def ai(self) -> dict:
+        """Files that need a model and the agent architecture (see aimap)."""
+        from . import aimap
+
+        r = self.ensure()
+        out = aimap.build(r.graph, r.findings)
+        unused = {u["file"]: u["reason"] for u in self.amap().unused}
+        for f in out["files"]:
+            f["unused"] = unused.get(f["file"], "")
+        return out
 
     def ask(self, question: str, history: list[dict] | None = None) -> dict:
         self.ensure()

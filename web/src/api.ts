@@ -34,6 +34,7 @@ export interface Finding {
   span: [number, number];
   status: "accepted" | "rejected" | "muted" | null;
   card_id: string;
+  category: Category; category_label: string;
   perf?: Perf | null;
 }
 
@@ -101,6 +102,7 @@ export interface PlanReview {
   verdict: "go" | "revise"; score: number; headline: string; points: PlanPoint[];
   counts: { blocker: number; concern: number; ok: number };
 }
+export type Category = "architecture" | "agents" | "performance" | "reliability" | "upgrade" | "library";
 
 export interface Dependency { name: string; version: string | null; specifier: string | null; source: string }
 
@@ -120,8 +122,13 @@ export interface ReviewData {
   rules?: RulesSummary;
 }
 
+export interface Progress {
+  stage: string; label: string; step: number; steps: number; stages: { key: string; label: string }[];
+  done: number; total: number; percent: number; started: number; proof: boolean;
+}
+
 export interface WorkspaceInfo {
-  id: string; root: string; name: string; running: boolean; last_run: number | null; error: string | null;
+  id: string; root: string; name: string; running: boolean; progress?: Progress | null; last_run: number | null; error: string | null;
   has_result: boolean; branch: string | null; findings: number | null; verified: number | null; files: number | null;
   watching?: boolean; revision?: number;
 }
@@ -141,11 +148,15 @@ export interface ReviewPayload extends WorkspaceInfo { result: ReviewData | null
 
 export interface MapNode {
   id: string; label: string; kind: string; files: { file: string; line: number; name?: string }[];
-  findings: number; hotspot: number; untested: number; detail: string;
+  findings: number; hotspot: number; untested: number; detail: string; arch?: number;
+  instruction?: string; model?: string;
 }
 export interface MapEdge { source: string; target: string; label: string; weight: number }
 export interface MapView { level: string; title: string; nodes: MapNode[]; edges: MapEdge[]; mermaid: string }
-export interface EntryPoint { id: string; name: string; file: string; line: number; trigger: string }
+export interface EntryPoint {
+  id: string; name: string; file: string; line: number; trigger: string;
+  app?: boolean; framework?: string; reasons?: string[];
+}
 
 export interface Drift {
   design: string; ok: boolean;
@@ -154,8 +165,9 @@ export interface Drift {
   violations: { rule: string; reason: string; file: string; import: string }[];
 }
 
+export interface UnusedFile { file: string; reason: string; functions: number }
 export interface MapMeta {
-  components: string[]; entry_points: EntryPoint[];
+  components: string[]; entry_points: EntryPoint[]; unused: UnusedFile[];
   changes: { since: number | null; added_nodes: string[]; removed_nodes: string[]; added_edges: string[]; removed_edges: string[] };
   drift: Drift | null;
 }
@@ -172,7 +184,9 @@ export interface KnowledgeCite {
   n: string; id: string; title: string; symbol: string; library: string; versions: string;
   suggestion: string; when_not: string; sources: string[]; fit: { status: FitStatus; detail: string };
 }
-export interface ChatAnswer { answer: string; citations: Citation[]; knowledge?: KnowledgeCite[]; mode: "llm" | "extractive" }
+export interface ChatAnswer {
+  answer: string; citations: Citation[]; knowledge?: KnowledgeCite[]; mode: "llm" | "extractive"; llm_error?: string;
+}
 
 export interface Release {
   name: string; installed: string | null; latest: string | null; released?: string;
@@ -190,13 +204,54 @@ export interface Card {
   topic: string; reference: boolean; extra: string; fit: { status: FitStatus; detail: string };
 }
 
+export type ProviderId = "anthropic" | "openai" | "gemini" | "litellm";
+export interface AiSettings {
+  provider: ProviderId | ""; model: string; base_url: string; has_key: boolean; key_hint: string;
+  configured: boolean; reason: string; from_environment: string[]; from_repo: string[]; litellm_installed: boolean;
+  providers: { id: ProviderId; label: string; model: string; needs_key: boolean }[];
+}
+export interface AiTest { ok: boolean; model: string; reply?: string; ms?: number; error?: string }
+
 export interface Settings {
-  model: string; offline: boolean; llm: { available: boolean; model: string; reason: string };
+  model: string; offline: boolean; offline_from_environment: boolean;
+  llm: { available: boolean; model: string; provider: string; reason: string }; ai: AiSettings;
   constraints: string[]; mutes: { intent: string; path: string; reason: string }[];
 }
 
 export interface IndexState {
   url: string; source: string; is_pypi: boolean; repo: string | null; machine: string | null; env_override: boolean;
+}
+
+// ---- node inspector (both maps)
+export interface NodeDetails {
+  id: string; label: string; kind: string; summary: string;
+  facts: { label: string; value: string; mono?: boolean }[];
+  sections: { title: string; items: { label: string; sub?: string; file?: string; line?: number; node?: string; flow?: string }[] }[];
+  findings: { id: string; title: string; category: Category; category_label: string; intent: string; file: string; line: number; evidence: string; proof: string }[];
+  code: { file: string; start: number; end: number; text: string; truncated: boolean } | null;
+  text?: { title: string; body: string } | null;
+  drill?: { level: string; target: string } | null;
+  ask: string;
+}
+
+// ---- AI page
+export type AiRole = "agents" | "model calls" | "tools" | "runs agents" | "calls AI code" | "imports";
+export interface AiFile {
+  file: string; sdks: string[]; roles: AiRole[]; agents: string[]; model_calls: number; tools: string[];
+  via: string[]; findings: number; unused: string;
+}
+export interface AiAgent {
+  id: string; name: string; var: string; file: string; line: number; framework: string; kind: string;
+  model: string; instruction: string; tools: { label: string; file: string; line: number; agent?: string; builtin?: boolean }[];
+  children: string[]; child_names: string[]; steps: { name: string; file: string; line: number }[];
+}
+export interface AiModelCall { file: string; function: string; line: number; api: string; provider: string; model: string }
+export interface AiReport {
+  files: AiFile[]; agents: AiAgent[]; model_calls: AiModelCall[];
+  runs: { file: string; function: string; line: number; agent: string; how: string }[];
+  architecture: { nodes: MapNode[]; edges: MapEdge[] }; mermaid: string;
+  summary: { files: number; need_model: number; agents: number; workflows: number; tools: number; model_calls: number;
+    models: string[]; frameworks: string[] };
 }
 
 // ---- design
@@ -271,7 +326,12 @@ export const api = {
   reportMd: (id: string) => req<string>("GET", `${w(id)}/report.md`),
   prComment: (id: string) => req<string>("GET", `${w(id)}/pr-comment.md`),
   mapMeta: (id: string) => req<MapMeta>("GET", `${w(id)}/map/meta`),
-  map: (id: string, level: string, target = "") => req<MapView>("GET", `${w(id)}/map/${level}?target=${q(target)}`),
+  map: (id: string, level: string, target = "", unused = false) =>
+    req<MapView>("GET", `${w(id)}/map/${level}?target=${q(target)}${unused ? "&unused=true" : ""}`),
+  ai: (id: string) => req<AiReport>("GET", `${w(id)}/ai`),
+  aiNode: (id: string, node: string) => req<NodeDetails>("GET", `${w(id)}/ai/node?id=${q(node)}`),
+  mapNode: (id: string, node: string, level: string, target = "", unused = false) =>
+    req<NodeDetails>("GET", `${w(id)}/inspect?id=${q(node)}&level=${level}&target=${q(target)}${unused ? "&unused=true" : ""}`),
   module: (id: string, path: string) => req<ModulePage>("GET", `${w(id)}/module?path=${q(path)}`),
   source: (id: string, path: string) => req<{ file: string; text: string }>("GET", `${w(id)}/source?path=${q(path)}`),
   chat: (id: string, question: string, history: { role: string; content: string }[]) =>
@@ -296,8 +356,11 @@ export const api = {
   insights: (id: string) => req<Insight[]>("GET", `${w(id)}/insights`),
   cards: (wid?: string | null) => req<Card[]>("GET", `/api/cards${wid ? `?workspace=${encodeURIComponent(wid)}` : ""}`),
   settings: (id: string) => req<Settings>("GET", `${w(id)}/settings`),
-  saveSettings: (id: string, s: Partial<{ model: string; offline: boolean; constraints: string[] }>) =>
+  saveSettings: (id: string, s: Partial<{ offline: boolean; constraints: string[] }>) =>
     req<Settings>("POST", `${w(id)}/settings`, s),
+  saveAi: (workspace: string, s: Partial<{ provider: string; api_key: string; model: string; base_url: string; clear_key: boolean }>) =>
+    req<AiSettings>("PUT", "/api/settings/ai", { ...s, workspace }),
+  testAi: (workspace: string) => req<AiTest>("POST", "/api/settings/ai/test", { workspace }),
   index: (id: string) => req<IndexState>("GET", `${w(id)}/index`),
   saveIndex: (id: string, url: string, scope: "repo" | "machine") => req<IndexState>("POST", `${w(id)}/index`, { url, scope }),
   testIndex: (id: string, url = "") => req<{ ok: boolean; detail: string }>("POST", `${w(id)}/index/test`, { url }),

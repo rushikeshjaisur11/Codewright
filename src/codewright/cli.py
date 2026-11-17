@@ -699,17 +699,58 @@ def map_cmd(
     path: Path = typer.Argument(Path("."), exists=True, file_okay=False),
     level: str = typer.Option("system", help="system | module | flow"),
     target: str = typer.Option("", help="Component (module level) or entry point id (flow level)."),
+    unused: bool = typer.Option(False, "--unused", help="Also draw modules the running system never loads."),
 ) -> None:
     """Print the architecture map as Mermaid."""
     from .archmap import ArchMap
 
-    m = ArchMap(graph_mod.build(path))
+    m = ArchMap(graph_mod.build(path), include_unused=unused)
     try:
         view = m.view(level, target)
     except ValueError as exc:
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(1) from None
     print(view.mermaid())
+
+
+@app.command()
+def agents(
+    path: Path = typer.Argument(Path("."), exists=True, file_okay=False),
+    mermaid: bool = typer.Option(False, "--mermaid", help="Print the agent architecture as Mermaid instead."),
+) -> None:
+    """Files that need a model, and the agent architecture (agents, tools, models, who runs them)."""
+    from .aimap import AiMap
+    from .archmap import Edge, Node, View
+
+    m = AiMap(graph_mod.build(path))
+    arch = m.architecture()
+    if mermaid:
+        keep = {"id", "label", "kind", "files", "detail"}
+        view = View(
+            "ai",
+            "Agents",
+            [Node(**{k: v for k, v in n.items() if k in keep}) for n in arch["nodes"]],
+            [Edge(e["source"], e["target"], e["label"]) for e in arch["edges"]],
+        )
+        print(view.mermaid())
+        return
+    files = m.files()
+    if not files:
+        console.print("No LLM SDK or agent framework is used in this repo.")
+        return
+    console.print(f"[bold]{len(files)} files use AI[/]")
+    for f in files:
+        what = ", ".join(f.roles)
+        extra = (f.agents and f" agents: {', '.join(f.agents)}") or (f.tools and f" tools: {', '.join(f.tools)}") or ""
+        console.print(f"  {f.file}  [dim]{what}{extra}[/]")
+    for a in m.agents.values():
+        console.print(f"[bold]{a.name}[/] [dim]{a.framework} · {a.file}:{a.line}[/]")
+        if a.model:
+            console.print(f"  model: {a.model}")
+        for child in a.children:
+            console.print(f"  delegates to: {m.agents[child].name}")
+        for t in a.tools:
+            console.print(f"  tool: {t['label']}")
 
 
 @app.command()

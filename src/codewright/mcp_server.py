@@ -172,17 +172,31 @@ def record_feedback(repo: str, finding_id: str, status: str, reason: str = "") -
 
 
 @_tool
-def architecture_map(repo: str, level: str = "system", target: str = "") -> dict:
+def architecture_map(repo: str, level: str = "system", target: str = "", include_unused: bool = False) -> dict:
     """Architecture diagram data. level: system | module (target = component) | flow (target = entry point id).
 
-    Returns nodes (with files and lines), edges, and Mermaid text.
+    Returns nodes (with files and lines), edges, Mermaid text, and `unused`: modules the running system
+    never loads (scripts, dead code, test-only helpers), left off the diagram unless include_unused.
     """
-    m = _ws(repo).amap()
+    m = _ws(repo).amap(include_unused)
     try:
         view = m.view(level, target)
     except ValueError as exc:
         raise ToolError(str(exc)) from None
-    return {**view.to_dict(), "mermaid": view.mermaid(), "entry_points": m.entry_points(), "components": m.components()}
+    return {
+        **view.to_dict(),
+        "mermaid": view.mermaid(),
+        "entry_points": m.entry_points(),
+        "components": m.components(),
+        "unused": m.unused,
+    }
+
+
+@_tool
+def ai_architecture(repo: str) -> dict:
+    """Files that need an LLM and the agent architecture: agents with their model, instruction, tools and
+    sub-agents, LangGraph workflows, direct model calls, and the code that runs each agent."""
+    return _ws(repo).ai()
 
 
 @_tool

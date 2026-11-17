@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 
 from rich.console import Console, Group
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
 from .engine import ReviewResult
-from .models import Finding, ProofStatus
+from .models import CATEGORIES, Finding, ProofStatus
+
+CATEGORY_STYLE = {
+    "architecture": "magenta",
+    "agents": "cyan",
+    "performance": "yellow",
+    "reliability": "red",
+    "upgrade": "blue",
+}
 
 PROOF_STYLE = {ProofStatus.VERIFIED: "green", ProofStatus.UNVERIFIED: "yellow", ProofStatus.BROKE_TESTS: "red"}
 
@@ -43,8 +53,11 @@ def to_markdown(result: ReviewResult) -> str:
     ]
     if result.test_env:
         out.append(f"Proof ran the tests with {result.test_env}.\n")
+    counts = Counter(f.category for f in result.findings)
+    if counts:
+        out.append(" · ".join(f"**{CATEGORIES[c]}:** {counts[c]}" for c in CATEGORIES if counts[c]) + "\n")
     for i, f in enumerate(result.findings, 1):
-        out.append(f"## {i}. {f.title}\n")
+        out.append(f"## {i}. [{CATEGORIES.get(f.category, f.category)}] {f.title}\n")
         out.append(
             f"`{f.file}:{f.line}` in `{f.function}` · score {f.score} · proof: **{f.proof.value}**"
             f"{' · hot path' if f.hot_path else ''}\n"
@@ -103,11 +116,16 @@ def print_terminal(result: ReviewResult, console: Console | None = None) -> None
         return
 
     table = Table(show_lines=False)
-    for col in ("#", "Finding", "Where", "Proof", "Score"):
+    for col in ("#", "Kind", "Finding", "Where", "Proof", "Score"):
         table.add_column(col)
     for i, f in enumerate(result.findings, 1):
         table.add_row(
-            str(i), f.title, f"{f.file}:{f.line}", f"[{PROOF_STYLE[f.proof]}]{f.proof.value}[/]", f"{f.score}"
+            str(i),
+            f"[{CATEGORY_STYLE.get(f.category, 'white')}]{CATEGORIES.get(f.category, f.category)}[/]",
+            f.title,
+            f"{f.file}:{f.line}",
+            f"[{PROOF_STYLE[f.proof]}]{f.proof.value}[/]",
+            f"{f.score}",
         )
     console.print(table)
     for i, f in enumerate(result.findings, 1):
@@ -150,7 +168,8 @@ def _panel(i: int, f: Finding) -> Panel:
         parts.append(Syntax(f.patch, "diff", theme="ansi_dark", word_wrap=True))
     elif f.snippet:
         parts.append(Syntax(f.snippet, f.snippet_lang, theme="ansi_dark", word_wrap=True))
-    return Panel(Group(*parts), title=f"{i}. {f.title}", subtitle=f"{f.file}:{f.line} · {f.function}")
+    tag = CATEGORIES.get(f.category, f.category)
+    return Panel(Group(*parts), title=escape(f"{i}. [{tag}] {f.title}"), subtitle=f"{f.file}:{f.line} · {f.function}")
 
 
 def to_pr_comment(result: ReviewResult) -> str:
@@ -163,14 +182,16 @@ def to_pr_comment(result: ReviewResult) -> str:
         )
     out = [
         f"### Codewright: {len(result.findings)} suggestion(s){scope}\n",
-        "| # | Suggestion | Where | Proof |",
-        "| --- | --- | --- | --- |",
+        "| # | Kind | Suggestion | Where | Proof |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for i, f in enumerate(result.findings, 1):
-        out.append(f"| {i} | {f.title} | `{f.file}:{f.line}` | {f.proof.value} |")
+        kind = CATEGORIES.get(f.category, f.category)
+        out.append(f"| {i} | {kind} | {f.title} | `{f.file}:{f.line}` | {f.proof.value} |")
     out.append("")
     for i, f in enumerate(result.findings, 1):
-        out.append(f"<details><summary><b>{i}. {f.title}</b> — <code>{f.file}:{f.line}</code></summary>\n")
+        kind = CATEGORIES.get(f.category, f.category)
+        out.append(f"<details><summary><b>{i}. [{kind}] {f.title}</b> — <code>{f.file}:{f.line}</code></summary>\n")
         out.append(
             f"**Found:** {f.evidence}  \n**Instead:** {f.suggestion}  \n**API:** {f.api}  \n"
             f"**Gain:** {f.gain}  \n**When not to:** {f.when_not}  \n**Proof:** {f.proof_detail}\n"
@@ -206,7 +227,7 @@ def to_sarif(result: ReviewResult) -> str:
                     ),
                 },
                 **({"helpUri": f.sources[0]} if f.sources else {}),
-                "properties": {"tags": ["codewright", f.intent], "precision": "high"},
+                "properties": {"tags": ["codewright", f.category, f.intent], "precision": "high"},
             }
         results.append(
             {

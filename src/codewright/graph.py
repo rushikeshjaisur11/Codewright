@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -83,6 +84,7 @@ class CodeGraph:
     files: dict[str, ParsedFile] = field(default_factory=dict)
     edges: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))  # caller -> callees
     entry_points: set[str] = field(default_factory=set)
+    app_entries: dict = field(default_factory=dict)  # file -> entries.AppEntry: files that start the app
     resolver: Resolver | None = None  # set by build(): resolves names and imports across the repo
 
     def importers_of(self, path: str) -> set[str]:
@@ -113,7 +115,7 @@ class CodeGraph:
     def hot_functions(self) -> set[str]:
         """Every function reachable from an entry point."""
         seen: set[str] = set()
-        stack = list(self.entry_points)
+        stack = list(self.entry_points) + [c for e in self.app_entries.values() for c in e.calls]
         while stack:
             q = stack.pop()
             if q in seen:
@@ -309,10 +311,14 @@ def resolve(module: Module, dotted: str) -> str:
     return f"{target}.{rest}" if rest else target
 
 
-def build(root: str | Path) -> CodeGraph:
+def build(root: str | Path, progress: Callable[[int, int], None] | None = None) -> CodeGraph:
+    """`progress(done, total)` is called as files are parsed."""
     root = Path(root).resolve()
     graph = CodeGraph(root=str(root))
-    for path in iter_python_files(root):
+    paths = list(iter_python_files(root))
+    for n, path in enumerate(paths):
+        if progress and n % 20 == 0:
+            progress(n, len(paths))
         try:
             pf = parse_cached(path, root)
         except (OSError, ValueError):
@@ -328,6 +334,9 @@ def build(root: str | Path) -> CodeGraph:
                     graph.edges[caller].add(callee)
         if _is_entry_point(fn, pf.module):
             graph.entry_points.add(caller)
+    from . import entries  # files run directly: app.py, Streamlit, uvicorn targets, module-level starts
+
+    entries.detect(graph)
     return graph
 
 
@@ -558,11 +567,42 @@ def _enclosing_class(pf: ParsedFile, qualname: str) -> str | None:
     return None
 
 
+# Handlers a framework calls: MCP tools/resources/prompts, chat and bot events, Modal and
+# Cloud Functions entry points, schedulers.
+HANDLER_DECORATOR_SUFFIXES = (
+    ".tool",
+    ".resource",
+    ".prompt",
+    ".on_message",
+    ".on_chat_start",
+    ".on_event",
+    ".event",
+    ".message",
+    ".message_handler",
+    ".function",
+    ".local_entrypoint",
+    ".web_endpoint",
+    ".asgi_app",
+    ".schedule",
+    ".scheduled_job",
+    ".http",
+    ".cloud_event",
+    ".handler",
+    ".listener",
+    ".action",
+    ".shortcut",
+    ".view",
+    ".middleware",
+)
+
+
 def _is_entry_point(fn: Function, module: Module) -> bool:
     if fn.name == "main" and module.has_main_guard:
         return True
     for deco in fn.decorators:
         head = deco.split("(", 1)[0]
+        if head.endswith(HANDLER_DECORATOR_SUFFIXES) and "." in head and not head.startswith(("pytest.", "self.")):
+            return True
         # `.command`/`.group` covers click groups (`@cli.command()`) and typer apps (`@app.command()`).
         if head.endswith((*ROUTE_DECORATOR_SUFFIXES, ".command", ".group")) or head in ("command", "group", "task"):
             return True

@@ -5,7 +5,7 @@ import { useApp } from "../App";
 import { api, Citation, KnowledgeCite } from "../api";
 import { Empty, Source, Spinner, useToast } from "../ui";
 
-interface Msg { role: "user" | "assistant"; content: string; citations?: Citation[]; knowledge?: KnowledgeCite[]; mode?: string }
+interface Msg { role: "user" | "assistant"; content: string; citations?: Citation[]; knowledge?: KnowledgeCite[]; mode?: string; llmError?: string }
 
 const SUGGESTIONS = [
   "How does a request flow through this repo?",
@@ -15,7 +15,8 @@ const SUGGESTIONS = [
 ];
 
 export default function Chat() {
-  const { wid, data, openCode } = useApp();
+  const { wid, data, openCode, params, go } = useApp();
+  const asked = useRef("");
   const toast = useToast();
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
@@ -32,13 +33,22 @@ export default function Chat() {
     setBusy(true);
     try {
       const a = await api.chat(wid, q, history);
-      setMsgs((x) => [...x, { role: "assistant", content: a.answer, citations: a.citations, knowledge: a.knowledge, mode: a.mode }]);
+      setMsgs((x) => [...x, { role: "assistant", content: a.answer, citations: a.citations, knowledge: a.knowledge, mode: a.mode, llmError: a.llm_error }]);
     } catch (e) {
       toast((e as Error).message, "error");
     } finally {
       setBusy(false);
     }
   }
+
+  // "Ask about it" on a map box opens chat with ?q=...: send it once, then drop it from the URL.
+  useEffect(() => {
+    const q = params.get("q");
+    if (!q || !data?.result || !wid || asked.current === q) return;
+    asked.current = q;
+    go("chat");
+    send(q);
+  }, [params, data?.result, wid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!data?.result) return <div style={{ margin: "auto" }}><Empty icon={<MessageSquareCode size={22} />} title="Code chat needs a review first">{data?.running ? <Spinner /> : "Run a review to index the code."}</Empty></div>;
 
@@ -86,7 +96,9 @@ export default function Chat() {
                   ))}
                 </div>
               )}
-              {m.mode === "extractive" && <div className="faint" style={{ fontSize: 11.5, marginTop: 8 }}>Built from the code graph. Configure a model in Settings for written answers.</div>}
+              {m.mode === "extractive" && <div className="faint" style={{ fontSize: 11.5, marginTop: 8 }}>
+                {m.llmError ? <>Built from the code graph, because the model did not answer: {m.llmError}</> : "Built from the code graph. Set up a model in Settings for written answers."}
+              </div>}
             </div>
           </div>
         ))}

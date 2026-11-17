@@ -4,8 +4,11 @@ import {
   Search, ShieldAlert, ShieldCheck, ThumbsDown, ThumbsUp, TriangleAlert, Wand2,
 } from "lucide-react";
 import { useApp } from "../App";
-import { api, Finding } from "../api";
-import { CodeView, CopyButton, DiffView, Empty, Inline, Modal, ProofBadge, Source, Spinner, Tabs, intentLabel, useToast } from "../ui";
+import { api, Category, Finding } from "../api";
+import {
+  CATEGORY, CATEGORY_ORDER, CategoryBadge, CodeView, CopyButton, DiffView, Empty, Inline, Modal, ProofBadge, Source, Spinner, Tabs,
+  intentLabel, useToast,
+} from "../ui";
 
 type ListTab = "shown" | "dropped" | "muted";
 
@@ -16,6 +19,8 @@ export default function Review() {
   const [tab, setTab] = useState<ListTab>("shown");
   const [query, setQuery] = useState("");
   const [intent, setIntent] = useState("");
+  const [cat, setCat] = useState<Category | "">(() => (params.get("cat") as Category) || "");
+  useEffect(() => { const c = params.get("cat"); if (c) setCat(c as Category); }, [params]);
   const [proof, setProof] = useState("");
   const [status, setStatus] = useState("");
   const [hotOnly, setHotOnly] = useState(false);
@@ -33,13 +38,17 @@ export default function Review() {
     const ql = query.toLowerCase();
     return src.filter((f) =>
       (!ql || `${f.title} ${f.file} ${f.function} ${f.evidence}`.toLowerCase().includes(ql)) &&
-      (!intent || f.intent === intent) && (!proof || f.proof === proof) &&
+      (!cat || f.category === cat) && (!intent || f.intent === intent) && (!proof || f.proof === proof) &&
       (!status || (status === "open" ? !f.status : f.status === status)) && (!hotOnly || f.hot_path));
-  }, [r, tab, query, intent, proof, status, hotOnly]);
+  }, [r, tab, query, cat, intent, proof, status, hotOnly]);
 
   const selectedId = params.get("f");
   const selected = list.find((f) => f.id === selectedId) ?? list[0];
-  const intents = useMemo(() => [...new Set((r?.findings ?? []).map((f) => f.intent))].sort(), [r]);
+  const intents = useMemo(() => [...new Set((r?.findings ?? []).filter((f) => !cat || f.category === cat).map((f) => f.intent))].sort(), [r, cat]);
+  const catCounts = useMemo(() => {
+    const src = !r ? [] : tab === "shown" ? r.findings : tab === "dropped" ? r.rejected : r.muted;
+    return src.reduce<Partial<Record<Category, number>>>((a, f) => ({ ...a, [f.category]: (a[f.category] ?? 0) + 1 }), {});
+  }, [r, tab]);
 
   useEffect(() => { setReason(""); }, [rejecting]);
 
@@ -94,7 +103,7 @@ export default function Review() {
     setReport(kind === "md" ? await api.reportMd(wid) : await api.prComment(wid));
   }
 
-  const filtered = !!(query || intent || proof || status || hotOnly);
+  const filtered = !!(query || cat || intent || proof || status || hotOnly);
   return (
     <div className="page">
       <div className="page-head">
@@ -143,6 +152,20 @@ export default function Review() {
             ]} />
           </div>
           <div className="appframe-bar">
+            <div className="cat-chips" role="group" aria-label="Kind of suggestion">
+              <button className={`cat-chip ${!cat ? "on cat-library" : ""}`} aria-pressed={!cat} onClick={() => { setCat(""); setIntent(""); }}>All</button>
+              {CATEGORY_ORDER.filter((c) => catCounts[c]).map((c) => {
+                const I = CATEGORY[c].icon;
+                return (
+                  <button key={c} className={`cat-chip ${CATEGORY[c].cls} ${cat === c ? "on" : ""}`} aria-pressed={cat === c} title={CATEGORY[c].help}
+                    onClick={() => { setCat(cat === c ? "" : c); setIntent(""); }}>
+                    <I size={13} />{CATEGORY[c].label}<span className="faint">{catCounts[c]}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="appframe-bar">
             <div className="search grow">
               <Search size={14} />
               <input className="input" style={{ width: "100%" }} placeholder="Search findings" aria-label="Search findings" value={query} onChange={(e) => setQuery(e.target.value)} />
@@ -168,11 +191,12 @@ export default function Review() {
               </div>
             )}
             {list.map((f) => (
-              <button key={f.id} className={`fitem ${selected?.id === f.id ? "active" : ""} ${f.status === "rejected" ? "dim" : ""}`}
+              <button key={f.id} className={`fitem ${selected?.id === f.id ? "active" : ""} ${f.status === "rejected" ? "dim" : ""} ${f.category === "architecture" ? "arch" : ""}`}
                 onClick={() => go("review", { f: f.id })}>
                 <div className="t">{f.title}</div>
                 <div className="loc truncate">{f.file}:{f.line}</div>
                 <div className="meta">
+                  <CategoryBadge category={f.category} />
                   {tab === "dropped" ? <span className="badge red">{f.rejected_reason}</span> : <ProofBadge proof={f.proof} />}
                   {f.patch && <span className="badge"><Wand2 size={11} />Patch</span>}
                   {f.hot_path && <span className="badge"><Flame size={11} />Hot</span>}
@@ -250,6 +274,7 @@ function Detail({ f, dropped, onAccept, onReject, onMute, onApply, onCode }: {
     <>
       <div className="detail-head">
         <div className="row wrap" style={{ marginBottom: 10, gap: 6 }}>
+          <CategoryBadge category={f.category} size="md" />
           <span className="badge outline">{intentLabel(f.intent)}</span>
           {!dropped && <ProofBadge proof={f.proof} />}
           {f.hot_path && <span className="badge"><Flame size={11} />Hot path</span>}

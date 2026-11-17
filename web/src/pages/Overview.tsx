@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import {
-  AlertCircle, ArrowRight, BellOff, CheckCircle2, Compass, FileCode2, Flame, GitPullRequest, Layers, MessagesSquare,
+  AlertCircle, ArrowRight, BellOff, CheckCircle2, Compass, FileCode2, Flame, GitPullRequest, Layers, MessagesSquare, Network,
   ShieldCheck, ThumbsUp, XCircle,
 } from "lucide-react";
 import { useApp } from "../App";
 import { api, Drift, Insight, Release } from "../api";
-import { Empty, Inline, ProofBadge, Spinner, Stat, intentLabel, useToast } from "../ui";
+import { CATEGORY, CATEGORY_ORDER, CategoryBadge, Empty, Inline, ProofBadge, Spinner, Stat, intentLabel, useToast } from "../ui";
 
 function Insights({ items }: { items: Insight[] }) {
   const { wid, reload } = useApp();
@@ -62,6 +62,9 @@ export default function Overview() {
   const byIntent = Object.entries(r.findings.reduce<Record<string, number>>((a, f) => ({ ...a, [f.intent]: (a[f.intent] ?? 0) + 1 }), {}))
     .sort((a, b) => b[1] - a[1]);
   const maxIntent = Math.max(1, ...byIntent.map(([, n]) => n));
+  const byCat = CATEGORY_ORDER.map((c) => [c, r.findings.filter((f) => f.category === c).length] as const).filter(([, n]) => n > 0);
+  const maxCat = Math.max(1, ...byCat.map(([, n]) => n));
+  const arch = r.findings.filter((f) => f.category === "architecture");
   const upgrades = (releases ?? []).filter((x) => x.bump === "major" || x.bump === "minor");
 
   return (
@@ -89,6 +92,7 @@ export default function Overview() {
       </div>
 
       <div className="grid" style={{ gridTemplateColumns: "minmax(0, 1.6fr) minmax(0, 1fr)" }}>
+        <div className="col" style={{ gap: 16 }}>
         <div className="card">
           <div className="card-head">
             <h2><GitPullRequest size={16} />Top findings</h2>
@@ -102,7 +106,7 @@ export default function Overview() {
                 {r.findings.slice(0, 6).map((f) => (
                   <tr key={f.id} className="click" onClick={() => go("review", { f: f.id })}>
                     <td style={{ width: "100%" }}>
-                      <div style={{ fontWeight: 600 }}>{f.title}</div>
+                      <div className="row wrap" style={{ gap: 8 }}><CategoryBadge category={f.category} /><span style={{ fontWeight: 600 }}>{f.title}</span></div>
                       <div className="mono faint" style={{ fontSize: 11.5 }}>{f.file}:{f.line}</div>
                     </td>
                     <td><ProofBadge proof={f.proof} /></td>
@@ -114,7 +118,46 @@ export default function Overview() {
           )}
         </div>
 
+        <div className="card">
+          <div className="card-head">
+            <h2><Network size={16} />Architecture suggestions</h2>
+            {arch.length > 0 && <div className="right"><button className="btn sm ghost" onClick={() => go("review", { cat: "architecture" })}>All {arch.length}<ArrowRight size={13} /></button></div>}
+          </div>
+          {arch.length === 0 ? (
+            <div className="card-pad muted">No architecture issues: no import cycles, layer bypasses, duplicated logic, private imports across packages or untested hotspots.</div>
+          ) : (
+            <table className="table">
+              <tbody>
+                {arch.slice(0, 5).map((f) => (
+                  <tr key={f.id} className="click" onClick={() => go("review", { cat: "architecture", f: f.id })}>
+                    <td style={{ width: "100%" }}>
+                      <div style={{ fontWeight: 600 }}>{f.title}</div>
+                      <div className="muted" style={{ fontSize: 13, marginTop: 2 }}>{f.evidence}</div>
+                      <div className="mono faint" style={{ fontSize: 11.5, marginTop: 2 }}>{f.file}:{f.line}</div>
+                    </td>
+                    <td><span className="badge outline">{intentLabel(f.intent)}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        </div>
+
         <div className="col" style={{ gap: 16 }}>
+          <div className="card">
+            <div className="card-head"><h2><Layers size={16} />Findings by kind</h2></div>
+            <div className="card-pad col" style={{ gap: 10 }}>
+              {byCat.length === 0 && <span className="muted">None</span>}
+              {byCat.map(([c, n]) => (
+                <button key={c} className="kind-row" onClick={() => go("review", { cat: c })} title={CATEGORY[c].help}>
+                  <div className="row" style={{ fontSize: 13 }}><CategoryBadge category={c} /><span className="grow" /><span className="mono muted">{n}</span></div>
+                  <div className={`meter ${CATEGORY[c].cls}`} style={{ marginTop: 6, background: undefined }}><span style={{ width: `${(n / maxCat) * 100}%`, background: "currentColor" }} /></div>
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div className="card">
             <div className="card-head"><h2><Layers size={16} />Findings by intent</h2></div>
             <div className="card-pad col" style={{ gap: 10 }}>

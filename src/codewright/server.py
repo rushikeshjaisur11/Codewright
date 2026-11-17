@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import re
 import subprocess
 import threading
 from dataclasses import asdict
@@ -19,6 +20,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__, design
 from . import cards as card_store
+from . import llm as llm_mod
 from .feedback import Feedback
 from .intents import DETECTORS
 from .llm import LLMConfig
@@ -69,6 +71,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
             "root": str(w.root),
             "name": w.root.name,
             "running": w.running,
+            "progress": w.progress if w.running else None,
             "last_run": w.last_run,
             "error": w.error,
             "has_result": w.result is not None,
@@ -156,7 +159,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
                 },
                 "files": len(r.graph.files),
                 "functions": sum(1 for _ in r.graph.functions()),
-                "entry_points": len(r.graph.entry_points),
+                "entry_points": len(r.graph.entry_points) + len(r.graph.app_entries),
                 "intent_matches": r.total_matches,
                 "seconds": r.seconds,
                 "test_env": r.test_env,
@@ -207,7 +210,13 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     def revision(wid: str):
         """Tiny status for polling: has the result changed, and what did the last re-review change?"""
         w = ws(wid)
-        return {"revision": w.revision, "running": w.running, "watching": w.watching, "last_change": w.last_change}
+        return {
+            "revision": w.revision,
+            "running": w.running,
+            "progress": w.progress if w.running else None,
+            "watching": w.watching,
+            "last_change": w.last_change,
+        }
 
     @app.get("/api/w/{wid}/review")
     def get_review(wid: str):
@@ -289,14 +298,16 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         m = w.amap()
         return {
             "components": m.components(),
+            "unused": m.unused,
             "entry_points": m.entry_points(),
             "changes": changes_since(w.root, m.system()),
             "drift": w.drift(),
         }
 
     @app.get("/api/w/{wid}/map/{level}")
-    def map_view(wid: str, level: str, target: str = ""):
-        m = ws(wid).amap()
+    def map_view(wid: str, level: str, target: str = "", unused: bool = False):
+        """`unused=true` also draws modules the running system never loads (see ArchMap.unused)."""
+        m = ws(wid).amap(include_unused=unused)
         if level not in ("system", "module", "flow"):
             raise HTTPException(400, "level must be system, module or flow")
         try:
@@ -322,6 +333,26 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     @app.post("/api/w/{wid}/chat")
     def chat(wid: str, question: Annotated[str, Body(embed=True)], history: list[dict] = Body([], embed=True)):
         return ws(wid).ask(question, history)
+
+    @app.get("/api/w/{wid}/ai")
+    def ai(wid: str):
+        return ws(wid).ai()
+
+    @app.get("/api/w/{wid}/ai/node")
+    def ai_node(wid: str, id: str):
+        """Everything known about one box on the agent architecture graph."""
+        from .inspect_node import ai_node as details
+
+        return details(ws(wid).ai_map(), id)
+
+    @app.get("/api/w/{wid}/inspect")
+    def map_node(wid: str, id: str, level: str = "system", target: str = "", unused: bool = False):
+        """Everything known about one box on the Map: what it is, its links, findings and code."""
+        from .inspect_node import map_node as details
+
+        if level not in ("system", "module", "flow"):
+            raise HTTPException(400, "level must be system, module or flow")
+        return details(ws(wid).amap(include_unused=unused), level, target, id)
 
     @app.get("/api/w/{wid}/drift")
     def drift(wid: str):
@@ -420,7 +451,9 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         return {
             "model": cfg.model,
             "offline": cfg.offline,
+            "offline_from_environment": bool(os.environ.get("CODEWRIGHT_OFFLINE")),
             "llm": llm_status(cfg),
+            "ai": llm_mod.public(w.root),
             "constraints": fb.constraints,
             "mutes": [asdict(m) for m in fb.mutes],
         }
@@ -428,22 +461,62 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     @app.post("/api/w/{wid}/settings")
     def set_settings(
         wid: str,
-        model: Annotated[str | None, Body(embed=True)] = None,
         offline: Annotated[bool | None, Body(embed=True)] = None,
         constraints: Annotated[list[str] | None, Body(embed=True)] = None,
     ):
         w = ws(wid)
-        cfg = LLMConfig.load(w.root)
-        if model is not None:
-            cfg.model = model.strip() or cfg.model
         if offline is not None:
+            cfg = LLMConfig.load(w.root)
             cfg.offline = offline
-        cfg.save(w.root)
+            cfg.save(w.root)
         if constraints is not None:
             fb = Feedback.load(w.root)
             fb.constraints = [c.strip() for c in constraints if c.strip()]
             fb.save(w.root)
         return get_settings(wid)
+
+    # ------------------------------------------------------------------ model (per machine, not per repo)
+    def _root_of(workspace: str) -> Path | None:
+        return svc.workspaces[workspace].root if workspace in svc.workspaces else None
+
+    @app.get("/api/settings/ai")
+    def ai_settings(workspace: str = ""):
+        return llm_mod.public(_root_of(workspace))
+
+    @app.put("/api/settings/ai")
+    def ai_settings_save(
+        provider: Annotated[str | None, Body(embed=True)] = None,
+        api_key: Annotated[str | None, Body(embed=True)] = None,
+        model: Annotated[str | None, Body(embed=True)] = None,
+        base_url: Annotated[str | None, Body(embed=True)] = None,
+        clear_key: Annotated[bool, Body(embed=True)] = False,
+        workspace: Annotated[str, Body(embed=True)] = "",
+    ):
+        """Save the provider, key and model for this machine. The key is stored, never returned."""
+        if provider and provider not in llm_mod.PROVIDERS:
+            raise HTTPException(400, f"unknown provider {provider}") from None
+        if base_url and not re.match(r"^https?://[^\s]+$", base_url.strip()):
+            raise HTTPException(400, "the server address must start with http:// or https://") from None
+        vals: dict = {
+            k: v for k, v in (("provider", provider), ("model", model), ("base_url", base_url)) if v is not None
+        }
+        if clear_key:
+            vals["api_key"] = None
+        elif api_key:
+            vals["api_key"] = api_key.strip()
+        try:
+            llm_mod.save_settings(vals)
+        except OSError as exc:
+            raise HTTPException(500, f"could not write {llm_mod.settings_path()}: {exc}") from None
+        return llm_mod.public(_root_of(workspace))
+
+    @app.post("/api/settings/ai/test")
+    def ai_settings_test(workspace: Annotated[str, Body(embed=True)] = ""):
+        """One tiny request to the configured model. Refused while the repo is in offline mode."""
+        cfg = LLMConfig.load(_root_of(workspace))
+        if cfg.offline:
+            return {"ok": False, "model": cfg.model, "error": "offline mode is on, so no request was sent"}
+        return llm_mod.test(cfg)
 
     # ------------------------------------------------------------------ package index
     def index_state(root: str) -> dict:

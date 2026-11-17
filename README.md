@@ -29,7 +29,7 @@ Around them:
 ## Quick start
 
 ```bash
-uv venv && uv pip install -e ".[dev]"      # add [llm] for model-written chat answers
+uv venv && uv pip install -e ".[dev]"
 .venv/bin/codewright serve path/to/repo    # web app on http://127.0.0.1:8765
 ```
 
@@ -41,16 +41,17 @@ The web app only answers requests addressed to `localhost`, and refuses requests
 
 | Page | What it does |
 | --- | --- |
-| Overview | Findings, proof rate, acceptance rate, hot-path count, stack, rule violations, drift and upgrades at a glance, and what the team's verdicts say (with a one-click mute where they keep rejecting a check) |
-| Review | **Apply all verified** combines every proven patch into one change and shows the diff before writing it. Filterable findings with evidence, the suggested API and version, gain, risk, "when not to", scale threshold, proof (and measured speed after **Measure speed**), diff and sources. Accept, reject (with a reason), mute an intent, copy or apply a patch, PR mode and PR-comment export |
-| Map | System, module and request-flow diagrams generated from the code graph, laid out with ELK (layered, orthogonal edges). Hover a box to trace its connections, double-click to drill in (breadcrumbs take you back), press `/` to find a node, filter by kind, switch direction. Every box links to its files and lines; overlays show findings, fan-in hotspots and untested code. Monorepos (`packages/*`, `src/` layouts) are split into their real packages. Mermaid export, drift panel and "changes this week" |
+| Overview | Findings by kind, architecture suggestions, proof rate, acceptance rate, hot-path count, stack, rule violations, drift and upgrades at a glance, and what the team's verdicts say (with a one-click mute where they keep rejecting a check) |
+| Review | **Apply all verified** combines every proven patch into one change and shows the diff before writing it. Findings tagged by kind (**Architecture**, Agents, Performance, Reliability, Upgrade, Use the library) and filterable by it, with evidence, the suggested API and version, gain, risk, "when not to", scale threshold, proof (and measured speed after **Measure speed**), diff and sources. Accept, reject (with a reason), mute an intent, copy or apply a patch, PR mode and PR-comment export |
+| Map | System, module and request-flow diagrams generated from the code graph, laid out with ELK (layered, orthogonal edges). Hover a box to trace its connections; click any box for an inspector with what it is, its facts, links, the suggestions in its code and the code itself (components, modules, functions and external systems alike); **Focus** shows only a box and its neighbours, and *Ask about it* opens Code chat with a question about it. Double-click to drill in (breadcrumbs take you back), press `/` to find a node, filter by kind, switch direction. Every box links to its files and lines; overlays show findings, fan-in hotspots and untested code. Files the running system never loads (nothing in use imports them, only tests do, or they live in `scripts/`, `docs/` or `examples/`) are left off and listed beside the map, with a switch to show them. Monorepos (`packages/*`, `src/` layouts) are split into their real packages. Entry points include files that start the app, not only routes and `main()`: an `app.py` or other script nothing imports, Streamlit, Chainlit, Gradio, NiceGUI and Panel apps, FastAPI/Flask/Starlette/Django/Dash/Celery/Typer/MCP app objects (shown as `uvicorn app:app`, `streamlit run app.py`...), module-level starts such as `app.run()` or `asyncio.run(main())`, `__main__` blocks, `__main__.py`, console scripts in pyproject, and handlers like `@mcp.tool` or `@cl.on_message`. Mermaid export, drift panel and "changes this week" |
+| AI & agents | The files that need a model, and the agent architecture drawn from the code: which route or job runs each agent, its sub-agents and handoffs, its tools and model, plus LangGraph workflows and direct model calls. The graph follows the whole chain from the app: `app.py` → the function that runs the agent (a `Runner`, `.run()`, `kickoff()`…) → the root agent → its sub-agents, handoffs and agents used as tools → their tools and models. It sees agents defined inline in a list, built by factory functions (with the model the caller passes), defined in other modules and imported, aliased (`root_agent = build()`), custom agent classes (subclasses of `BaseAgent` and friends), LangGraph steps that are agents, ADK's `root_agent` convention (`adk web`) and `langgraph.json`. Pick an entry point in *Start from* (or *Show its tree* on any agent) to see only what it reaches; every agent's inspector shows its path from the app. Every box opens the same inspector: an agent's model, full instruction, options, tools, sub-agents, who runs it and its definition; a tool's signature, docstring and code; a model's users and call sites. Search, kind filters, Focus and Mermaid export work as on the Map. Google ADK, OpenAI Agents SDK, Pydantic AI, CrewAI, LangChain/LangGraph, smolagents, AutoGen, LlamaIndex, and the Anthropic, OpenAI, Gemini and LiteLLM SDKs |
 | Code chat | Questions about the code, answered with citations you can click open |
 | Design | Interview → three candidate architectures with fit scores, a diagram, components with exact versions from PyPI, editable capacity assumptions, decision records, data model and API outline. Download the design doc or a starter repo, or save the design as the repo's intended architecture |
 | Plans & migrations | **Review a plan**: paste an RFC, design doc or agent plan and get a go/revise verdict with evidence (a library the repo already has for the job, code the stack already provides, a rule it would break, a function with many callers and no test, scale and completeness gaps). **Migrations**: the upgrades that apply to this repo, planned as ordered steps; open a step for its combined patch and PR text, or apply it to the working tree |
 | Architecture rules | The rules in `.codewright/rules.yaml` and the saved design, every violation with a fix, and one click to write the rules today's code already keeps |
 | Dependencies | **Releases**: newer versions of each dependency, what an upgrade unlocks, and an upgrade preview for this repo: the findings an upgrade would add (things to fix first, with auto-patches marked) or resolve, from re-matching the code already scanned against the new version. **Audit**: declared against imported dependencies, with what to merge, drop or replace and how many packages leave the install |
 | Knowledge base | Every card, searchable and grouped by library and topic. With a repo open, each says whether it fits the locked version, needs an upgrade or isn't a dependency. Cards with a detector become findings; reference entries are for looking things up |
-| Settings | Model, offline mode, team constraints, mute rules, MCP and CI snippets |
+| Settings | Model setup (provider, key, save and test), offline mode, team constraints, mute rules, MCP and CI snippets |
 | Live review | **Go live** in the top bar re-reviews on every save (tests not run) and says what became new or resolved |
 | Repo switcher | Press `⌘K` / `Ctrl+K`: switch between open repos (branch, findings, last review), reopen recent ones (remembered in `~/.codewright/recent.json`) or browse this machine's folders to open a new one |
 
@@ -85,6 +86,9 @@ codewright migrate status pydantic-v2       # progress follows the code: a step 
 codewright deps .                           # dependency audit (--offline to skip release dates)
 codewright insights .                       # what accept/reject verdicts say: checks to mute, checks the team trusts
 codewright map . --level flow               # Mermaid diagram of a request flow
+codewright map . --unused                    # also draw files the running system never loads
+codewright agents .                         # files that need a model, and the agents, tools and models
+codewright agents . --mermaid               # the agent architecture as Mermaid
 codewright watch . --rescan                 # new dependency releases; re-review when one appears
 codewright feedback <finding-id> rejected --reason "not worth the churn"
 codewright stack .                          # what versions it thinks you run
@@ -177,7 +181,7 @@ What the shared server guards:
 - **Access.** Callers reach only the `--root` repos and allowed git hosts. Clones use https only (no `file://`, `ssh` or `ext::`), with no hooks and no LFS downloads. Inline files can't escape their throwaway folder.
 - **Host headers.** `--public-host codewright.example.com` refuses requests that don't use that name, and a server bound to localhost is protected against DNS rebinding.
 
-Tools: `review`, `review_files`, `review_markdown`, `explain_finding`, `record_feedback`, `architecture_map`, `ask_code`, `check_drift`, `dependency_releases`, `search_knowledge` (what the installed version of a library offers for a task, before writing code against it), `list_repos`.
+Tools: `review`, `review_files`, `review_markdown`, `explain_finding`, `record_feedback`, `architecture_map`, `ai_architecture` (agents, tools, models and the files that need a model), `ask_code`, `check_drift`, `dependency_releases`, `search_knowledge` (what the installed version of a library offers for a task, before writing code against it), `list_repos`.
 
 ## How a review works
 
@@ -384,7 +388,22 @@ Credentials go in `~/.netrc` (pip and uv read it too), in `CODEWRIGHT_INDEX_TOKE
 
 Review, the critic, proof, Map and Design's capacity math are deterministic and never call a model. A model only writes code-chat answers and drafts Design's data model; without one, chat answers are built from the code graph and still cite files and lines.
 
-Models go through LiteLLM (`pip install "codewright[llm]"`). The default is `vertex_ai/gemini-2.5-flash`; set `CODEWRIGHT_MODEL` or change it in Settings. `CODEWRIGHT_OFFLINE=1` (or the Settings switch) guarantees no model calls.
+Open **Settings**, pick a provider, paste the key and press *Save and test*. It takes effect at once, with no restart.
+
+| Provider | Needs | Default model |
+| --- | --- | --- |
+| Claude (Anthropic API) | API key | `claude-haiku-5-5` |
+| OpenAI or any OpenAI-compatible server (Ollama, LM Studio, OpenRouter, Azure) | API key, or only a server address for a local server | `gpt-4o-mini` |
+| Gemini (Google AI Studio) | API key | `gemini-2.5-flash` |
+| Vertex AI and others, through LiteLLM | `pip install "codewright[llm]"` and that provider's credentials in the environment | `vertex_ai/gemini-2.5-flash` |
+
+The first three are called over plain HTTPS, so there is nothing to install. The provider, key and model are stored for this machine in `~/.codewright/settings.json` (mode 0600), never in the repo, and the key is never sent back to the browser.
+
+Environment variables win over the page, for CI and servers: `CODEWRIGHT_AI_PROVIDER`, `CODEWRIGHT_AI_KEY`, `CODEWRIGHT_AI_MODEL`, `CODEWRIGHT_AI_BASE_URL`. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY` alone also turns its provider on, and the older `CODEWRIGHT_MODEL` (a LiteLLM id such as `anthropic/claude-haiku-5-5`) keeps working. `CODEWRIGHT_OFFLINE=1`, or the per-repo switch in Settings, guarantees no model calls.
+
+With a model set up, Code chat sends your question and the code passages that matched it; Design sends the project idea you typed. A review sends nothing. If a call fails, chat falls back to the answer built from the code graph and says why.
+
+The mocked wire formats are covered by the test suite; run *Save and test* against your real provider before relying on it.
 
 ## Development
 
