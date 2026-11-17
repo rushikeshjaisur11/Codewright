@@ -1,6 +1,6 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Copy, ExternalLink, Loader2, X } from "lucide-react";
-import type { Proof } from "./api";
+import { AlertTriangle, Check, CheckCircle2, Copy, ExternalLink, Loader2, X } from "lucide-react";
+import type { Progress, Proof } from "./api";
 
 // ---------------------------------------------------------------- toasts
 type Toast = { id: number; text: string; kind: "ok" | "error" };
@@ -226,4 +226,71 @@ export function timeAgo(t: number | null) {
 export function Inline({ text }: { text: string }) {
   const parts = text.split(/(`[^`]+`)/g);
   return <>{parts.map((p, i) => (p.length > 2 && p.startsWith("`") && p.endsWith("`") ? <code key={i}>{p.slice(1, -1)}</code> : p))}</>;
+}
+
+// ---------------------------------------------------------------- review progress
+function useElapsed(started?: number) {
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => clearInterval(t);
+  }, []);
+  if (!started) return "";
+  const s = Math.max(0, Math.round(now - started));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+function stageCount(p: Progress) {
+  if (!p.total) return "";
+  return p.stage === "graph" ? `${p.done} of ${p.total} files` : p.stage === "proof" ? `${p.done} of ${p.total} patches` : `${p.done} of ${p.total}`;
+}
+
+/** The thin bar under the top bar: determinate once the server reports a stage. */
+export function ProgressBar({ percent, label }: { percent?: number | null; label: string }) {
+  return (
+    <div className={`progress ${percent == null ? "indeterminate" : ""}`} role="progressbar" aria-label={label}
+      aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent ?? undefined}>
+      <span style={percent == null ? undefined : { width: `${Math.max(2, percent)}%` }} />
+    </div>
+  );
+}
+
+/** Shown in place of a page while a repo's first review runs: which stage, how far, how long. */
+export function ReviewProgress({ name, progress }: { name: string; progress?: Progress | null }) {
+  const elapsed = useElapsed(progress?.started);
+  const p = progress;
+  return (
+    <div className="review-progress" aria-live="polite">
+      <div className="card card-pad col" style={{ gap: 16 }}>
+        <div>
+          <h2>Reviewing {name}</h2>
+          <div className="muted" style={{ fontSize: 13.5, marginTop: 4 }}>
+            {p?.proof === false ? "Tests are not run in this pass." : "The first pass also runs your tests against each suggested patch, in a throwaway copy."} Nothing is uploaded.
+          </div>
+        </div>
+        <div>
+          <div className="row" style={{ justifyContent: "space-between", fontSize: 13, marginBottom: 6 }}>
+            <span>{p ? <>{p.label}{stageCount(p) && <span className="faint"> · {stageCount(p)}</span>}</> : "Starting…"}</span>
+            <span className="faint mono">{p ? `${p.percent}%` : ""}{elapsed && ` · ${elapsed}`}</span>
+          </div>
+          <ProgressBar percent={p?.percent} label={`Reviewing ${name}`} />
+        </div>
+        {p && (
+          <ol className="stages">
+            {p.stages.map((st, i) => {
+              const state = i + 1 < p.step ? "done" : i + 1 === p.step ? "now" : "todo";
+              return (
+                <li key={st.key} className={state}>
+                  <span className="stage-dot">{state === "done" ? <Check size={12} /> : state === "now" ? <Loader2 size={12} className="spin" /> : null}</span>
+                  {st.label}
+                  {state === "now" && stageCount(p) && <span className="faint mono" style={{ marginLeft: "auto" }}>{stageCount(p)}</span>}
+                </li>
+              );
+            })}
+          </ol>
+        )}
+        <div className="faint" style={{ fontSize: 12.5 }}>Knowledge base, Design and Settings work while this runs.</div>
+      </div>
+    </div>
+  );
 }

@@ -52,8 +52,13 @@ export interface ReviewData {
   base: string | null; findings: Finding[]; rejected: Finding[]; muted: Finding[]; metrics: Metrics;
 }
 
+export interface Progress {
+  stage: string; label: string; step: number; steps: number; stages: { key: string; label: string }[];
+  done: number; total: number; percent: number; started: number; proof: boolean;
+}
+
 export interface WorkspaceInfo {
-  id: string; root: string; name: string; running: boolean; last_run: number | null; error: string | null;
+  id: string; root: string; name: string; running: boolean; progress?: Progress | null; last_run: number | null; error: string | null;
   has_result: boolean; branch: string | null; findings: number | null; verified: number | null; files: number | null;
   watching?: boolean; revision?: number;
 }
@@ -104,7 +109,9 @@ export interface KnowledgeCite {
   n: string; id: string; title: string; symbol: string; library: string; versions: string;
   suggestion: string; when_not: string; sources: string[]; fit: { status: FitStatus; detail: string };
 }
-export interface ChatAnswer { answer: string; citations: Citation[]; knowledge?: KnowledgeCite[]; mode: "llm" | "extractive" }
+export interface ChatAnswer {
+  answer: string; citations: Citation[]; knowledge?: KnowledgeCite[]; mode: "llm" | "extractive"; llm_error?: string;
+}
 
 export interface Release {
   name: string; installed: string | null; latest: string | null; released?: string;
@@ -122,8 +129,17 @@ export interface Card {
   topic: string; reference: boolean; extra: string; fit: { status: FitStatus; detail: string };
 }
 
+export type ProviderId = "anthropic" | "openai" | "gemini" | "litellm";
+export interface AiSettings {
+  provider: ProviderId | ""; model: string; base_url: string; has_key: boolean; key_hint: string;
+  configured: boolean; reason: string; from_environment: string[]; from_repo: string[]; litellm_installed: boolean;
+  providers: { id: ProviderId; label: string; model: string; needs_key: boolean }[];
+}
+export interface AiTest { ok: boolean; model: string; reply?: string; ms?: number; error?: string }
+
 export interface Settings {
-  model: string; offline: boolean; llm: { available: boolean; model: string; reason: string };
+  model: string; offline: boolean; offline_from_environment: boolean;
+  llm: { available: boolean; model: string; provider: string; reason: string }; ai: AiSettings;
   constraints: string[]; mutes: { intent: string; path: string; reason: string }[];
 }
 
@@ -210,8 +226,11 @@ export const api = {
   releases: (id: string) => req<Release[]>("GET", `${w(id)}/releases`),
   cards: (wid?: string | null) => req<Card[]>("GET", `/api/cards${wid ? `?workspace=${encodeURIComponent(wid)}` : ""}`),
   settings: (id: string) => req<Settings>("GET", `${w(id)}/settings`),
-  saveSettings: (id: string, s: Partial<{ model: string; offline: boolean; constraints: string[] }>) =>
+  saveSettings: (id: string, s: Partial<{ offline: boolean; constraints: string[] }>) =>
     req<Settings>("POST", `${w(id)}/settings`, s),
+  saveAi: (workspace: string, s: Partial<{ provider: string; api_key: string; model: string; base_url: string; clear_key: boolean }>) =>
+    req<AiSettings>("PUT", "/api/settings/ai", { ...s, workspace }),
+  testAi: (workspace: string) => req<AiTest>("POST", "/api/settings/ai/test", { workspace }),
   index: (id: string) => req<IndexState>("GET", `${w(id)}/index`),
   saveIndex: (id: string, url: string, scope: "repo" | "machine") => req<IndexState>("POST", `${w(id)}/index`, { url, scope }),
   testIndex: (id: string, url = "") => req<{ ok: boolean; detail: string }>("POST", `${w(id)}/index/test`, { url }),

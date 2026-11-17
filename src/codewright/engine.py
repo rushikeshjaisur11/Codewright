@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,11 +42,18 @@ def review(
     proof_jobs: int | None = None,
     full_suite: bool = False,
     build_env: bool = True,
+    progress: Callable[[str, int, int], None] | None = None,
 ) -> ReviewResult:
+    """`progress(stage, done, total)` reports each stage as it starts (stages: stack, graph, detect,
+    check, baseline, proof, rank) and counts within it; total is 0 when the stage has nothing to count."""
     t0 = time.perf_counter()
     root = Path(root).resolve()
+    tell = progress or (lambda stage, done, total: None)
+    tell("stack", 0, 0)
     st = stack.discover(root)
-    g = graph.build(root)
+    tell("graph", 0, 0)
+    g = graph.build(root, lambda done, total: tell("graph", done, total))
+    tell("detect", 0, 0)
     matches = detect(g)
     all_cards = card_store.load(extra_cards)
     findings = make_findings(matches, st, g, all_cards)
@@ -64,6 +72,7 @@ def review(
     for f in findings:
         f.status = fb.status_of(f)
 
+    tell("check", 0, 0)
     env = proof_env.resolve(root, python, build=build_env and run_proof)
     py = env.python
     test_env = env.source + (f" ({env.note})" if env.note else "")
@@ -87,12 +96,14 @@ def review(
             python_label=env.source,
             importers=importers,
             full_suite=full_suite,
+            progress=tell,
         )
         kept, broke = critic.review(kept)
         rejected += broke
     else:
         for f in kept:
             f.proof_detail = "proof skipped (--no-proof)"
+    tell("rank", 0, 0)
     weights = {f.intent: fb.intent_weight(f.intent) for f in kept}
     return ReviewResult(
         st,

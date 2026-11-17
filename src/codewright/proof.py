@@ -21,7 +21,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -311,8 +313,13 @@ def prove(
     python_label: str = "",
     importers: dict[str, list[str]] | None = None,
     full_suite: bool = False,
+    progress: Callable[[str, int, int], None] | None = None,
 ) -> TestRun | None:
-    """importers maps a source file to the test files that import it, directly or through other modules."""
+    """importers maps a source file to the test files that import it, directly or through other modules.
+
+    `progress(stage, done, total)` is called when the baseline run starts ("baseline") and after each
+    patched run ("proof").
+    """
     root = Path(root)
     with_patch = [f for f in findings if f.patch]
     for f in findings:
@@ -327,6 +334,8 @@ def prove(
 
     with tempfile.TemporaryDirectory(prefix="codewright-") as tmp_name:
         tmp = Path(tmp_name)
+        if progress:
+            progress("baseline", 0, 0)
         base = tmp / "base"
         shutil.copytree(root, base, ignore=IGNORE, symlinks=True)
         _copy_git(root, base)
@@ -349,6 +358,9 @@ def prove(
             work = tmp / f"work{i}"
             shutil.copytree(base, work, symlinks=True)
             slots.put(work)
+        finished, count_lock = [0], threading.Lock()
+        if progress:
+            progress("proof", 0, len(with_patch))
 
         def attempt(f: Finding) -> TestRun | None:
             """Run the suite with `f`'s patch in a free copy; None if the patch doesn't apply."""
@@ -365,6 +377,10 @@ def prove(
                 return run
             finally:
                 slots.put(work)
+                with count_lock:
+                    finished[0] += 1
+                    if progress:  # re-runs of failures count past the total; cap it
+                        progress("proof", min(finished[0], len(with_patch)), len(with_patch))
 
         with ThreadPoolExecutor(max_workers=jobs) as pool:
             runs = dict(zip([f.id for f in with_patch], pool.map(attempt, with_patch), strict=True))

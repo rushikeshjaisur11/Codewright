@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -309,10 +310,14 @@ def resolve(module: Module, dotted: str) -> str:
     return f"{target}.{rest}" if rest else target
 
 
-def build(root: str | Path) -> CodeGraph:
+def build(root: str | Path, progress: Callable[[int, int], None] | None = None) -> CodeGraph:
+    """`progress(done, total)` is called as files are parsed."""
     root = Path(root).resolve()
     graph = CodeGraph(root=str(root))
-    for path in iter_python_files(root):
+    paths = list(iter_python_files(root))
+    for n, path in enumerate(paths):
+        if progress and n % 20 == 0:
+            progress(n, len(paths))
         try:
             pf = parse_cached(path, root)
         except (OSError, ValueError):

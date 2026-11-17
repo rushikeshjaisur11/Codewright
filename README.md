@@ -20,7 +20,7 @@ It has three modes that share one engine:
 ## Quick start
 
 ```bash
-uv venv && uv pip install -e ".[dev]"      # add [llm] for model-written chat answers
+uv venv && uv pip install -e ".[dev]"
 .venv/bin/codewright serve path/to/repo    # web app on http://127.0.0.1:8765
 ```
 
@@ -39,7 +39,7 @@ The web app only answers requests addressed to `localhost`, and refuses requests
 | Design | Interview → three candidate architectures with fit scores, a diagram, components with exact versions from PyPI, editable capacity assumptions, decision records, data model and API outline. Download the design doc or a starter repo, or save the design as the repo's intended architecture |
 | Releases | Newer versions of each dependency, what an upgrade unlocks, and an upgrade preview for this repo: the findings an upgrade would add (things to fix first, with auto-patches marked) or resolve, from re-matching the code already scanned against the new version |
 | Knowledge base | Every card, searchable and grouped by library and topic. With a repo open, each says whether it fits the locked version, needs an upgrade or isn't a dependency. Cards with a detector become findings; reference entries are for looking things up |
-| Settings | Model, offline mode, team constraints, mute rules, MCP and CI snippets |
+| Settings | Model setup (provider, key, save and test), offline mode, team constraints, mute rules, MCP and CI snippets |
 | Live review | **Go live** in the top bar re-reviews on every save (tests not run) and says what became new or resolved |
 | Repo switcher | Press `⌘K` / `Ctrl+K`: switch between open repos (branch, findings, last review), reopen recent ones (remembered in `~/.codewright/recent.json`) or browse this machine's folders to open a new one |
 
@@ -293,7 +293,22 @@ Credentials go in `~/.netrc` (pip and uv read it too), in `CODEWRIGHT_INDEX_TOKE
 
 Review, the critic, proof, Map and Design's capacity math are deterministic and never call a model. A model only writes code-chat answers and drafts Design's data model; without one, chat answers are built from the code graph and still cite files and lines.
 
-Models go through LiteLLM (`pip install "codewright[llm]"`). The default is `vertex_ai/gemini-2.5-flash`; set `CODEWRIGHT_MODEL` or change it in Settings. `CODEWRIGHT_OFFLINE=1` (or the Settings switch) guarantees no model calls.
+Open **Settings**, pick a provider, paste the key and press *Save and test*. It takes effect at once, with no restart.
+
+| Provider | Needs | Default model |
+| --- | --- | --- |
+| Claude (Anthropic API) | API key | `claude-haiku-5-5` |
+| OpenAI or any OpenAI-compatible server (Ollama, LM Studio, OpenRouter, Azure) | API key, or only a server address for a local server | `gpt-4o-mini` |
+| Gemini (Google AI Studio) | API key | `gemini-2.5-flash` |
+| Vertex AI and others, through LiteLLM | `pip install "codewright[llm]"` and that provider's credentials in the environment | `vertex_ai/gemini-2.5-flash` |
+
+The first three are called over plain HTTPS, so there is nothing to install. The provider, key and model are stored for this machine in `~/.codewright/settings.json` (mode 0600), never in the repo, and the key is never sent back to the browser.
+
+Environment variables win over the page, for CI and servers: `CODEWRIGHT_AI_PROVIDER`, `CODEWRIGHT_AI_KEY`, `CODEWRIGHT_AI_MODEL`, `CODEWRIGHT_AI_BASE_URL`. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY` alone also turns its provider on, and the older `CODEWRIGHT_MODEL` (a LiteLLM id such as `anthropic/claude-haiku-5-5`) keeps working. `CODEWRIGHT_OFFLINE=1`, or the per-repo switch in Settings, guarantees no model calls.
+
+With a model set up, Code chat sends your question and the code passages that matched it; Design sends the project idea you typed. A review sends nothing. If a call fails, chat falls back to the answer built from the code graph and says why.
+
+The mocked wire formats are covered by the test suite; run *Save and test* against your real provider before relying on it.
 
 ## Development
 

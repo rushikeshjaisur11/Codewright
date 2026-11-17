@@ -4,7 +4,7 @@ import {
   PenTool, Play, Radio, Settings as SettingsIcon, Sun, X,
 } from "lucide-react";
 import { api, ReviewPayload, WorkspaceInfo } from "./api";
-import { CodeView, Spinner, timeAgo, useToast } from "./ui";
+import { CodeView, ProgressBar, ReviewProgress, Spinner, timeAgo, useToast } from "./ui";
 import RepoSwitcher from "./RepoSwitcher";
 // Pages load on demand: the first screen doesn't wait for the map, design or chat code.
 const Overview = lazy(() => import("./pages/Overview"));
@@ -93,7 +93,7 @@ export default function App() {
           if (n.error) toast(n.error, "error");
           else toast(`Review finished: ${n.result?.findings.length ?? 0} findings`);
         }
-      }, 1200);
+      }, 700);
     }
   }, [wid, toast, refreshWorkspaces]);
 
@@ -180,7 +180,10 @@ export default function App() {
     releases: "Releases", knowledge: "Knowledge base", settings: "Settings",
   };
 
-  const flush = route.page === "map" || route.page === "chat";
+  // A repo's first review: pages that need a result show the progress instead of an empty state.
+  const needsResult = !["design", "knowledge", "settings"].includes(route.page);
+  const firstRun = needsResult && !!data && !data.result && data.running;
+  const flush = !firstRun && (route.page === "map" || route.page === "chat");
   return (
     <AppCtx.Provider value={ctx}>
       <div className="shell">
@@ -219,7 +222,9 @@ export default function App() {
             <div className="spacer" />
             {data && (
               <span className="status">
-                {data.running ? <span className="row"><Spinner size={13} /> Reviewing…</span> : `Last review ${timeAgo(data.last_run)}`}
+                {data.running
+                  ? <span className="row" title={data.progress?.label}><Spinner size={13} /> {data.progress ? `${data.progress.label} · ${data.progress.percent}%` : "Starting review…"}</span>
+                  : `Last review ${timeAgo(data.last_run)}`}
               </span>
             )}
             {wid && route.page !== "design" && (
@@ -233,9 +238,12 @@ export default function App() {
                 {data?.running ? <Spinner size={14} /> : <Play size={14} />}Run review
               </button>
             )}
+            {data?.running && <ProgressBar percent={data.progress?.percent} label="Review progress" />}
           </header>
           <main className={`content ${flush ? "flush" : ""}`}>
             <Suspense fallback={<div className="page"><Spinner /></div>}>
+            {firstRun && <ReviewProgress name={data!.name} progress={data!.progress} />}
+            {!firstRun && <>
             {route.page === "overview" && <Overview />}
             {route.page === "review" && <Review />}
             {route.page === "map" && <MapPage />}
@@ -244,6 +252,7 @@ export default function App() {
             {route.page === "releases" && <Releases />}
             {route.page === "knowledge" && <Knowledge wid={wid} />}
             {route.page === "settings" && <SettingsPage />}
+            </>}
             </Suspense>
           </main>
         </div>
