@@ -15,7 +15,8 @@ const SUGGESTIONS = [
 ];
 
 export default function Chat() {
-  const { wid, data, openCode } = useApp();
+  const { wid, data, openCode, params, go } = useApp();
+  const asked = useRef("");
   const toast = useToast();
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
@@ -39,6 +40,15 @@ export default function Chat() {
       setBusy(false);
     }
   }
+
+  // "Ask about it" on a map box opens chat with ?q=...: send it once, then drop it from the URL.
+  useEffect(() => {
+    const q = params.get("q");
+    if (!q || !data?.result || !wid || asked.current === q) return;
+    asked.current = q;
+    go("chat");
+    send(q);
+  }, [params, data?.result, wid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!data?.result) return <div style={{ margin: "auto" }}><Empty icon={<MessageSquareCode size={22} />} title="Code chat needs a review first">{data?.running ? <Spinner /> : "Run a review to index the code."}</Empty></div>;
 

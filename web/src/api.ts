@@ -151,6 +151,18 @@ export interface IndexState {
   url: string; source: string; is_pypi: boolean; repo: string | null; machine: string | null; env_override: boolean;
 }
 
+// ---- node inspector (both maps)
+export interface NodeDetails {
+  id: string; label: string; kind: string; summary: string;
+  facts: { label: string; value: string; mono?: boolean }[];
+  sections: { title: string; items: { label: string; sub?: string; file?: string; line?: number; node?: string; flow?: string }[] }[];
+  findings: { id: string; title: string; category: Category; category_label: string; intent: string; file: string; line: number; evidence: string; proof: string }[];
+  code: { file: string; start: number; end: number; text: string; truncated: boolean } | null;
+  text?: { title: string; body: string } | null;
+  drill?: { level: string; target: string } | null;
+  ask: string;
+}
+
 // ---- AI page
 export type AiRole = "agents" | "model calls" | "tools" | "runs agents" | "calls AI code" | "imports";
 export interface AiFile {
@@ -166,7 +178,7 @@ export interface AiModelCall { file: string; function: string; line: number; api
 export interface AiReport {
   files: AiFile[]; agents: AiAgent[]; model_calls: AiModelCall[];
   runs: { file: string; function: string; line: number; agent: string; how: string }[];
-  architecture: { nodes: MapNode[]; edges: MapEdge[] };
+  architecture: { nodes: MapNode[]; edges: MapEdge[] }; mermaid: string;
   summary: { files: number; need_model: number; agents: number; workflows: number; tools: number; model_calls: number;
     models: string[]; frameworks: string[] };
 }
@@ -245,6 +257,9 @@ export const api = {
   map: (id: string, level: string, target = "", unused = false) =>
     req<MapView>("GET", `${w(id)}/map/${level}?target=${q(target)}${unused ? "&unused=true" : ""}`),
   ai: (id: string) => req<AiReport>("GET", `${w(id)}/ai`),
+  aiNode: (id: string, node: string) => req<NodeDetails>("GET", `${w(id)}/ai/node?id=${q(node)}`),
+  mapNode: (id: string, node: string, level: string, target = "", unused = false) =>
+    req<NodeDetails>("GET", `${w(id)}/inspect?id=${q(node)}&level=${level}&target=${q(target)}${unused ? "&unused=true" : ""}`),
   module: (id: string, path: string) => req<ModulePage>("GET", `${w(id)}/module?path=${q(path)}`),
   source: (id: string, path: string) => req<{ file: string; text: string }>("GET", `${w(id)}/source?path=${q(path)}`),
   chat: (id: string, question: string, history: { role: string; content: string }[]) =>

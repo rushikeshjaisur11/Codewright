@@ -242,3 +242,53 @@ def test_findings_are_tagged_by_kind(tmp_path):
     assert '"architecture"' in to_sarif(r)
     m = ArchMap(r.graph, r.findings)
     assert any(n.arch for n in m.system().nodes + m.module(m.components()[0]).nodes)
+
+
+# --------------------------------------------------------------------------- node inspector (both maps)
+
+
+def test_every_box_on_both_maps_has_details(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from codewright.server import create_app
+
+    client = TestClient(create_app([str(agent_repo(tmp_path))]), base_url="http://localhost")
+    wid = client.get("/api/workspaces").json()[0]["id"]
+    client.post(f"/api/w/{wid}/review", json={"proof": False})
+    meta = client.get(f"/api/w/{wid}/map/meta").json()
+    views = [("system", "")] + [("module", c) for c in meta["components"]]
+    views += [("flow", e["id"]) for e in meta["entry_points"]]
+    seen = 0
+    for level, target in views:
+        view = client.get(f"/api/w/{wid}/map/{level}", params={"target": target}).json()
+        for n in view["nodes"]:
+            d = client.get(f"/api/w/{wid}/inspect", params={"id": n["id"], "level": level, "target": target}).json()
+            assert d["kind"] != "unknown" and d["label"] and d["summary"], (level, n["id"])
+            assert d["facts"] or any(s["items"] for s in d["sections"]), (level, n["id"])
+            seen += 1
+    assert seen > 10
+
+    comp = client.get(f"/api/w/{wid}/inspect", params={"id": "c:app.main", "level": "system"}).json()
+    sections = {s["title"]: s["items"] for s in comp["sections"]}
+    assert {i["label"] for i in sections["Depends on"]} >= {"app.llm", "app.agent"}
+    assert sections["Entry points"][0]["flow"] == "app/main.py::chat"
+    fn = client.get(f"/api/w/{wid}/inspect", params={"id": "app/main.py::chat", "level": "flow"}).json()
+    assert fn["code"]["text"].startswith("@api.post") and "summarize" in {
+        i["label"] for s in fn["sections"] for i in s["items"]
+    }
+    ext = client.get(f"/api/w/{wid}/inspect", params={"id": "x:Claude API", "level": "system"}).json()
+    assert [i["label"] for s in ext["sections"] if s["title"] == "Imported in" for i in s["items"]] == ["app/llm.py"]
+
+    arch = client.get(f"/api/w/{wid}/ai").json()["architecture"]
+    for n in arch["nodes"]:
+        d = client.get(f"/api/w/{wid}/ai/node", params={"id": n["id"]}).json()
+        assert d["kind"] != "unknown" and d["summary"], n["id"]
+    root = client.get(f"/api/w/{wid}/ai/node", params={"id": "app/agent.py::root_agent"}).json()
+    facts = {f["label"]: f["value"] for f in root["facts"]}
+    assert facts["Model"] == "gemini-2.5-flash" and facts["Run by"] == "chat"
+    assert root["code"]["text"].startswith("root_agent = Agent(")
+    writer = client.get(f"/api/w/{wid}/ai/node", params={"id": "app/agent.py::writer"}).json()
+    assert {f["label"]: f["value"] for f in writer["facts"]}["Model"].startswith("anthropic/claude-haiku-5-5")
+    tool = client.get(f"/api/w/{wid}/ai/node", params={"id": "tool:app/tools/search.py:search_docs"}).json()
+    assert tool["code"]["file"] == "app/tools/search.py" and "researcher" in str(tool["sections"])
+    assert "flowchart LR" in client.get(f"/api/w/{wid}/ai").json()["mermaid"]

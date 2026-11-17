@@ -192,6 +192,12 @@ class Workspace:
         r = self.ensure()
         return archmap.ArchMap(r.graph, r.findings, include_unused=include_unused)
 
+    def ai_map(self):
+        from . import aimap
+
+        r = self.ensure()
+        return aimap.AiMap(r.graph, r.findings)
+
     def ai(self) -> dict:
         """Files that need a model and the agent architecture (see aimap)."""
         from . import aimap

@@ -290,8 +290,27 @@ input, textarea, select { font: inherit; color: var(--text); }
 .kind-row:hover .grow + .mono { color: var(--text); }
 .fitem.arch { box-shadow: inset 3px 0 0 var(--rose); }
 
+/* node inspector */
+.inspector { display: flex; flex-direction: column; gap: 14px; }
+.facts { margin: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
+.facts > div { background: var(--bg-elev); padding: 8px 10px; min-width: 0; }
+.facts > div:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.facts dt { font-size: 11.5px; color: var(--text-3); }
+.facts dd { margin: 2px 0 0; font-size: 13px; word-break: break-word; }
+.facts dd.mono { font-size: 12px; }
+.text-block { font-size: 13px; color: var(--text-2); white-space: pre-wrap; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--r-md); padding: 10px 12px; max-height: 220px; overflow: auto; }
+.code-preview { max-height: 280px; overflow: auto; border-radius: var(--r-md); }
+.code-preview .code { margin: 0; font-size: 11.5px; }
+.conn-row:disabled { cursor: default; }
+.conn-row:disabled:hover { background: none; }
+.focus-banner { position: absolute; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 5; display: flex; align-items: center; gap: 10px;
+  background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--r-btn); padding: 6px 8px 6px 14px; font-size: 13px; box-shadow: var(--shadow-pop); }
+
 /* AI page */
-.ai-arch { overflow: hidden; }
+.ai-arch { overflow: visible; }
+.ai-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--border); position: relative; z-index: 6; }
+.ai-toolbar .search { position: relative; }
 .ai-arch-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; height: 540px; }
 .ai-arch-canvas { position: relative; min-height: 0; }
 .ai-arch-side { border-left: 1px solid var(--border); background: var(--bg-elev); padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }

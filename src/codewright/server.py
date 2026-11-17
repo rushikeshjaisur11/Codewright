@@ -319,6 +319,22 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     def ai(wid: str):
         return ws(wid).ai()
 
+    @app.get("/api/w/{wid}/ai/node")
+    def ai_node(wid: str, id: str):
+        """Everything known about one box on the agent architecture graph."""
+        from .inspect_node import ai_node as details
+
+        return details(ws(wid).ai_map(), id)
+
+    @app.get("/api/w/{wid}/inspect")
+    def map_node(wid: str, id: str, level: str = "system", target: str = "", unused: bool = False):
+        """Everything known about one box on the Map: what it is, its links, findings and code."""
+        from .inspect_node import map_node as details
+
+        if level not in ("system", "module", "flow"):
+            raise HTTPException(400, "level must be system, module or flow")
+        return details(ws(wid).amap(include_unused=unused), level, target, id)
+
     @app.get("/api/w/{wid}/drift")
     def drift(wid: str):
         return ws(wid).drift()

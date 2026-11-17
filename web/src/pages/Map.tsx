@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowDown, ArrowLeft, ArrowRight, ArrowDownRight, CheckCircle2, ChevronRight, Code2, Compass, CornerDownRight,
-  EyeOff, FileCode2, Network, GitCommit, History, Layers, Search, Workflow, XCircle,
+  ArrowDown, ArrowLeft, ArrowRight, CheckCircle2, ChevronRight, Compass,
+  EyeOff, FileCode2, GitCommit, History, Layers, Search, Workflow, XCircle,
 } from "lucide-react";
 import { useApp } from "../App";
-import { api, MapMeta, MapNode, MapView, ModulePage } from "../api";
+import { api, MapMeta, MapNode, MapView, NodeDetails } from "../api";
 import Graph, { KIND_ICON, Overlay } from "../Graph";
 import { CopyButton, Empty, KIND_STYLE, Spinner, Tabs, useToast } from "../ui";
+import Inspector from "../Inspector";
 
 type Level = "system" | "module" | "flow";
 type Crumb = { level: Level; target: string; label: string };
@@ -21,7 +22,9 @@ export default function MapPage() {
   const [loading, setLoading] = useState(false);
   const [sel, setSel] = useState<string | null>(null);
   const [focus, setFocus] = useState<{ id: string; n: number } | null>(null);
-  const [page, setPage] = useState<ModulePage | null>(null);
+  const [details, setDetails] = useState<NodeDetails | null>(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [focusOn, setFocusOn] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<Overlay>({ arch: true, findings: true, hotspots: true, untested: false });
   const [dir, setDir] = useState<"LR" | "TB">("LR");
   const [hidden, setHidden] = useState<Set<string>>(new Set());
@@ -41,6 +44,7 @@ export default function MapPage() {
     if (!wid || !has) return;
     setLoading(true);
     setSel(null);
+    setFocusOn(null);
     setHidden(new Set());
     setDir(here.level === "flow" ? "TB" : "LR");
     api.map(wid, here.level, here.target, showUnused).then(setView)
@@ -63,29 +67,29 @@ export default function MapPage() {
 
   const visible = useMemo(() => {
     if (!view) return { nodes: [] as MapNode[], edges: [] as MapView["edges"] };
-    const nodes = view.nodes.filter((n) => !hidden.has(n.kind));
+    let nodes = view.nodes.filter((n) => !hidden.has(n.kind));
+    if (focusOn) {
+      const near = new Set([focusOn]);
+      for (const e of view.edges) { if (e.source === focusOn) near.add(e.target); if (e.target === focusOn) near.add(e.source); }
+      nodes = nodes.filter((n) => near.has(n.id));
+    }
     const ids = new Set(nodes.map((n) => n.id));
     return { nodes, edges: view.edges.filter((e) => ids.has(e.source) && ids.has(e.target)) };
-  }, [view, hidden]);
+  }, [view, hidden, focusOn]);
 
   const byId = useMemo(() => new Map((view?.nodes ?? []).map((n) => [n.id, n])), [view]);
   const node = sel ? byId.get(sel) ?? null : null;
-  const links = useMemo(() => {
-    const none = { out: [] as { n: MapNode; label: string }[], inc: [] as { n: MapNode; label: string }[] };
-    if (!view || !sel) return none;
-    for (const e of view.edges) {
-      if (e.source === sel && byId.get(e.target)) none.out.push({ n: byId.get(e.target)!, label: e.label });
-      if (e.target === sel && byId.get(e.source)) none.inc.push({ n: byId.get(e.source)!, label: e.label });
-    }
-    return none;
-  }, [view, sel, byId]);
 
   useEffect(() => {
-    setPage(null);
-    if (!wid || !node || node.kind !== "module") return;
-    const f = node.files[0]?.file;
-    if (f) api.module(wid, f).then(setPage).catch(() => setPage(null));
-  }, [wid, node]);
+    if (!wid || !sel) { setDetails(null); return; }
+    let live = true;
+    setDetailsLoading(true);
+    api.mapNode(wid, sel, here.level, here.target, showUnused)
+      .then((d) => { if (live) setDetails(d); })
+      .catch(() => { if (live) setDetails(null); })
+      .finally(() => { if (live) setDetailsLoading(false); });
+    return () => { live = false; };
+  }, [wid, sel, here.level, here.target, showUnused]);
 
   const matches = useMemo(() => {
     const t = q.trim().toLowerCase();
@@ -106,6 +110,7 @@ export default function MapPage() {
     });
   }
   function pick(id: string) {
+    if (focusOn) setFocusOn(id); // walking the graph in focus mode: re-centre on the box picked
     setSel(id);
     setFocus({ id, n: Date.now() });
     setQ("");
@@ -133,7 +138,6 @@ export default function MapPage() {
 
   const kinds = Object.entries((view?.nodes ?? []).reduce<Record<string, number>>((a, n) => ({ ...a, [n.kind]: (a[n.kind] ?? 0) + 1 }), {}));
   const drillTo = node ? drillTarget(node) : null;
-  const NodeIcon = node ? KIND_ICON[node.kind] ?? Layers : Layers;
 
   return (
     <div className="map-wrap">
@@ -225,6 +229,12 @@ export default function MapPage() {
         </div>
 
         {loading && <div className="map-loading"><Spinner size={20} /></div>}
+        {focusOn && byId.get(focusOn) && (
+          <div className="focus-banner">
+            <span>Showing <b>{byId.get(focusOn)!.label}</b> and the {visible.nodes.length - 1} boxes it connects to</span>
+            <button className="btn sm" onClick={() => setFocusOn(null)}>Show everything</button>
+          </div>
+        )}
         {view && visible.nodes.length > 0 && (
           <Graph nodes={visible.nodes} edges={visible.edges} selected={sel} overlay={overlay} dir={dir} focus={focus}
             onSelect={setSel} onOpen={drill} />
@@ -236,79 +246,12 @@ export default function MapPage() {
 
       <aside className="map-side">
         {node ? (
-          <>
-            <div className="row" style={{ alignItems: "flex-start", gap: 12 }}>
-              <span className="cw-node__icon" style={{ width: 36, height: 36, color: KIND_STYLE[node.kind]?.color, background: KIND_STYLE[node.kind]?.soft }}>
-                <NodeIcon size={18} />
-              </span>
-              <div className="grow" style={{ minWidth: 0 }}>
-                <div className="faint" style={{ fontSize: 13 }}>{KIND_STYLE[node.kind]?.label ?? node.kind}</div>
-                <h2 style={{ wordBreak: "break-word" }}>{node.label}</h2>
-                {node.detail && <div className="muted mono" style={{ fontSize: 12, marginTop: 2 }}>{node.detail}</div>}
-              </div>
-            </div>
-            <div className="row wrap">
-              {drillTo && (
-                <button className="btn sm primary" onClick={() => goTo(drillTo.level, drillTo.target, drillTo.label)}>
-                  {drillTo.level === "module" ? "Open modules" : "Show request flow"}<ArrowDownRight size={13} />
-                </button>
-              )}
-              {node.files[0] && <button className="btn sm" onClick={() => openCode(node.files[0].file, node.files[0].line)}><Code2 size={13} />Open code</button>}
-              {!!node.arch && <button className="btn sm" onClick={() => go("review", { cat: "architecture" })}><Network size={13} />{node.arch} architecture suggestion{node.arch > 1 ? "s" : ""}</button>}
-              {node.findings - (node.arch ?? 0) > 0 && <button className="btn sm" onClick={() => go("review", {})}>{node.findings - (node.arch ?? 0)} other finding{node.findings - (node.arch ?? 0) > 1 ? "s" : ""}</button>}
-            </div>
-            {(node.hotspot >= 2 || node.untested > 0) && (
-              <div className="row wrap" style={{ gap: 6 }}>
-                {node.hotspot >= 2 && <span className="badge red">Called from {node.hotspot} places</span>}
-                {node.untested > 0 && <span className="badge amber">{node.untested} untested</span>}
-              </div>
-            )}
-            {page?.doc && <div className="muted" style={{ fontStyle: "italic" }}>{page.doc}</div>}
-
-            {(links.out.length > 0 || links.inc.length > 0) && (
-              <div>
-                <div className="section-title">Connections</div>
-                <div className="conn">
-                  {links.out.map((l, i) => (
-                    <button key={`o${i}`} className="conn-row" onClick={() => pick(l.n.id)}>
-                      <ArrowRight size={13} className="faint" /><span className="grow truncate">{l.n.label}</span><span className="faint">{l.label}</span>
-                    </button>
-                  ))}
-                  {links.inc.map((l, i) => (
-                    <button key={`i${i}`} className="conn-row" onClick={() => pick(l.n.id)}>
-                      <ArrowLeft size={13} className="faint" /><span className="grow truncate">{l.n.label}</span><span className="faint">{l.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {page ? (
-              <div>
-                <div className="section-title">Functions</div>
-                <div className="conn">
-                  {page.functions.map((fn) => (
-                    <button key={fn.name} className="conn-row" onClick={() => openCode(page.file, fn.line, [fn.line, fn.end])}>
-                      <CornerDownRight size={13} className="faint" /><span className="grow truncate mono" style={{ fontSize: 12 }}>{fn.name}</span>
-                      {fn.findings > 0 && <span className="badge accent">{fn.findings}</span>}
-                      {fn.tested ? <span className="badge green">tested</span> : <span className="badge amber">untested</span>}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : node.files.length > 0 && (
-              <div>
-                <div className="section-title"><Code2 size={13} />Implemented in</div>
-                <div className="conn">
-                  {node.files.slice(0, 30).map((f, i) => (
-                    <button key={i} className="conn-row" onClick={() => openCode(f.file, f.line)}>
-                      <span className="grow truncate mono" style={{ fontSize: 12 }}>{f.name ? `${f.name} · ` : ""}{f.file}:{f.line}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </>
+          <Inspector d={details} loading={detailsLoading} onSelect={pick}
+            onOpenCode={openCode} onFinding={(f) => go("review", { f })} onAsk={(q) => go("chat", { q })}
+            onFocus={() => setFocusOn(focusOn === node.id ? null : node.id)} focused={focusOn === node.id}
+            onDrill={drillTo ? () => goTo(drillTo.level, drillTo.target, drillTo.label) : undefined}
+            onFlow={(id) => { const ep = meta?.entry_points.find((e) => e.id === id); goTo("flow", id, ep?.name ?? id); }}
+            extra={node.files.length > 1 ? <span className="faint" style={{ fontSize: 12 }}>{node.files.length} files</span> : undefined} />
         ) : (
           <>
             <div>

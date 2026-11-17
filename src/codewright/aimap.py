@@ -160,6 +160,9 @@ class Agent:
     child_names: list[str] = field(default_factory=list)  # as written, before resolving
     steps: list[dict] = field(default_factory=list)  # LangGraph: {name, file, line}
     step_edges: list[list[str]] = field(default_factory=list)  # LangGraph: [source, target, label]
+    end: int = 0  # last line of the definition
+    instruction_full: str = ""  # the whole literal, for the inspector (instruction is shortened)
+    options: dict = field(default_factory=dict)  # other keyword arguments as written, shortened
 
 
 @dataclass
@@ -456,12 +459,15 @@ class AiMap:
         model_node = kw.get("model") or kw.get("llm") or kw.get("model_client")
         if model_node is None and framework in ("Pydantic AI", "LangChain") and pos:
             model_node = pos[0]
-        instruction = ""
+        instruction = full = ""
         for k in INSTRUCTION_KWARGS:
             if k in kw and k not in ("role",):
-                s = _string(kw[k])
-                instruction = _short(s) if s else f"built at runtime ({_short(text(kw[k]), 60)})"
+                lit = _string(kw[k])
+                instruction = _short(lit) if lit else f"built at runtime ({_short(text(kw[k]), 60)})"
+                full = lit[:4000] if lit else instruction
                 break
+        skip = {"name", "model", "llm", "model_client", "tools", "toolsets", *AGENT_KWARGS, *INSTRUCTION_KWARGS}
+        options = {k: _short(text(v), 80) for k, v in kw.items() if k not in skip}
         aid = f"{pf.path}::{var}" if var else f"{pf.path}:{line}"
         agent = Agent(
             aid,
@@ -474,6 +480,9 @@ class AiMap:
             _model_text(model_node),
             instruction,
         )
+        agent.end = call.end_point[0] + 1
+        agent.instruction_full = full
+        agent.options = options
         self.agents[aid] = agent
         self._pending.append((agent, pf, kw, pos))
 
@@ -812,7 +821,17 @@ class AiMap:
         files = self.files()
         arch = self.architecture()
         models = sorted({n["label"] for n in arch["nodes"] if n["kind"] == "llm"})
+        from .archmap import Edge, Node, View
+
+        keep = {"id", "label", "kind", "files", "detail"}
+        mermaid = View(
+            "ai",
+            "Agents",
+            [Node(**{k: v for k, v in n.items() if k in keep}) for n in arch["nodes"]],
+            [Edge(e["source"], e["target"], e["label"]) for e in arch["edges"]],
+        ).mermaid()
         return {
+            "mermaid": mermaid,
             "files": [asdict(f) for f in files],
             "agents": [asdict(a) for a in self.agents.values()],
             "model_calls": [asdict(c) for c in self.calls],
