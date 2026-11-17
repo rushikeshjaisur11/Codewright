@@ -1,0 +1,212 @@
+# Production readiness: code that works in a demo and fails under real traffic. Each card's
+# threshold says at what scale it starts to matter; below it the finding is safe to reject.
+
+- id: readiness.n-plus-one
+  intent: n-plus-one-query
+  topic: Production readiness
+  title: Fetch related rows in one query instead of one per row
+  symbol: n-plus-one-query
+  kind: practice
+  library: null
+  versions: "*"
+  suggestion: >-
+    Gather the keys first and load every related row in a single query, then look them
+    up in a dict inside the loop. The ORM usually has a one-line way to do this (an eager
+    load option on the original query).
+  gain: >-
+    One round trip instead of one per row: a page of 200 orders goes from 201 queries to
+    2. Latency stops growing with the page size, and the database sees far fewer
+    connections and statements under load.
+  effort: 2
+  impact: 4
+  risk: >-
+    The single query returns more data at once; for very large result sets, page the outer
+    query. Rows that are missing now come back as absent dict keys instead of None from a
+    per-row get, so handle the miss the same way.
+  when_not: >-
+    When the loop runs over a handful of items that are always small (a config list), or
+    the per-row query hits a cache rather than the database.
+  threshold: >-
+    Matters once the loop sees more than ~20 rows per request, or runs on a request path
+    at more than a few requests per second.
+  sources:
+    - https://docs.sqlalchemy.org/en/20/orm/queryguide/relationships.html#select-in-loading
+    - https://docs.djangoproject.com/en/stable/ref/models/querysets/#prefetch-related
+    - https://docs.djangoproject.com/en/stable/topics/db/optimization/#retrieve-everything-at-once-if-you-know-you-will-need-it
+
+- id: readiness.urlopen-timeout
+  intent: http-no-timeout
+  match: {client: urllib}
+  topic: Production readiness
+  title: Pass a timeout to urlopen
+  symbol: urllib.request.urlopen
+  kind: stdlib
+  library: null
+  versions: ">=3.0"
+  suggestion: >-
+    Pass `timeout=` (seconds) to `urllib.request.urlopen`, for example `timeout=10`, or
+    move to the HTTP client the project already uses.
+  gain: >-
+    Without it urlopen uses the global socket default, which is None (wait forever): a
+    server that accepts the connection and never answers holds the thread, request or job
+    for good.
+  effort: 1
+  impact: 4
+  risk: >-
+    Slow but legitimate responses now raise `TimeoutError`/`URLError`; size the timeout to
+    the slowest call you expect and handle the error.
+  when_not: >-
+    When `socket.setdefaulttimeout()` is set at startup for the whole process.
+  threshold: >-
+    Any call to a service you don't control.
+  sources:
+    - https://docs.python.org/3/library/urllib.request.html#urllib.request.urlopen
+    - https://docs.python.org/3/library/socket.html#socket.getdefaulttimeout
+
+- id: readiness.timeout-none
+  intent: http-no-timeout
+  topic: Production readiness
+  title: Don't turn the HTTP timeout off
+  symbol: http-timeout
+  kind: practice
+  library: null
+  versions: "*"
+  suggestion: >-
+    Replace `timeout=None` with a real limit, for example `timeout=(3.05, 30)` for requests
+    or `httpx.Timeout(10.0, connect=3.0)` for httpx. For long downloads, raise only the
+    read timeout and stream the body.
+  gain: >-
+    httpx has a 5-second default that `timeout=None` removes, and requests has none at
+    all: a stalled server then holds the worker forever, and enough of them take the
+    service down.
+  effort: 1
+  impact: 4
+  risk: >-
+    Calls that legitimately take long now fail; give them a longer read timeout.
+  when_not: >-
+    A deliberately unbounded stream (server-sent events, a long poll) with its own
+    cancellation.
+  threshold: >-
+    Any call to a service you don't control.
+  sources:
+    - https://www.python-httpx.org/advanced/timeouts/
+    - https://requests.readthedocs.io/en/latest/user/advanced/#timeouts
+
+- id: readiness.cache-on-method
+  intent: cache-on-method
+  topic: Production readiness
+  title: Don't put lru_cache on a method
+  symbol: functools.cached_property
+  kind: stdlib
+  library: null
+  versions: ">=3.8"
+  suggestion: >-
+    A function-level cache keeps `self` as part of every key, so no instance it saw is
+    ever garbage-collected. Use `functools.cached_property` for an argument-free method,
+    or a cache owned by the instance.
+  gain: >-
+    Instances are freed when nothing else uses them (no slow memory leak in long-running
+    processes), and two equal-but-different instances no longer share or miss entries in
+    surprising ways.
+  effort: 2
+  impact: 3
+  risk: >-
+    `cached_property` needs a writable `__dict__` (no `__slots__` without it) and is not
+    locked across threads before Python 3.12; a per-instance cache is lost with the
+    instance, which is the point.
+  when_not: >-
+    When the class has a handful of long-lived instances (module-level singletons), the
+    leak is bounded and harmless.
+  threshold: >-
+    Matters when instances are created per request or per job in a long-running process.
+  sources:
+    - https://docs.python.org/3/faq/programming.html#how-do-i-cache-method-calls
+    - https://docs.astral.sh/ruff/rules/cached-instance-method/
+
+- id: readiness.unbounded-cache
+  intent: unbounded-cache
+  topic: Production readiness
+  title: Bound the cache on a request path
+  symbol: functools.lru_cache
+  kind: stdlib
+  library: null
+  versions: ">=3.8"
+  suggestion: >-
+    Give it a size: `@functools.lru_cache(maxsize=1024)` keeps the most recently used
+    entries and evicts the rest.
+  gain: >-
+    Memory stays flat under traffic with many distinct arguments (user ids, URLs, query
+    strings) instead of growing until the process is killed; `cache_info()` shows the hit
+    rate to size it.
+  effort: 1
+  impact: 3
+  risk: >-
+    Entries outside the hot set are recomputed after eviction; pick a size from the hit
+    rate. Thread-safety and semantics are otherwise unchanged.
+  when_not: >-
+    When the arguments come from a small closed set (enum values, a few config keys).
+  threshold: >-
+    Matters when the arguments come from requests (ids, paths, user input) in a process
+    that runs for hours.
+  sources:
+    - https://docs.python.org/3/library/functools.html#functools.lru_cache
+    - https://docs.python.org/3/library/functools.html#functools.cache
+
+- id: readiness.idempotency-key
+  intent: post-without-idempotency
+  topic: Production readiness
+  title: Make retried POSTs safe with an idempotency key
+  symbol: idempotency-key
+  kind: practice
+  library: null
+  versions: "*"
+  suggestion: >-
+    Accept an `Idempotency-Key` header; before doing the work, look the key up, and store
+    it with the response in the same transaction as the write. A repeat with the same key
+    returns the stored response instead of doing the side effect again.
+  gain: >-
+    Clients (and proxies, and your own retry code) retry a POST that timed out without
+    knowing whether it ran. With a key, a retry can't charge, email or enqueue twice.
+  effort: 3
+  impact: 4
+  risk: >-
+    Needs a table (or cache with TTL) for keys and responses; decide how long keys live
+    and what a repeat with a different body means (usually 422).
+  when_not: >-
+    Internal endpoints whose only client never retries, or effects that are naturally
+    idempotent (upserts keyed by a client-chosen id).
+  threshold: >-
+    Any POST that moves money, sends a message or starts a job, once clients retry on
+    timeouts (most HTTP clients and gateways do).
+  sources:
+    - https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/
+    - https://docs.stripe.com/api/idempotent_requests
+
+- id: readiness.sqlalchemy-pre-ping
+  intent: sqlalchemy-no-pre-ping
+  topic: Production readiness
+  title: Turn on pool_pre_ping so dropped connections are replaced
+  symbol: sqlalchemy.create_engine
+  kind: library
+  library: sqlalchemy
+  versions: ">=1.2"
+  autofix: true
+  suggestion: >-
+    Pass `pool_pre_ping=True` to `create_engine`: each checkout tests the connection and
+    transparently replaces one the server or a proxy closed.
+  gain: >-
+    After a database restart, failover or idle-timeout (PgBouncer, RDS Proxy, a firewall),
+    the first request on every stale pooled connection otherwise fails with
+    "server closed the connection unexpectedly".
+  effort: 1
+  impact: 3
+  risk: >-
+    One extra round trip (`SELECT 1`) per checkout; negligible next to a real query, but
+    measurable for very chatty code. `pool_recycle` is the alternative for known idle limits.
+  when_not: >-
+    SQLite, or a NullPool that opens a fresh connection every time.
+  threshold: >-
+    Any long-running service talking to a server database.
+  sources:
+    - https://docs.sqlalchemy.org/en/20/core/pooling.html#disconnect-handling-pessimistic
+    - https://docs.sqlalchemy.org/en/20/core/engines.html#sqlalchemy.create_engine.params.pool_pre_ping

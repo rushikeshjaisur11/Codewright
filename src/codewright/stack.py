@@ -62,7 +62,7 @@ def _record(stack: Stack, path: Path, root: Path) -> None:
 
 def _parse_requirement(line: str, stack: Stack, source: str) -> None:
     line = line.split("#", 1)[0].strip()
-    if not line or line.startswith(("-", "git+", "http")):
+    if not line or line.startswith(("-", "git+", "http://", "https://")):
         return
     try:
         req = Requirement(line)

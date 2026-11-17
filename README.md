@@ -15,6 +15,15 @@ It has three modes that share one engine:
 - **Map** shows the current architecture as live diagrams linked to the code, with findings overlaid and a code chat that cites files and lines.
 - **Design** drafts the architecture for a new project from a short interview, with capacity math in code, decision records and a starter repo. The design you choose becomes the target that Map and Review check for drift.
 
+Around them:
+
+- **Measured speed**: with `--bench`, each verified patch is timed in the tests that run it, before and after, so "faster" is a measurement, not a claim.
+- **Architecture rules** (`.codewright/rules.yaml`): "api/ may not import db/", "only billing/ calls Stripe", layers, no blocking calls in `async def`. Checked on every review and by `codewright check` in CI, each violation with a way round it.
+- **Plans and migrations**: review a plan or an agent's proposal before any code is written, and carry out upgrades (Pydantic v2, SQLAlchemy 2, blocking calls out of async code...) as small steps, leaf modules first, each with a combined patch, its tests and a PR description.
+- **Dependency audit**: two libraries for one job, backports the standard library now covers, unused, heavy, copyleft and abandoned dependencies.
+- **Production readiness**: N+1 queries, missing or disabled timeouts, unbounded caches, `lru_cache` on methods, POSTs that repeat side effects on retry, pools without pre-ping; each with the scale at which it matters.
+- **Learning from feedback**: accept/reject verdicts re-rank findings per area of the repo, fade with age, and turn into suggestions ("your team rejected 8 of 10 X under `scripts/`: mute it there?").
+
 ![Review: findings beside the open suggestion, with its diff, proof and sources](docs/screenshots/review.png)
 
 ## Quick start
@@ -32,12 +41,14 @@ The web app only answers requests addressed to `localhost`, and refuses requests
 
 | Page | What it does |
 | --- | --- |
-| Overview | Findings, proof rate, acceptance rate, hot-path count, stack, drift and upgrades at a glance |
-| Review | Filterable findings with evidence, the suggested API and version, gain, risk, "when not to", scale threshold, proof, diff and sources. Accept, reject (with a reason), mute an intent, copy or apply a patch, PR mode and PR-comment export |
+| Overview | Findings, proof rate, acceptance rate, hot-path count, stack, rule violations, drift and upgrades at a glance, and what the team's verdicts say (with a one-click mute where they keep rejecting a check) |
+| Review | Filterable findings with evidence, the suggested API and version, gain, risk, "when not to", scale threshold, proof (and measured speed after **Measure speed**), diff and sources. Accept, reject (with a reason), mute an intent, copy or apply a patch, PR mode and PR-comment export |
 | Map | System, module and request-flow diagrams generated from the code graph, laid out with ELK (layered, orthogonal edges). Hover a box to trace its connections, double-click to drill in (breadcrumbs take you back), press `/` to find a node, filter by kind, switch direction. Every box links to its files and lines; overlays show findings, fan-in hotspots and untested code. Monorepos (`packages/*`, `src/` layouts) are split into their real packages. Mermaid export, drift panel and "changes this week" |
 | Code chat | Questions about the code, answered with citations you can click open |
 | Design | Interview → three candidate architectures with fit scores, a diagram, components with exact versions from PyPI, editable capacity assumptions, decision records, data model and API outline. Download the design doc or a starter repo, or save the design as the repo's intended architecture |
-| Releases | Newer versions of each dependency, what an upgrade unlocks, and an upgrade preview for this repo: the findings an upgrade would add (things to fix first, with auto-patches marked) or resolve, from re-matching the code already scanned against the new version |
+| Plans & migrations | **Review a plan**: paste an RFC, design doc or agent plan and get a go/revise verdict with evidence (a library the repo already has for the job, code the stack already provides, a rule it would break, a function with many callers and no test, scale and completeness gaps). **Migrations**: the upgrades that apply to this repo, planned as ordered steps; open a step for its combined patch and PR text, or apply it to the working tree |
+| Architecture rules | The rules in `.codewright/rules.yaml` and the saved design, every violation with a fix, and one click to write the rules today's code already keeps |
+| Dependencies | **Releases**: newer versions of each dependency, what an upgrade unlocks, and an upgrade preview for this repo: the findings an upgrade would add (things to fix first, with auto-patches marked) or resolve, from re-matching the code already scanned against the new version. **Audit**: declared against imported dependencies, with what to merge, drop or replace and how many packages leave the install |
 | Knowledge base | Every card, searchable and grouped by library and topic. With a repo open, each says whether it fits the locked version, needs an upgrade or isn't a dependency. Cards with a detector become findings; reference entries are for looking things up |
 | Settings | Model, offline mode, team constraints, mute rules, MCP and CI snippets |
 | Live review | **Go live** in the top bar re-reviews on every save (tests not run) and says what became new or resolved |
@@ -60,7 +71,17 @@ codewright review . -f markdown -o report.md
 codewright review . --watch                 # re-review on every save; prints new and resolved findings
 codewright review . -f sarif -o codewright.sarif   # for GitHub code scanning and other SARIF viewers
 codewright review . --base origin/main -f pr -o comment.md   # PR mode: changed code only
-codewright check .                          # exit 1 when code drifts from .codewright/design.json
+codewright review . --bench                 # also time each verified patch, before and after (best of 3)
+codewright check .                          # exit 1 when a rule in .codewright/rules.yaml fails or code drifts from the design
+codewright rules init                       # write the dependency directions today's code keeps as rules
+codewright rules                            # rules and what breaks them
+codewright critique plan.md                 # review a plan before writing code (exit 1 on a blocker)
+codewright migrate list                     # upgrades that apply here, and how much code each touches
+codewright migrate plan pydantic-v2         # ordered steps, saved to .codewright/migrations/
+codewright migrate step pydantic-v2 1 --apply   # apply one step's combined patch (nothing is committed)
+codewright migrate status pydantic-v2       # progress follows the code: a step is done when its changes are gone
+codewright deps .                           # dependency audit (--offline to skip release dates)
+codewright insights .                       # what accept/reject verdicts say: checks to mute, checks the team trusts
 codewright map . --level flow               # Mermaid diagram of a request flow
 codewright watch . --rescan                 # new dependency releases; re-review when one appears
 codewright feedback <finding-id> rejected --reason "not worth the churn"
@@ -116,6 +137,8 @@ claude mcp add codewright -- uvx --from git+https://github.com/rushikeshjaisur11
 
 `codewright mcp config` prints the same setup for Cursor, VS Code, Claude Desktop and other clients.
 
+Tools: `review` (with `bench`), `review_files`, `explain_finding`, `record_feedback`, `search_knowledge`, `architecture_map`, `ask_code`, `check_drift`, `check_rules`, `review_plan`, `dependency_audit`, `migration_plan`, `migration_step`, `feedback_insights`, `dependency_releases`, `review_markdown` and `list_repos`. An agent can review its own plan with `review_plan` before writing code, and call `check_rules` before it finishes.
+
 **Shared server for a team**, over Streamable HTTP at `/mcp`:
 
 ```bash
@@ -160,12 +183,14 @@ Tools: `review`, `review_files`, `review_markdown`, `explain_finding`, `record_f
 | --- | --- | --- |
 | 1. Stack discovery | `stack.py` | Reads `uv.lock`, `poetry.lock`, `Pipfile.lock`, `requirements*.txt`, `pyproject.toml`, `.python-version` and Dockerfiles. Lockfile versions beat declared ranges. In a monorepo each file is judged on its nearest project's files, layered over the root's (so a uv workspace's root lock still supplies versions) |
 | 2. Code graph | `graph.py` | Its own tree-sitter indexer: imports, classes, functions, decorators, call edges and entry points. Calls resolve through imports (relative imports and package re-exports included), enclosing scopes, `self`/`super()` and base classes; a call on an object of unknown type is matched by method name only when the name isn't one builtin types already have (`d.items()` never links to your `items`). Code reachable from an entry point is on the hot path |
-| 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand, plus whole-codebase architecture checks (48 intents) |
+| 3. Intent detection | `intents/` | Labels functions with the engineering intent they implement by hand, plus whole-codebase architecture checks (54 intents) |
 | 4. Capability cards | `cards/data/*.yaml` | Per library and version: the API, gain, effort, risk, "when not to", scale threshold and sources. Preference: already installed, then stdlib, then platform, then a new dependency |
 | 5. Suggestion | `suggest.py` | Picks the best card and writes the smallest safe diff when the code's shape allows it |
 | 6. Critic | `critic.py` | Drops findings missing a file, an API version, a gain, effort, risk, threshold, "when not to" or a source, and checks that the suggested symbol exists in the repo's own interpreter. A symbol whose library isn't installed there, or whose module needs an optional extra, counts as unchecked, not missing |
 | 7. Proof | `proof.py`, `proof_env.py` | Runs `pytest` in a sandbox copy of the repo (with its `.git`, so tests that call git work) before and after the patch. The tests run with the repo's own dependencies: `--python`, else the repo's `.venv`, else an environment built once from `uv.lock` or `requirements*.txt` with uv and cached in `~/.codewright/envs` (nothing is written into the repo). The baseline run records which tests actually execute each function (`sys.monitoring` on 3.12+, a profile hook on 3.11). **Verified** only when the tests pass both times *and* a test ran the changed function, and the finding names that test. Each patch then runs just the test files that run the function or import its module, directly or through other modules (`--full-suite` runs everything), in parallel (`--jobs`); a run that fails in parallel is re-run alone before the patch is blamed. When the baseline fails, the finding says why: a failing test, tests that can't import the project, or no tests collected. A patch that breaks tests is dropped |
-| 8. Feedback and ranking | `feedback.py`, `rank.py` | Impact (×1.5 on the hot path) × confidence × team acceptance for that intent ÷ effort |
+| 7b. Speed (`--bench`) | `perf.py` | For each verified patch, the tests that run the function run again, before and after, alternating, best of 3. A pytest plugin times only that function (outermost calls; generators and coroutines only while running). "Faster" or "slower" only beyond 10% and 0.2 ms; anything else is reported as no measurable change |
+| 8. Feedback and ranking | `feedback.py`, `rank.py` | Impact (×1.5 on the hot path, up to ×1.5 more for a measured speedup, ×0.6 for a measured slowdown) × confidence × team acceptance ÷ effort. Acceptance is per intent, refined by verdicts in the same area of the repo (its top two folders), with older verdicts counting less (half weight after 180 days) |
+| 9. Architecture rules | `rules.py` | Checks `.codewright/rules.yaml` and the saved design's decisions; violations go in every report format (SARIF as errors or warnings). PR mode keeps only those on changed lines |
 
 ### Intents
 
@@ -190,6 +215,12 @@ Tools: `review`, `review_files`, `review_markdown`, `explain_finding`, `record_f
 | `sqlalchemy.ext.declarative` on SQLAlchemy 2 | `sqlalchemy.orm.declarative_base`, then `DeclarativeBase` | yes, the import |
 | `session.query()` on SQLAlchemy 2.x | `select()` | |
 | Manual counting, grouping, thread fan-out | `Counter`, `defaultdict`, `ThreadPoolExecutor` | |
+| A query per row inside a loop (N+1) | One query before the loop: `in_()`/`selectinload` (SQLAlchemy), `select_related`/`prefetch_related` (Django) | |
+| `urlopen()` without `timeout=`, or `timeout=None` on requests/httpx | A real timeout | |
+| `@lru_cache` / `@cache` on a method | `functools.cached_property`, or a cache the instance owns | |
+| `@cache` / `lru_cache(maxsize=None)` on a request path | `lru_cache(maxsize=...)` | |
+| A POST route that writes and charges, emails or enqueues, with no idempotency key | An `Idempotency-Key` header stored with the result | |
+| `create_engine(...)` for a server database without `pool_pre_ping` | `pool_pre_ping=True` | yes |
 | `os.system` | `subprocess.run` with an argument list | yes, for a plain command whose result is unused |
 | `+=` string building in a loop | `"".join()` | |
 | FastAPI `q: str = Query(None)`, `db: Session = Depends(get_db)` (FastAPI 0.95.1+) | `q: Annotated[str, Query()] = None`, and one `SessionDep = Annotated[...]` type for a dependency used in 3+ functions | yes, one patch per file |
@@ -209,6 +240,56 @@ Whole-codebase checks that run over the code graph. Each one compares the codeba
 | Untested hotspot | A function in this repo's top tenth by callers (5+), on a route, command or task path, with 3+ statements, that no test reaches, in a project that has tests | A characterization test, written the way the project's tests already are. Routes driven by `TestClient`/`ASGITransport`, commands driven by click's `CliRunner`, and apps loaded by file path count as tested |
 | Duplicate logic | Identical bodies (8+ lines, comments and docstrings aside) in the same project | Keep one copy in a module both import |
 | Private import | An `_underscore` name imported or used across top-level packages | A public name with the old one kept as an alias |
+
+### Architecture rules
+
+Rules live in `.codewright/rules.yaml`; commit it. `codewright rules init` (or the button on the Architecture rules page) writes the one-way dependencies between packages that today's code already keeps, so a new back-edge fails CI from then on. Then add your own:
+
+```yaml
+rules:
+  - id: api-no-db                 # forbid-import: files under `in` may not import `import`
+    kind: forbid-import
+    in: app/api
+    import: app/db/**             # a repo path glob, or a dotted module such as sqlalchemy
+    reason: routes go through app/services
+  - id: stripe-in-billing         # only-in: `import` only from files under `in`
+    kind: only-in
+    import: stripe
+    in: [app/billing]
+  - id: layering                  # layers, top first: a layer may import only those below it
+    kind: layers
+    layers:
+      - {name: api, paths: [app/api]}
+      - {name: services, paths: [app/services]}
+      - {name: db, paths: [app/db]}
+  - id: async-io                  # no time.sleep, requests, subprocess.run... inside async def
+    kind: no-blocking-in-async
+    in: app
+    severity: warn                # reported, but doesn't fail `codewright check`
+```
+
+Each violation names the file and line, and a way round it that keeps behaviour: the allowed module that already uses what was imported, the module that owns a restricted library, or the async call to use. `except:` exempts paths from a rule.
+
+### Plans and migrations
+
+`codewright critique plan.md` (or the Plans page, or the `review_plan` MCP tool) reviews a plan against the repo before anyone writes code. It flags a library the plan adds when the repo already has one for that job (a blocker when the team's constraints say "no new dependencies"), a backport the standard library covers, a version that differs from the lockfile, "write our own retry/cache" when the installed stack already has it, files that don't exist, functions with many callers and no test, a module dependency a rule forbids, infrastructure the saved design doesn't have, SQLite or in-process state with several workers, a schema change without a migration, and no test step or way back. Each point quotes the sentence it is about. It is deterministic and runs offline.
+
+`codewright migrate` turns an upgrade into reviewable steps. The plan reviews the code *as if* the library were at the target version (no install), orders the files leaf modules first (files in an import cycle move together), and cuts them into steps of `--batch` files. Each step has its findings, one combined patch for the mechanical ones, the test files that import its files, and a PR description. Plans are saved in `.codewright/migrations/`; progress is re-computed from the code, so a step is done when none of its changes remain, whoever made them. Catalog: `pydantic-v2`, `sqlalchemy-2`, `fastapi-modern`, `async-io`, `utc-datetimes`, `google-adk`.
+
+### Dependency audit
+
+`codewright deps` compares what the project declares (pyproject, requirements files) with what the code imports, using the repo's own environment for import names and licences when it has one:
+
+| Finding | When |
+| --- | --- |
+| Two for one job | Two declared libraries for the same job are both imported (HTTP clients, JSON, YAML, CLI, task queues, retry helpers...). Suggests the one most files use |
+| Standard library | A backport or old package the target Python covers (`mock`, `pytz`, `toml`, `six`, `importlib-metadata`, `async-timeout`...) |
+| Unused | Declared, never imported, and named in no Procfile, Dockerfile, compose file, pyproject script or string (servers, database drivers, pytest plugins and type stubs are recognised) |
+| Heavy | 15+ packages that only it pulls in, for one or two files |
+| Licence | GPL or AGPL in a runtime dependency or anything it pulls in |
+| Abandoned | No release in three years (only when the package index can be reached) |
+
+Each finding says how many packages leave the install with it, counted from `uv.lock` or `poetry.lock`.
 
 Add your own cards: put YAML files in a folder and pass `--cards that/folder`. Each card needs `sources` and a `when_not`, or the critic drops its findings.
 
@@ -262,6 +343,8 @@ Codewright keeps its state in `.codewright/`:
 | --- | --- | --- |
 | `feedback.json` | Accepted, rejected and muted findings, mute rules, team constraints | yes, so the team shares it |
 | `design.json` | The intended architecture from Design mode, checked by `codewright check` | yes |
+| `rules.yaml` | Architecture rules, checked on every review and by `codewright check` | yes |
+| `migrations/*.json` | Saved migration plans; progress is re-computed from the code | yes |
 | `config.json` | Model, offline mode and the repo's package index (never credentials) | yes |
 | `snapshots/`, `releases.json` | Map history and the package index cache | no (ignored automatically) |
 

@@ -60,11 +60,11 @@ class Workspace:
     _watch_stop: threading.Event | None = None
 
     # --------------------------------------------------------------- review
-    def run_review(self, *, proof: bool = True, base: str | None = None) -> ReviewResult:
+    def run_review(self, *, proof: bool = True, base: str | None = None, bench: bool = False) -> ReviewResult:
         with self.lock:
             self.running, self.error, self.progress = True, None, "scanning"
             try:
-                self.result = review(self.root, run_proof=proof, top=None, base=base)
+                self.result = review(self.root, run_proof=proof, top=None, base=base, bench=bench and proof)
                 self.revision += 1
                 self.index = CodeIndex(self.result.graph)
                 self.last_run = time.time()
@@ -178,6 +178,103 @@ class Workspace:
     def releases(self) -> list[dict]:
         r = self.ensure()
         return watcher.check(r.stack, self.root, graph=r.graph)
+
+    # --------------------------------------------------------------- architecture rules
+    def rules(self) -> dict:
+        from . import rules as rules_mod
+
+        return rules_mod.summary(self.ensure().graph, self.root)
+
+    def rules_init(self, overwrite: bool = False) -> dict:
+        """Write the rules today's code keeps (dependency directions between packages)."""
+        from . import rules as rules_mod
+
+        p = rules_mod.rules_path(self.root)
+        if p.exists() and not overwrite:
+            raise FileExistsError(f"{p.relative_to(self.root)} exists; pass overwrite to replace it")
+        inferred = rules_mod.infer(self.ensure().graph)
+        rules_mod.save(self.root, inferred)
+        out = self.rules()
+        if self.result is not None:
+            self.result.rules = out
+        return out
+
+    # --------------------------------------------------------------- dependencies
+    def deps(self, online: bool = True, python: str | None = None) -> dict:
+        from . import deps as deps_mod
+        from . import proof_env
+
+        r = self.ensure()
+        # python="" means: don't run any interpreter (licences and import names then come from the tables).
+        # Only the repo's own environment describes its packages; Codewright's own would mislead.
+        if python is None:
+            env = proof_env.resolve(self.root, None, build=False)
+            python = env.python if env.source.startswith("the repo's") else ""
+        py = python
+        return deps_mod.audit(self.root, r.graph, r.stack, python=py, online=online)
+
+    # --------------------------------------------------------------- migrations
+    def migrations(self) -> list[dict]:
+        from . import migrate
+
+        r = self.ensure()
+        return migrate.overview(r.graph, r.stack, self.root)
+
+    def migration_plan(self, name: str, batch: int = 5, version: str | None = None, save: bool = True) -> dict:
+        from . import migrate
+
+        r = self.ensure()
+        data = migrate.plan(name, self.root, r.graph, r.stack, batch=batch, version=version)
+        if save:
+            migrate.save(self.root, data)
+            return migrate.status(self.root, name, r.graph, r.stack)
+        return data
+
+    def migration_status(self, name: str) -> dict:
+        from . import migrate
+
+        r = self.ensure()
+        return migrate.status(self.root, name, r.graph, r.stack)
+
+    def migration_step(self, name: str, n: int) -> dict:
+        from . import migrate
+
+        r = self.ensure()
+        step, found = migrate.step_findings(self.root, name, n, r.graph, r.stack)
+        patch, skipped = migrate.combined_patch(self.root, found)
+        data = migrate.status(self.root, name, r.graph, r.stack)
+        return {
+            "step": next(s for s in data["steps"] if s["n"] == n),
+            "patch": patch,
+            "skipped": skipped,
+            "pr_body": migrate.pr_body(data, step, patch),
+            "findings": [f.to_dict() for f in found],
+        }
+
+    def migration_apply(self, name: str, n: int) -> dict:
+        """Apply a step's combined patch to the working tree (nothing is committed), then re-scan."""
+        from .proof import apply_patch
+
+        step = self.migration_step(name, n)
+        if not step["patch"]:
+            raise ValueError(f"step {n} has nothing to patch automatically; make its changes by hand")
+        if not apply_patch(self.root, step["patch"]):
+            raise RuntimeError("the step's patch did not apply; the files changed since the plan was made")
+        self.run_review(proof=False)
+        return {"applied": True, "files": step["step"]["files"], "status": self.migration_status(name)}
+
+    # --------------------------------------------------------------- proposal review
+    def critique(self, text: str) -> dict:
+        from . import critique as critique_mod
+
+        r = self.ensure()
+        fb = Feedback.load(self.root)
+        return critique_mod.review(text, self.root, r.graph, r.stack, constraints=fb.constraints)
+
+    def insights(self) -> list[dict]:
+        r = self.ensure()
+        titles = {f.intent: f.title for f in r.findings + r.muted}
+        return Feedback.load(self.root).insights(titles)
 
 
 # --------------------------------------------------------------------------- recent repos and folder browsing

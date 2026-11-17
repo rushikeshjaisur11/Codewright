@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  BellOff, BookOpen, Check, ClipboardCopy, Code2, Download, FileDiff, Flame, GitBranch, Lightbulb, Play, Ruler,
+  BellOff, BookOpen, Check, ClipboardCopy, Code2, Download, FileDiff, Flame, Gauge, GitBranch, Lightbulb, Play, Ruler,
   Search, ShieldAlert, ShieldCheck, ThumbsDown, ThumbsUp, TriangleAlert, Wand2,
 } from "lucide-react";
 import { useApp } from "../App";
@@ -91,6 +91,10 @@ export default function Review() {
           </p>
         </div>
         <div className="actions">
+          <button className="btn" disabled={!!data?.running} onClick={() => runReview(true, "", true)}
+            title="Run the review with proof, then time each verified patch: the tests that run it, before and after (best of 3)">
+            <Gauge size={14} />Measure speed
+          </button>
           <button className={`btn ${prMode ? "on" : ""}`} onClick={() => setPrMode(!prMode)}><GitBranch size={14} />PR mode</button>
           <button className="btn" onClick={() => showReport("pr")}><ClipboardCopy size={14} />PR comment</button>
           <button className="btn" onClick={() => showReport("md")}><Download size={14} />Report</button>
@@ -220,6 +224,9 @@ function Detail({ f, dropped, onAccept, onReject, onMute, onApply, onCode }: {
             {f.symbol_check === "ok" ? <Check size={11} /> : null}API {f.symbol_check === "ok" ? "exists" : f.symbol_check}
           </span>
           <span className="badge">Confidence {Math.round(f.confidence * 100)}%</span>
+          {f.perf?.verdict === "faster" && <span className="badge green" title={`${f.perf.before_ms} ms → ${f.perf.after_ms} ms, best of ${f.perf.rounds}`}><Gauge size={11} />Measured {f.perf.speedup >= 10 ? Math.round(f.perf.speedup) : f.perf.speedup.toFixed(1)}× faster</span>}
+          {f.perf?.verdict === "slower" && <span className="badge red"><Gauge size={11} />Measured {(1 / f.perf.speedup).toFixed(1)}× slower</span>}
+          {f.perf?.verdict === "no-change" && <span className="badge outline"><Gauge size={11} />No speed change</span>}
         </div>
         <h2>{f.title}</h2>
         <div className="row wrap" style={{ marginTop: 6, gap: 4 }}>

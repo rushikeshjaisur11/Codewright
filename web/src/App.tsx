@@ -1,7 +1,7 @@
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BookOpen, Compass, GitPullRequest, LayoutDashboard, MessageSquareCode, Moon, Package,
-  PenTool, Play, Radio, Settings as SettingsIcon, Sun, X,
+  BookOpen, ClipboardCheck, Compass, GitPullRequest, LayoutDashboard, MessageSquareCode, Moon, Package,
+  PenTool, Play, Radio, Settings as SettingsIcon, ShieldCheck, Sun, X,
 } from "lucide-react";
 import { api, ReviewPayload, WorkspaceInfo } from "./api";
 import { CodeView, Spinner, timeAgo, useToast } from "./ui";
@@ -14,15 +14,18 @@ const Chat = lazy(() => import("./pages/Chat"));
 const Design = lazy(() => import("./pages/Design"));
 const Releases = lazy(() => import("./pages/Releases"));
 const Knowledge = lazy(() => import("./pages/Knowledge"));
+const Plans = lazy(() => import("./pages/Plans"));
+const Rules = lazy(() => import("./pages/Rules"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
 
-export type Page = "overview" | "review" | "map" | "chat" | "design" | "releases" | "knowledge" | "settings";
+export type Page =
+  | "overview" | "review" | "map" | "chat" | "design" | "plans" | "rules" | "releases" | "knowledge" | "settings";
 
 interface Ctx {
   wid: string | null;
   data: ReviewPayload | null;
   reload: () => Promise<void>;
-  runReview: (proof: boolean, base?: string) => Promise<void>;
+  runReview: (proof: boolean, base?: string, bench?: boolean) => Promise<void>;
   openCode: (file: string, line?: number, span?: [number, number]) => void;
   go: (page: Page, params?: Record<string, string>) => void;
   params: URLSearchParams;
@@ -33,7 +36,7 @@ export const useApp = () => useContext(AppCtx);
 function parseHash(): { page: Page; params: URLSearchParams } {
   const h = window.location.hash.replace(/^#\/?/, "");
   const [p, qs] = h.split("?");
-  const pages: Page[] = ["overview", "review", "map", "chat", "design", "releases", "knowledge", "settings"];
+  const pages: Page[] = ["overview", "review", "map", "chat", "design", "plans", "rules", "releases", "knowledge", "settings"];
   return { page: (pages.includes(p as Page) ? p : "overview") as Page, params: new URLSearchParams(qs || "") };
 }
 
@@ -141,9 +144,9 @@ export default function App() {
     toast(info.watching ? "Live: re-reviewing on every save" : "Live review off");
   }, [wid, watching, toast]);
 
-  const runReview = useCallback(async (proof: boolean, base = "") => {
+  const runReview = useCallback(async (proof: boolean, base = "", bench = false) => {
     if (!wid) return;
-    await api.runReview(wid, proof, base);
+    await api.runReview(wid, proof, base, bench);
     await reload();
   }, [wid, reload]);
 
@@ -169,15 +172,18 @@ export default function App() {
     { page: "map", label: "Map", icon: <Compass size={17} /> },
     { page: "chat", label: "Code chat", icon: <MessageSquareCode size={17} /> },
     { page: "design", label: "Design", icon: <PenTool size={17} /> },
+    { page: "plans", label: "Plans & migrations", icon: <ClipboardCheck size={17} /> },
   ];
-  const nav2: { page: Page; label: string; icon: JSX.Element }[] = [
-    { page: "releases", label: "Releases", icon: <Package size={17} /> },
+  const nav2: { page: Page; label: string; icon: JSX.Element; count?: number }[] = [
+    { page: "rules", label: "Architecture rules", icon: <ShieldCheck size={17} />, count: r?.rules?.errors || undefined },
+    { page: "releases", label: "Dependencies", icon: <Package size={17} /> },
     { page: "knowledge", label: "Knowledge base", icon: <BookOpen size={17} /> },
     { page: "settings", label: "Settings", icon: <SettingsIcon size={17} /> },
   ];
   const titles: Record<Page, string> = {
     overview: "Overview", review: "Review", map: "Map", chat: "Code chat", design: "Design",
-    releases: "Releases", knowledge: "Knowledge base", settings: "Settings",
+    plans: "Plans & migrations", rules: "Architecture rules",
+    releases: "Dependencies", knowledge: "Knowledge base", settings: "Settings",
   };
 
   const flush = route.page === "map" || route.page === "chat";
@@ -200,7 +206,7 @@ export default function App() {
           <div className="nav-label">Workspace</div>
           {nav2.map((n) => (
             <button key={n.page} className={`nav-item ${route.page === n.page ? "active" : ""}`} onClick={() => go(n.page)}>
-              {n.icon}{n.label}
+              {n.icon}{n.label}{n.count != null && <span className="count">{n.count}</span>}
             </button>
           ))}
           <div className="sidebar-foot">
@@ -241,6 +247,8 @@ export default function App() {
             {route.page === "map" && <MapPage />}
             {route.page === "chat" && <Chat />}
             {route.page === "design" && <Design />}
+            {route.page === "plans" && <Plans />}
+            {route.page === "rules" && <Rules />}
             {route.page === "releases" && <Releases />}
             {route.page === "knowledge" && <Knowledge wid={wid} />}
             {route.page === "settings" && <SettingsPage />}

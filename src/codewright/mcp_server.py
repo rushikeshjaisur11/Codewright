@@ -25,7 +25,9 @@ INSTRUCTIONS = (
     "Codewright reviews a repository for code that re-implements what an installed library, the standard "
     "library or the platform already provides, and proposes version-checked replacements with proof. "
     "Call `review` before refactoring; prefer findings with proof=verified; respect `when_not`. "
-    "Call `search_knowledge` before writing code against a library to get the API its installed version offers."
+    "Call `search_knowledge` before writing code against a library to get the API its installed version offers. "
+    "Call `review_plan` on your plan before writing code, and `check_rules` before finishing: it lists imports and "
+    "calls that break the repo's architecture rules, with the way round each."
 )
 
 server = MCPServer("codewright", instructions=INSTRUCTIONS)
@@ -64,26 +66,76 @@ def _tool(fn):
 
 
 @_tool
-def review(repo: str, base: str = "", proof: bool = False, top: int = 10) -> dict:
+def review(repo: str, base: str = "", proof: bool = False, top: int = 10, bench: bool = False) -> dict:
     """Ranked 'instead of X, use Y' findings, architecture review and convention fixes for a repository.
 
     repo: the repository's path, a git URL (https://github.com/org/repo, #branch for a branch) or, on a
     shared server, the name of a repository it serves (see `list_repos`).
     base: a git ref; when set, only code changed since that ref is reviewed.
     proof: run the test suite before and after each auto-patch (slower; off on shared servers by default).
+    bench: with proof, also time each verified patch (the function, in the tests that run it, before and after).
     """
-    if proof and not POLICY.allow_proof:
+    if (proof or bench) and not POLICY.allow_proof:
         raise ToolError(
             "proof is off on this shared server, because it runs the repository's tests and installs its "
             "dependencies; review without proof, or run Codewright locally (`codewright mcp`) for proof"
         )
     ws = _ws(repo)
-    r = ws.run_review(proof=proof, base=base or None)
+    r = ws.run_review(proof=proof or bench, base=base or None, bench=bench)
     return {
         "findings": [f.to_dict() for f in r.findings[:top]],
         "dropped_by_critic": len(r.rejected),
         "files": len(r.graph.files),
+        "rule_violations": (r.rules or {}).get("violations", []),
     }
+
+
+@_tool
+def check_rules(repo: str) -> dict:
+    """The repo's architecture rules (.codewright/rules.yaml and the saved design) and every violation, each with
+    file, line, why, and a fix that keeps behaviour (the module to go through, where to move a call)."""
+    return _ws(repo).rules()
+
+
+@_tool
+def review_plan(repo: str, plan: str) -> dict:
+    """Review a plan before writing code: dependencies it adds (and ones the repo already has for the job), code
+    the installed stack already provides, risky functions it touches, architecture rules it would break, scale
+    and completeness gaps. Returns a verdict (go | revise), a score and points with evidence."""
+    return _ws(repo).critique(plan[:200_000])
+
+
+@_tool
+def dependency_audit(repo: str, online: bool = False) -> dict:
+    """Dependencies to drop, merge or watch: two libraries for one job, backports the standard library now covers,
+    declared-but-unused packages, heavy ones, copyleft licences, and (online) abandoned packages."""
+    # A shared server doesn't run a repository's own interpreter (it would read its installed metadata).
+    return _ws(repo).deps(online=online, python="" if POLICY.shared and not POLICY.allow_proof else None)
+
+
+@_tool
+def migration_plan(repo: str, name: str = "", batch: int = 5) -> dict:
+    """Plan an upgrade as small steps, leaf modules first. Without `name`, lists the migrations that apply to the
+    repo (pydantic-v2, sqlalchemy-2, fastapi-modern, async-io, utc-datetimes, google-adk). With it, returns the
+    steps (files, changes, auto-patch count, tests to run); nothing is saved or changed."""
+    ws = _ws(repo)
+    if not name:
+        return {"applicable": ws.migrations()}
+    return ws.migration_plan(name, batch=max(1, min(batch, 50)), save=False)
+
+
+@_tool
+def migration_step(repo: str, name: str, step: int) -> dict:
+    """One step of a saved plan (`codewright migrate plan`): its changes, a combined patch for the mechanical ones,
+    and a PR description. Apply the patch yourself and run the listed tests."""
+    return _ws(repo).migration_step(name, step)
+
+
+@_tool
+def feedback_insights(repo: str) -> list[dict]:
+    """What the team's accept/reject verdicts say: checks it keeps rejecting (and where), checks it trusts, and
+    the most common rejection reasons. Respect these when choosing what to change."""
+    return _ws(repo).insights()
 
 
 @_tool
