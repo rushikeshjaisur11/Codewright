@@ -292,3 +292,75 @@ def test_every_box_on_both_maps_has_details(tmp_path):
     tool = client.get(f"/api/w/{wid}/ai/node", params={"id": "tool:app/tools/search.py:search_docs"}).json()
     assert tool["code"]["file"] == "app/tools/search.py" and "researcher" in str(tool["sections"])
     assert "flowchart LR" in client.get(f"/api/w/{wid}/ai").json()["mermaid"]
+
+
+# --------------------------------------------------------------------------- the full agent tree from the app
+
+
+FULL = {
+    "app.py": "import streamlit as st\nfrom bot.service import answer\n\nq = st.text_input('Ask')\nif q:\n"
+    "    st.write(answer(q))\n",
+    "bot/__init__.py": "",
+    "bot/service.py": "from google.adk.runners import InMemoryRunner\nfrom bot.agents import root\n\n\n"
+    "def answer(q):\n    runner = InMemoryRunner(agent=root.root_agent)\n    return runner.run(new_message=q)\n",
+    "bot/agents/__init__.py": "",
+    "bot/agents/root.py": "from google.adk.agents import Agent, ParallelAgent\n"
+    "from google.adk.tools.agent_tool import AgentTool\nfrom bot.agents.research import build_researcher\n"
+    "from bot.agents.custom import Reviewer\nfrom bot.tools.db import query_orders\n\n"
+    "researcher = build_researcher('gemini-2.5-flash')\nreviewer = Reviewer(name='reviewer')\n"
+    "fanout = ParallelAgent(name='fanout', sub_agents=[researcher, Agent(name='pricing', model='gemini-2.5-flash', "
+    "tools=[query_orders])])\n"
+    "root_agent = Agent(name='concierge', model='gemini-2.5-pro', sub_agents=[fanout], tools=[AgentTool(agent=reviewer)])\n",  # noqa: E501
+    "bot/agents/research.py": "from google.adk.agents import LlmAgent\nfrom google.adk.tools import google_search\n\n\n"
+    "def build_researcher(model):\n    helper = LlmAgent(name='summarizer', model=model)\n"
+    "    agent = LlmAgent(name='researcher', model=model, tools=[google_search], sub_agents=[helper])\n"
+    "    return agent\n",
+    "bot/agents/custom.py": "from google.adk.agents import BaseAgent\n\n\nclass Reviewer(BaseAgent):\n"
+    "    async def _run_async_impl(self, ctx):\n        yield None\n",
+    "bot/tools/__init__.py": "",
+    "bot/tools/db.py": "def query_orders(customer_id):\n    return []\n",
+}
+
+
+def test_the_whole_agent_tree_is_traced_from_app_py(tmp_path):
+    from codewright.inspect_node import _reachable
+
+    m = AiMap(graph.build(write(tmp_path, FULL)))
+    by_name = {a.name: a for a in m.agents.values()}
+    assert set(by_name) == {"concierge", "fanout", "pricing", "researcher", "summarizer", "reviewer"}
+    assert by_name["reviewer"].kind == "custom"  # a repo subclass of BaseAgent
+    assert by_name["researcher"].model == "gemini-2.5-flash"  # passed into the factory
+    assert by_name["summarizer"].model == "gemini-2.5-flash"
+    names = lambda ids: sorted(m.agents[i].name for i in ids)  # noqa: E731
+    assert names(by_name["fanout"].children) == ["pricing", "researcher"]  # factory-built and inline
+    assert names(by_name["researcher"].children) == ["summarizer"]  # local to the factory
+    assert by_name["concierge"].tools[0]["agent"] == by_name["reviewer"].id
+    assert by_name["pricing"].tools[0]["file"] == "bot/tools/db.py"
+
+    arch = m.architecture()
+    labels = {n["id"]: n["label"] for n in arch["nodes"]}
+    reach = {labels[x] for x in _reachable(arch, "app:app.py")}
+    assert {"answer", "concierge", "fanout", "pricing", "researcher", "summarizer", "reviewer"} <= reach
+    assert {"query_orders", "google_search", "gemini-2.5-pro", "gemini-2.5-flash"} <= reach
+    assert ("app:app.py", "run:bot/service.py::answer", "starts") in {
+        (e["source"], e["target"], e["label"]) for e in arch["edges"]
+    }
+
+
+def test_adk_root_agent_and_langgraph_json_are_entry_points(tmp_path):
+    write(
+        tmp_path,
+        {
+            "agent_pkg/__init__.py": "",
+            "agent_pkg/agent.py": "from google.adk.agents import Agent\nroot_agent = Agent(name='helper', model='gemini-2.5-flash')\n",  # noqa: E501
+            "graphs/flow.py": "from langgraph.graph import StateGraph\nfrom langgraph.prebuilt import create_react_agent\n\n"  # noqa: E501
+            "worker = create_react_agent('openai:gpt-4o', tools=[])\ng = StateGraph(dict)\ng.add_node('work', worker)\n"
+            "app = g.compile()\n",
+            "langgraph.json": '{"graphs": {"main": "./graphs/flow.py:app"}}',
+        },
+    )
+    arch = AiMap(graph.build(tmp_path)).architecture()
+    edges = {(e["source"], e["target"], e["label"]) for e in arch["edges"]}
+    assert ("adk:agent_pkg/agent.py", "agent_pkg/agent.py::root_agent", "runs") in edges
+    assert ("lg:main", "graphs/flow.py::g", "runs") in edges
+    assert ("graphs/flow.py::g#work", "graphs/flow.py::worker", "runs agent") in edges

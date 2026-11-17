@@ -440,6 +440,48 @@ def _unknown(node_id: str) -> dict:
 # --------------------------------------------------------------------------- AI & agents graph
 
 
+def _reachable(arch: dict, start: str) -> list[str]:
+    """Boxes reachable from `start` following the arrows, in visiting order."""
+    out, seen, frontier = [], {start}, [start]
+    by_src: dict[str, list[str]] = defaultdict(list)
+    for e in arch["edges"]:
+        by_src[e["source"]].append(e["target"])
+    while frontier:
+        nxt = []
+        for x in frontier:
+            for t in by_src.get(x, ()):
+                if t not in seen:
+                    seen.add(t)
+                    out.append(t)
+                    nxt.append(t)
+        frontier = nxt
+    return out
+
+
+def _path_items(arch: dict, nodes: dict, target: str) -> list[dict]:
+    """The chain of boxes from an entry point to `target` (shortest, following the arrows backwards)."""
+    preds: dict[str, list[str]] = defaultdict(list)
+    for e in arch["edges"]:
+        preds[e["target"]].append(e["source"])
+    back, seen, frontier = {}, {target}, [target]
+    while frontier:
+        nxt = []
+        for x in frontier:
+            for p in preds.get(x, ()):
+                if p not in seen:
+                    seen.add(p)
+                    back[p] = x
+                    nxt.append(p)
+                    if nodes[p]["kind"] == "entry" and not preds.get(p):
+                        chain, cur = [p], p
+                        while cur != target:
+                            cur = back[cur]
+                            chain.append(cur)
+                        return [{"label": nodes[c]["label"], "sub": nodes[c]["detail"], "node": c} for c in chain[:-1]]
+        frontier = nxt
+    return []
+
+
 def ai_node(ai: AiMap, node_id: str) -> dict:
     """Details of one box on the agent architecture graph."""
     g = ai.g
@@ -461,7 +503,8 @@ def ai_node(ai: AiMap, node_id: str) -> dict:
     findings = ai.findings
     if node_id in ai.agents:
         a = ai.agents[node_id]
-        parents = rel(ins, "source", "delegates")
+        parents = rel(ins, "source", "delegates") + rel(ins, "source", "runs agent")
+        run_by = rel(ins, "source", "runs") + rel(ins, "source", "builds")
         return {
             "id": node_id,
             "label": a.name,
@@ -481,7 +524,8 @@ def ai_node(ai: AiMap, node_id: str) -> dict:
                 {"label": "Sub-agents", "value": str(len(a.children) + len(a.child_names))},
                 {
                     "label": "Run by",
-                    "value": ", ".join(x["label"] for x in rel(ins, "source", "runs")) or "nothing found in the repo",
+                    "value": ", ".join(x["label"] for x in run_by)
+                    or (f"through {parents[0]['label']}" if parents else "nothing found in the repo"),
                 },
                 *[{"label": k, "value": v, "mono": True} for k, v in list(a.options.items())[:8]],
             ],
@@ -505,7 +549,8 @@ def ai_node(ai: AiMap, node_id: str) -> dict:
                         for t in a.tools
                     ],
                 },
-                {"title": "Run by", "items": rel(ins, "source", "runs")},
+                {"title": "Run or built by", "items": run_by},
+                {"title": "Path from the app", "items": _path_items(arch, nodes, node_id)},
                 {"title": "Part of", "items": parents + rel(ins, "source", "uses as tool")},
                 {
                     "title": "Steps",
@@ -528,6 +573,33 @@ def ai_node(ai: AiMap, node_id: str) -> dict:
 
     kind = n["kind"]
     file, line = (n["files"][0]["file"], n["files"][0]["line"]) if n["files"] else ("", 1)
+    if node_id.startswith(("app:", "adk:", "lg:")):  # what starts the agents
+        e = g.app_entries.get(file) if node_id.startswith("app:") else None
+        reach = _reachable(arch, node_id)
+        agents = [x for x in reach if x in ai.agents]
+        return {
+            "id": node_id,
+            "label": n["label"],
+            "kind": "entry",
+            "summary": (f"{file} starts the app: it " + "; ".join(e.reasons) + ".") if e else n.get("detail", ""),
+            "facts": [
+                {"label": "Started with", "value": n["label"], "mono": True},
+                {"label": "File", "value": f"{file}:{line}", "mono": True},
+                {"label": "Agents it reaches", "value": str(len(agents))},
+                {"label": "Tools it reaches", "value": str(sum(1 for x in reach if nodes[x]["kind"] == "tool"))},
+                {"label": "Models it reaches", "value": str(sum(1 for x in reach if nodes[x]["kind"] == "llm"))},
+            ],
+            "sections": [
+                {"title": "Starts", "items": rel(outs, "target")},
+                {
+                    "title": "Agents behind it",
+                    "items": [{"label": nodes[x]["label"], "sub": nodes[x]["detail"], "node": x} for x in agents],
+                },
+            ],
+            "findings": _findings(findings, lambda f: f.file == file),
+            "code": _preview(g, file, max(1, line - 3), line + PREVIEW_LINES - 4) if file else None,
+            "ask": f"What happens, agent by agent, when {n['label']} handles a request?",
+        }
     if kind == "tool":
         used_by = rel(ins, "source")
         pf = g.files.get(file)

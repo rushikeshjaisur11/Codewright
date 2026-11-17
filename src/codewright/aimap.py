@@ -18,8 +18,10 @@ which, which tools and models each uses, every box linked to its file and line.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from tree_sitter import Node as TSNode
 
@@ -161,6 +163,7 @@ class Agent:
     steps: list[dict] = field(default_factory=list)  # LangGraph: {name, file, line}
     step_edges: list[list[str]] = field(default_factory=list)  # LangGraph: [source, target, label]
     end: int = 0  # last line of the definition
+    scope: str = "<module>"  # the function it is defined in, for agents built inside a factory
     instruction_full: str = ""  # the whole literal, for the inspector (instruction is shortened)
     options: dict = field(default_factory=dict)  # other keyword arguments as written, shortened
 
@@ -182,6 +185,7 @@ class Runs:
     line: int
     agent: str  # agent id
     how: str  # the call as written
+    kind: str = "runs"  # "runs" (a runner or .run()) or "builds" (calls a function that returns the agent)
 
 
 @dataclass
@@ -245,6 +249,11 @@ def _args(call: TSNode) -> tuple[list[TSNode], dict[str, TSNode]]:
     return pos, kw
 
 
+def _has_args(call: TSNode) -> bool:
+    callee, args = call.child_by_field_name("function"), call.child_by_field_name("arguments")
+    return callee is not None and callee.type in ("identifier", "attribute") and bool(args and args.named_children)
+
+
 def _resolve(pf: ParsedFile, dotted: str) -> str | None:
     """`dotted` as the fully qualified name it refers to through the file's imports, or None."""
     head, _, rest = dotted.partition(".")
@@ -272,6 +281,7 @@ def _agent_ctor(resolved: str) -> tuple[str, str] | None:
             "ParallelAgent": "parallel",
             "LoopAgent": "loop",
             "RemoteA2aAgent": "remote",
+            "BaseAgent": "custom",
         }
         return ("Google ADK", kinds[last]) if last in kinds else None
     if resolved in ("agents.Agent", "agents.agent.Agent"):
@@ -360,6 +370,12 @@ class AiMap:
         self.runs: list[Runs] = []
         self._list_vars: dict[tuple[str, str], TSNode] = {}  # (file, var) -> list literal assigned at module level
         self._pending: list[tuple[Agent, ParsedFile, dict[str, TSNode], list[TSNode]]] = []
+        self._by_node: dict[tuple[str, int], str] = {}  # (file, start byte of the constructor call) -> agent id
+        self._factories: dict[str, str] = {}  # "file::function" -> id of the agent it returns
+        self._assigns: list[tuple[str, str, str, str]] = []  # (file, scope, var, callee as written)
+        self._factory_calls: list[tuple[str, TSNode]] = []  # (file, call node) of calls that may build an agent
+        self._aliases: dict[tuple[str, str], str] = {}  # (file, var) -> agent id, for `x = make_agent()`
+        self._graph_vars: dict[tuple[str, str], str] = {}  # (file, var) -> graph id, for StateGraph and .compile()
         self.sdk_files: dict[str, list[str]] = {}
         for path, pf in graph.files.items():
             if is_test_file(path):
@@ -367,16 +383,131 @@ class AiMap:
             labels = sorted({lbl for t in pf.module.imports.values() if (lbl := _ai_label(t))})
             if labels:
                 self.sdk_files[path] = labels
-        for path in self.sdk_files:
+        self._classes = self._agent_classes()
+        # Files that build agents without importing an SDK themselves: they import a repo module that does
+        # (an agent factory, a custom agent class, an agent defined elsewhere).
+        scan = set(self.sdk_files) | {p for p, _ in self._classes}
+        if graph.resolver is not None:
+            for path, pf in graph.files.items():
+                if not is_test_file(path) and graph.resolver.imported_files(pf) & scan:
+                    scan.add(path)
+        for path in sorted(scan):
             self._scan_file(graph.files[path])
-        self._by_var: dict[str, list[Agent]] = defaultdict(list)
-        for a in self.agents.values():
-            self._by_var[a.var].append(a)
+        self._resolve_aliases()
+        self._factory_arguments()
+        self._index()
         for agent, pf, kw, pos in self._pending:
             self._link(agent, pf, kw, pos)
+        for a in self.agents.values():
+            for st in a.steps:
+                if st.get("ref") and (ref := self._agent_ref(graph.files[a.file], st["ref"], a.scope)) is not None:
+                    st["agent"] = ref.id
         for path, pf in graph.files.items():
             if not is_test_file(path):
                 self._scan_runs(pf)
+        self._scan_builds()
+
+    # ----------------------------------------------------------------- repo agent classes and references
+    def _agent_classes(self) -> dict[tuple[str, str], tuple[str, str]]:
+        """Repo classes that are agents: they subclass an SDK agent class, or another such repo class."""
+        found: dict[tuple[str, str], tuple[str, str]] = {}
+        for _ in range(4):  # subclasses of subclasses
+            grew = False
+            for path, pf in self.g.files.items():
+                if is_test_file(path):
+                    continue
+                for qual, bases in pf.classes.items():
+                    if (path, qual) in found:
+                        continue
+                    for b in bases:
+                        ctor = _agent_ctor(_resolve(pf, b) or "") or self._repo_class(pf, b, found)
+                        if ctor:
+                            found[(path, qual)] = ctor
+                            grew = True
+                            break
+            if not grew:
+                break
+        return found
+
+    def _repo_class(self, pf: ParsedFile, written: str, classes: dict | None = None) -> tuple[str, str] | None:
+        """(framework, kind) when `written` names a repo agent class, here or through an import."""
+        classes = self._classes if classes is None else classes
+        if (pf.path, written) in classes:
+            return classes[(pf.path, written)]
+        target = _resolve(pf, written)
+        if not target:
+            return None
+        mod, _, cls = target.rpartition(".")
+        for (path, qual), ctor in classes.items():
+            mn = module_name(path)
+            if qual == cls and (
+                mn == mod
+                or mn.endswith("." + mod.lstrip("."))
+                or mod.endswith("." + mn)
+                or mod.lstrip(".") == mn.rsplit(".", 1)[-1]
+            ):
+                return ctor
+        return None
+
+    def _function_key(self, pf: ParsedFile, name: str) -> str | None:
+        ref = self._function_ref(pf, name)
+        if ref is None:
+            return None
+        other = self.g.files[ref[0]]
+        fn = next((f for f in other.module.functions if f.def_line == ref[1]), None)
+        return f"{ref[0]}::{fn.qualname}" if fn else None
+
+    def _resolve_aliases(self) -> None:
+        """`root_agent = build_agent()` and `app = graph.compile()`: the variable is that agent."""
+        for _ in range(3):  # an alias of an alias
+            for path, _scope, var, callee in self._assigns:
+                if (path, var) in self._aliases:
+                    continue
+                pf = self.g.files[path]
+                obj, _, method = callee.rpartition(".")
+                if method == "compile" and (path, obj) in self._graph_vars:
+                    self._aliases[(path, var)] = self._graph_vars[(path, obj)]
+                    continue
+                key = self._function_key(pf, callee)
+                if key in self._factories:
+                    self._aliases[(path, var)] = self._factories[key]
+
+    def _factory_arguments(self) -> None:
+        """`build_researcher("gemini-2.5-flash")`: an agent whose model is the factory's parameter gets the value
+        the callers pass (all of them, when they differ)."""
+        if not self._factories:
+            return
+        passed: dict[tuple[str, str], set[str]] = defaultdict(set)  # (factory key, param) -> literal values
+        for path, call in self._factory_calls:
+            pf = self.g.files[path]
+            key = self._function_key(pf, text(call.child_by_field_name("function")))
+            if key not in self._factories:
+                continue
+            fpath, _, qual = key.partition("::")
+            fn = next((f for f in self.g.files[fpath].module.functions if f.qualname == qual), None)
+            if fn is None:
+                continue
+            params = [x for x in fn.params if x not in ("self", "cls")]
+            pos, kw = _args(call)
+            for i, node in enumerate(pos[: len(params)]):
+                if (v := _string(node)) is not None:
+                    passed[(key, params[i])].add(v)
+            for k, node in kw.items():
+                if (v := _string(node)) is not None:
+                    passed[(key, k)].add(v)
+        for a in self.agents.values():
+            key = f"{a.file}::{a.scope}"
+            if a.scope != "<module>" and a.model and (key, a.model) in passed:
+                a.model = " | ".join(sorted(passed[(key, a.model)]))
+
+    def _index(self) -> None:
+        """var name -> [(file it is defined in, agent id)] for module-level agents and aliases."""
+        self._vars: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        for a in self.agents.values():
+            if a.var and a.scope == "<module>":
+                self._vars[a.var].append((a.file, a.id))
+        for (path, var), aid in self._aliases.items():
+            self._vars[var].append((path, aid))
 
     # ----------------------------------------------------------------- agents and model calls
     def _scan_file(self, pf: ParsedFile) -> None:
@@ -385,6 +516,13 @@ class AiMap:
                 right = n.child_by_field_name("right")
                 if right is not None and right.type == "list" and left.type == "identifier":
                     self._list_vars.setdefault((pf.path, text(left)), right)
+                if right is not None and left.type == "identifier":
+                    call = right.named_children[0] if right.type == "await" and right.named_children else right
+                    if call.type == "call" and (c := call.child_by_field_name("function")) is not None:
+                        scope, _ = _enclosing_function(pf, n.start_point[0] + 1)
+                        self._assigns.append((pf.path, scope, text(left), text(c)))
+            if n.type == "call" and _has_args(n):
+                self._factory_calls.append((pf.path, n))
         graphs: dict[str, Agent] = {}
         langchain = any(t.startswith("langchain") for t in pf.module.imports.values())
         lc_models: set[str] = set()
@@ -396,7 +534,7 @@ class AiMap:
             line = n.start_point[0] + 1
             pos, kw = _args(n)
             var = self._assigned_to(n)
-            if ctor := _agent_ctor(resolved):
+            if ctor := (_agent_ctor(resolved) or self._repo_class(pf, written)):
                 self._add_agent(pf, n, var, ctor, pos, kw)
                 continue
             if resolved.endswith(".StateGraph") and resolved.startswith("langgraph"):
@@ -404,6 +542,8 @@ class AiMap:
                 graphs[var or str(line)] = self.agents[gid] = Agent(
                     gid, var or "graph", var or "graph", pf.path, line, "LangGraph", "graph"
                 )
+                if var:
+                    self._graph_vars[(pf.path, var)] = gid
                 continue
             if langchain and resolved.rsplit(".", 1)[-1] in LANGCHAIN_MODEL_CLASSES and var:
                 lc_models.add(var)
@@ -468,7 +608,11 @@ class AiMap:
                 break
         skip = {"name", "model", "llm", "model_client", "tools", "toolsets", *AGENT_KWARGS, *INSTRUCTION_KWARGS}
         options = {k: _short(text(v), 80) for k, v in kw.items() if k not in skip}
-        aid = f"{pf.path}::{var}" if var else f"{pf.path}:{line}"
+        scope, _ = _enclosing_function(pf, line)
+        if scope == "<module>":
+            aid = f"{pf.path}::{var}" if var else f"{pf.path}:{line}"
+        else:  # built inside a function: a factory, or a local helper
+            aid = f"{pf.path}::{scope}:{var or line}"
         agent = Agent(
             aid,
             name or var or f"agent at line {line}",
@@ -481,6 +625,19 @@ class AiMap:
             instruction,
         )
         agent.end = call.end_point[0] + 1
+        agent.scope = scope
+        self._by_node[(pf.path, call.start_byte)] = aid
+        if scope != "<module>":
+            parent = call.parent
+            while parent is not None and parent.type in ("parenthesized_expression", "await"):
+                parent = parent.parent
+            body = text(pf.nodes.get(scope))
+            if (parent is not None and parent.type == "return_statement") or (
+                var and re.search(rf"\breturn\s+{re.escape(var)}\b", body)
+            ):
+                self._factories[f"{pf.path}::{scope}"] = aid
+            elif f"{pf.path}::{scope}" not in self._factories:
+                self._factories.setdefault(f"{pf.path}::{scope}#last", aid)
         agent.instruction_full = full
         agent.options = options
         self.agents[aid] = agent
@@ -498,7 +655,12 @@ class AiMap:
             target = pos[1] if len(pos) > 1 else pos[0]
             fn = self._function_ref(pf, text(target)) if target.type in ("identifier", "attribute") else None
             g.steps.append(
-                {"name": name, "file": fn[0] if fn else pf.path, "line": fn[1] if fn else target.start_point[0] + 1}
+                {
+                    "name": name,
+                    "file": fn[0] if fn else pf.path,
+                    "line": fn[1] if fn else target.start_point[0] + 1,
+                    "ref": text(target) if target.type in ("identifier", "attribute") else "",
+                }
             )
         elif method == "add_edge" and len(pos) >= 2:
             g.step_edges.append([name_of(pos[0]), name_of(pos[1]), ""])
@@ -538,22 +700,35 @@ class AiMap:
                         return path, f.def_line
         return None
 
-    def _agent_ref(self, pf: ParsedFile, name: str) -> Agent | None:
+    def _agent_ref(self, pf: ParsedFile, name: str, scope: str = "<module>") -> Agent | None:
+        """The agent `name` refers to from `pf`: local to the function, in this module, an alias
+        (`x = make_agent()`), imported (`from app.agents import root_agent`, `agents.root_agent`)."""
         name = name.strip()
+        if name.startswith(("self.", "cls.")):
+            name = name.split(".", 1)[1]
+        if scope != "<module>" and f"{pf.path}::{scope}:{name}" in self.agents:
+            return self.agents[f"{pf.path}::{scope}:{name}"]
         if f"{pf.path}::{name}" in self.agents:
             return self.agents[f"{pf.path}::{name}"]
-        target = pf.module.imports.get(name)
-        real = target.rsplit(".", 1)[-1] if target else name
-        cands = self._by_var.get(real, [])
+        if (pf.path, name) in self._aliases:
+            return self.agents.get(self._aliases[(pf.path, name)])
+        head, _, rest = name.partition(".")
+        target = pf.module.imports.get(head)
+        if target and rest:
+            target = f"{target}.{rest}"
+        real = (target or name).rsplit(".", 1)[-1]
+        cands = self._vars.get(real, []) if hasattr(self, "_vars") else []
         if target and len(cands) > 1:
-            mod = target.rpartition(".")[0]
+            mod = target.rpartition(".")[0].lstrip(".")
             narrowed = [
-                a
-                for a in cands
-                if module_name(a.file).endswith(mod.split(".")[-1]) or mod.endswith(module_name(a.file))
+                c
+                for c in cands
+                if module_name(c[0]) == mod or module_name(c[0]).endswith("." + mod) or mod.endswith(module_name(c[0]))
             ]
             cands = narrowed or cands
-        return cands[0] if cands and (target or len(cands) == 1) else None
+        if cands and (target or len(cands) == 1):
+            return self.agents.get(cands[0][1])
+        return None
 
     def _items(self, pf: ParsedFile, node: TSNode) -> list[TSNode]:
         if node.type in ("list", "tuple"):
@@ -567,11 +742,16 @@ class AiMap:
             if k not in kw:
                 continue
             for item in self._items(pf, kw[k]):
-                ref = self._agent_ref(pf, text(item)) if item.type in ("identifier", "attribute") else None
+                ref = self._agent_ref(pf, text(item), agent.scope) if item.type in ("identifier", "attribute") else None
                 if ref is None and item.type == "call":
-                    _, ikw = _args(item)
-                    inner = ikw.get("agent")
-                    ref = self._agent_ref(pf, text(inner)) if inner is not None else None
+                    if (pf.path, item.start_byte) in self._by_node:  # an agent built inline in the list
+                        ref = self.agents.get(self._by_node[(pf.path, item.start_byte)])
+                    else:
+                        _, ikw = _args(item)
+                        inner = ikw.get("agent")
+                        ref = self._agent_ref(pf, text(inner), agent.scope) if inner is not None else None
+                        if ref is None and (key := self._function_key(pf, text(item.child_by_field_name("function")))):
+                            ref = self.agents.get(self._factories.get(key, ""))  # sub_agents=[make_researcher()]
                 if ref is not None and ref.id != agent.id:
                     agent.children.append(ref.id)
                 else:
@@ -580,12 +760,12 @@ class AiMap:
             if k not in kw:
                 continue
             for item in self._items(pf, kw[k]):
-                agent.tools.append(self._tool(pf, item))
+                agent.tools.append(self._tool(pf, item, agent.scope))
 
-    def _tool(self, pf: ParsedFile, item: TSNode) -> dict:
+    def _tool(self, pf: ParsedFile, item: TSNode, scope: str = "<module>") -> dict:
         raw = text(item)
         if item.type in ("identifier", "attribute"):
-            if (ref := self._agent_ref(pf, raw)) is not None:
+            if (ref := self._agent_ref(pf, raw, scope)) is not None:
                 return {"label": ref.name, "agent": ref.id, "file": ref.file, "line": ref.line}
             if (fn := self._function_ref(pf, raw)) is not None:
                 return {"label": raw.rsplit(".", 1)[-1], "file": fn[0], "line": fn[1]}
@@ -594,8 +774,11 @@ class AiMap:
             cpos, ckw = _args(item)
             wrapped = ckw.get("agent") or ckw.get("func") or (cpos[0] if cpos else None)
             cname = text(callee).rsplit(".", 1)[-1]
+            if wrapped is not None and (pf.path, wrapped.start_byte) in self._by_node:  # AgentTool(agent=Agent(...))
+                ref = self.agents[self._by_node[(pf.path, wrapped.start_byte)]]
+                return {"label": ref.name, "agent": ref.id, "file": ref.file, "line": ref.line}
             if wrapped is not None and wrapped.type in ("identifier", "attribute"):
-                if (ref := self._agent_ref(pf, text(wrapped))) is not None:
+                if (ref := self._agent_ref(pf, text(wrapped), scope)) is not None:
                     return {"label": ref.name, "agent": ref.id, "file": ref.file, "line": ref.line}
                 if (fn := self._function_ref(pf, text(wrapped))) is not None:
                     return {"label": text(wrapped).rsplit(".", 1)[-1], "file": fn[0], "line": fn[1]}
@@ -608,7 +791,7 @@ class AiMap:
     def _scan_runs(self, pf: ParsedFile) -> None:
         if not self.agents:
             return
-        names = {a.var for a in self.agents.values() if a.var}
+        names = set(self._vars)
         src = pf.source
         if not any(n.encode() in src for n in names):
             return
@@ -619,8 +802,10 @@ class AiMap:
             obj, _, method = written.rpartition(".")
             pos, kw = _args(n)
             target = None
-            if obj and method in RUN_METHODS and obj in names:
-                target = self._agent_ref(pf, obj)
+            line = n.start_point[0] + 1
+            scope, _ = _enclosing_function(pf, line)
+            if obj and method in RUN_METHODS and obj.rsplit(".", 1)[-1] in names:
+                target = self._agent_ref(pf, obj, scope)
             if target is None:
                 cand = kw.get("agent") or kw.get("starting_agent") or kw.get("root_agent")
                 if (
@@ -629,15 +814,43 @@ class AiMap:
                     and written.rsplit(".", 1)[-1] in (*AGENT_RUNNERS, "run", "run_sync", "run_streamed")
                 ):
                     cand = pos[0]
-                if cand is not None and cand.type == "identifier" and text(cand) in names:
-                    target = self._agent_ref(pf, text(cand))
+                if (
+                    cand is not None
+                    and cand.type in ("identifier", "attribute")
+                    and text(cand).rsplit(".", 1)[-1] in names
+                ):
+                    target = self._agent_ref(pf, text(cand), scope)
             if target is None or (pf.path == target.file and n.start_point[0] + 1 == target.line):
                 continue
-            line = n.start_point[0] + 1
-            fn, _ = _enclosing_function(pf, line)
+            fn = scope
             if fn == "<module>" and pf.path == target.file:
                 continue  # the agent module wiring itself up, not something running it
             self.runs.append(Runs(pf.path, fn, line, target.id, _short(written, 50)))
+
+    def _scan_builds(self) -> None:
+        """Code that calls an agent factory (`root = build_agent()`) builds that agent."""
+        if not self._factories:
+            return
+        callers: dict[str, set[str]] = defaultdict(set)
+        for caller, callees in self.g.edges.items():
+            for c in callees:
+                callers[c].add(caller)
+        for key, aid in self._factories.items():
+            if "#" in key:
+                continue
+            fname = key.rsplit("::", 1)[-1]
+            for caller in sorted(callers.get(key, ())):
+                path, _, fn = caller.partition("::")
+                if is_test_file(path):
+                    continue
+                pfn = next((f for f in self.g.files[path].module.functions if f.qualname == fn), None)
+                self.runs.append(Runs(path, fn, pfn.def_line if pfn else 1, aid, f"{fname}()", "builds"))
+            for path, scope, var, callee in self._assigns:  # module-level `root_agent = build_agent()`
+                if scope == "<module>" and self._aliases.get((path, var)) == aid and not is_test_file(path):
+                    line = next(
+                        (i for i, ln in enumerate(self.g.files[path].lines, 1) if callee in ln and var in ln), 1
+                    )
+                    self.runs.append(Runs(path, "<module>", line, aid, f"{var} = {callee}()", "builds"))
 
     # ----------------------------------------------------------------- outputs
     def files(self) -> list[AiFile]:
@@ -740,7 +953,8 @@ class AiMap:
                 "remote": "remote agent (A2A)",
                 "crew": "crew",
                 "graph": "workflow graph",
-            }[a.kind]
+                "custom": "custom agent class",
+            }.get(a.kind, a.kind)
             n = node(
                 a.id,
                 a.name,
@@ -780,6 +994,8 @@ class AiMap:
                     sid = f"{a.id}#{s['name']}"
                     node(sid, s["name"], "function", s["file"], s["line"], f"step in {a.name}")
                     edge(a.id, sid, "step")
+                    if s.get("agent"):  # a step that is itself an agent (create_react_agent, a subgraph)
+                        edge(sid, s["agent"], "runs agent")
                 names = {s["name"] for s in a.steps}
                 for src, dst, label in a.step_edges:
                     ends = {"START": "function", "END": "function"}
@@ -803,19 +1019,102 @@ class AiMap:
                 model_node(c.model, c.provider if not c.model else _provider_of_model(c.model) or c.provider),
                 "prompts",
             )
+        apps = self.g.app_entries
+        reach = self._app_reach()
+
+        def app_node(path: str) -> str:
+            e = apps[path]
+            return node(f"app:{path}", e.trigger, "entry", path, e.line, f"{e.framework} · starts the app")["id"]
+
+        agent_driven = {e["target"] for e in edges if e["label"] in ("delegates", "uses as tool", "runs agent")}
         for r in self.runs:
-            rid = f"run:{r.file}::{r.function}"
-            node(
-                rid,
-                r.function if r.function != "<module>" else module_name(r.file),
-                "entry",
-                r.file,
-                r.line,
-                f"{r.file}:{r.line} · {r.how}",
-                r.function,
+            if r.kind == "builds" and r.function == "<module>" and r.agent in agent_driven:
+                continue  # `researcher = build_researcher()` wiring another agent's sub-agent: the delegation shows it
+            if r.function == "<module>" and r.file in apps:
+                rid = app_node(r.file)
+            else:
+                rid = f"run:{r.file}::{r.function}"
+                node(
+                    rid,
+                    r.function if r.function != "<module>" else module_name(r.file),
+                    "entry" if r.kind == "runs" else "function",
+                    r.file,
+                    r.line,
+                    f"{r.file}:{r.line} · {r.how}",
+                    r.function,
+                )
+                for path in reach.get(f"{r.file}::{r.function}", ()):
+                    if f"app:{path}" != rid:
+                        edge(app_node(path), rid, "starts")
+            edge(rid, r.agent, r.kind)
+        for c in self.calls:  # apps that end up calling a model directly
+            for path in reach.get(f"{c.file}::{c.function}", ()):
+                edge(app_node(path), f"fn:{c.file}::{c.function}", "starts")
+
+        # Agents a framework loads by convention, with nothing in the repo running them.
+        driven = {
+            e["target"] for e in edges if e["label"] in ("runs", "builds", "delegates", "uses as tool", "runs agent")
+        }
+        for a in self.agents.values():
+            if a.id in driven or a.scope != "<module>":
+                continue
+            if a.framework == "Google ADK" and a.var == "root_agent":
+                nid = node(
+                    f"adk:{a.file}", "adk web / adk run", "entry", a.file, a.line, "Google ADK loads `root_agent`"
+                )["id"]
+                edge(nid, a.id, "runs")
+        for name, (path, var) in self._langgraph_json().items():
+            target = (
+                self._aliases.get((path, var))
+                or self._graph_vars.get((path, var))
+                or (f"{path}::{var}" if f"{path}::{var}" in self.agents else None)
             )
-            edge(rid, r.agent, "runs")
+            if target:
+                nid = node(f"lg:{name}", f"langgraph dev · {name}", "entry", path, 1, "listed in langgraph.json")["id"]
+                edge(nid, target, "runs")
         return {"nodes": list(nodes.values()), "edges": edges}
+
+    def _app_reach(self, depth: int = 12) -> dict[str, list[str]]:
+        """Function key -> the app entry files whose start-up reaches it through the call graph."""
+        out: dict[str, list[str]] = defaultdict(list)
+        for path, e in self.g.app_entries.items():
+            if is_test_file(path):
+                continue
+            seen: set[str] = set()
+            frontier = [*e.calls, f"{path}::<module>"]
+            for _ in range(depth):
+                nxt = []
+                for key in frontier:
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out[key].append(path)
+                    nxt.extend(self.g.edges.get(key, ()))
+                frontier = nxt
+                if not frontier:
+                    break
+        return out
+
+    def _langgraph_json(self) -> dict[str, tuple[str, str]]:
+        """Graphs named in langgraph.json: name -> (file, variable)."""
+        import json
+
+        root = Path(self.g.root)
+        out: dict[str, tuple[str, str]] = {}
+        for cfg in [root / "langgraph.json", *root.glob("*/langgraph.json")]:
+            try:
+                graphs = json.loads(cfg.read_text()).get("graphs", {})
+            except (OSError, ValueError, AttributeError):
+                continue
+            for name, spec in graphs.items():
+                if isinstance(spec, str) and ":" in spec:
+                    file, var = spec.rsplit(":", 1)
+                    rel = (cfg.parent / file).resolve()
+                    try:
+                        out[name] = (rel.relative_to(root.resolve()).as_posix(), var)
+                    except ValueError:
+                        continue
+        return out
 
     def to_dict(self) -> dict:
         files = self.files()

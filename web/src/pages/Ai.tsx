@@ -32,6 +32,7 @@ export default function AiPage() {
   const [find, setFind] = useState("");
   const [focus, setFocusPt] = useState<{ id: string; n: number } | null>(null);
   const [showMermaid, setShowMermaid] = useState(false);
+  const [root, setRoot] = useState("");
   const has = !!data?.result;
 
   useEffect(() => {
@@ -54,6 +55,14 @@ export default function AiPage() {
   const visible = useMemo(() => {
     const all = rep?.architecture ?? { nodes: [], edges: [] };
     let nodes = all.nodes.filter((n) => !hidden.has(n.kind));
+    if (root) {  // only what this entry point or agent reaches, following the arrows
+      const out = new Map<string, string[]>();
+      for (const e of all.edges) out.set(e.source, [...(out.get(e.source) ?? []), e.target]);
+      const seen = new Set([root]);
+      const stack = [root];
+      while (stack.length) for (const t of out.get(stack.pop()!) ?? []) if (!seen.has(t)) { seen.add(t); stack.push(t); }
+      nodes = nodes.filter((n) => seen.has(n.id));
+    }
     if (focusOn) {
       const near = new Set([focusOn]);
       for (const e of all.edges) { if (e.source === focusOn) near.add(e.target); if (e.target === focusOn) near.add(e.source); }
@@ -61,7 +70,14 @@ export default function AiPage() {
     }
     const ids = new Set(nodes.map((n) => n.id));
     return { nodes, edges: all.edges.filter((e) => ids.has(e.source) && ids.has(e.target)) };
-  }, [rep, hidden, focusOn]);
+  }, [rep, hidden, focusOn, root]);
+  // Where an architecture starts: entry points (apps, routes, `adk web`), then agents nothing else drives.
+  const roots = useMemo(() => {
+    const all = rep?.architecture ?? { nodes: [], edges: [] };
+    const driven = new Set(all.edges.map((e) => e.target));
+    const tops = all.nodes.filter((n) => !driven.has(n.id) && (n.kind === "entry" || n.kind === "agent" || n.kind === "workflow"));
+    return tops.sort((a, b) => (a.kind === "entry" ? 0 : 1) - (b.kind === "entry" ? 0 : 1) || a.label.localeCompare(b.label));
+  }, [rep]);
   const kinds = useMemo(() => Object.entries((rep?.architecture.nodes ?? []).reduce<Record<string, number>>((a, n) => ({ ...a, [n.kind]: (a[n.kind] ?? 0) + 1 }), {})), [rep]);
   const matches = useMemo(() => {
     const t = find.trim().toLowerCase();
@@ -134,6 +150,16 @@ export default function AiPage() {
                 </div>
               )}
             </div>
+            {roots.length > 0 && (
+              <label className="row" style={{ gap: 6, fontSize: 13 }}>
+                <span className="faint">Start from</span>
+                <select className="select" style={{ height: 30, fontSize: 13, maxWidth: 260 }} value={root}
+                  onChange={(e) => { setRoot(e.target.value); setFocusOn(null); setSel(null); }} aria-label="Start from">
+                  <option value="">Everything</option>
+                  {roots.map((r) => <option key={r.id} value={r.id}>{r.kind === "entry" ? "▶ " : ""}{r.label}</option>)}
+                </select>
+              </label>
+            )}
             <div className="chips">
               {kinds.map(([k, n]) => {
                 const I = KIND_ICON[k] ?? Bot;
@@ -175,7 +201,13 @@ export default function AiPage() {
               {node ? (
                 <Inspector d={details} loading={detailsLoading} onSelect={pick} onOpenCode={openCode}
                   onFinding={(f) => go("review", { f })} onAsk={(q) => go("chat", { q })}
-                  onFocus={() => setFocusOn(focusOn === node.id ? null : node.id)} focused={focusOn === node.id} />
+                  onFocus={() => setFocusOn(focusOn === node.id ? null : node.id)} focused={focusOn === node.id}
+                  extra={roots.some((r) => r.id === node.id) || node.kind === "entry" || node.kind === "agent" || node.kind === "workflow" ? (
+                    <button className={`btn sm ${root === node.id ? "on" : ""}`} aria-pressed={root === node.id}
+                      title="Show everything this box starts or delegates to, down to tools and models"
+                      onClick={() => { setRoot(root === node.id ? "" : node.id); setFocusOn(null); }}>
+                      <Network size={13} />{root === node.id ? "Show everything" : "Show its tree"}
+                    </button>) : undefined} />
               ) : (
                 <div className="col" style={{ gap: 12 }}>
                   <div className="muted" style={{ fontSize: 13 }}>
