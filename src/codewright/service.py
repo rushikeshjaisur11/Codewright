@@ -91,9 +91,19 @@ class Workspace:
     watching: bool = False
     last_change: dict | None = None  # what the latest watched re-review found new or resolved
     _watch_stop: threading.Event | None = None
+    _cache_lock: threading.RLock = field(default_factory=threading.RLock)
+    _cache: dict = field(default_factory=dict)  # maps and the AI page, built once per revision of `result`
 
     # --------------------------------------------------------------- review
-    def run_review(self, *, proof: bool = True, base: str | None = None, bench: bool = False) -> ReviewResult:
+    def run_review(
+        self,
+        *,
+        proof: bool = True,
+        base: str | None = None,
+        bench: bool = False,
+        files: list[str] | None = None,
+        fresh: bool = False,
+    ) -> ReviewResult:
         with self.lock:
             started = time.time()
 
@@ -104,9 +114,17 @@ class Workspace:
             tell("stack", 0, 0)
             try:
                 self.result = review(
-                    self.root, run_proof=proof, top=None, base=base, progress=tell, bench=bench and proof
+                    self.root,
+                    run_proof=proof,
+                    top=None,
+                    base=base,
+                    progress=tell,
+                    bench=bench and proof,
+                    files=set(files) if files else None,
+                    fresh=fresh,
                 )
                 self.revision += 1
+                self._cache.clear()
                 self.index = CodeIndex(self.result.graph)
                 self.last_run = time.time()
                 with contextlib.suppress(OSError):
@@ -190,26 +208,46 @@ class Workspace:
         return fb.stats()
 
     # --------------------------------------------------------------- map
-    def amap(self, include_unused: bool = False) -> archmap.ArchMap:
+    def _cached(self, key, build):
+        """Build once per revision of the review: the maps are pure functions of it, and the UI asks for them
+        on every page visit and every click on a node."""
         r = self.ensure()
-        return archmap.ArchMap(r.graph, r.findings, include_unused=include_unused)
+        with self._cache_lock:
+            hit = self._cache.get(key)
+            if hit is None or hit[0] is not r:
+                hit = self._cache[key] = (r, build(r))
+        return hit[1]
+
+    def amap(self, include_unused: bool = False) -> archmap.ArchMap:
+        return self._cached(
+            ("amap", include_unused), lambda r: archmap.ArchMap(r.graph, r.findings, include_unused=include_unused)
+        )
 
     def ai_map(self):
         from . import aimap
 
-        r = self.ensure()
-        return aimap.AiMap(r.graph, r.findings)
+        return self._cached("aimap", lambda r: aimap.AiMap(r.graph, r.findings))
 
     def ai(self) -> dict:
         """Files that need a model and the agent architecture (see aimap)."""
-        from . import aimap
+
+        def build(r):
+            out = self.ai_map().to_dict()
+            unused = {u["file"]: u["reason"] for u in self.amap().unused}
+            for f in out["files"]:
+                f["unused"] = unused.get(f["file"], "")
+            return out
+
+        return self._cached("ai", build)
+
+    # --------------------------------------------------------------- which files to verify
+    def plan(self, use_ai: bool = True) -> dict:
+        """Files worth running the tests on, suggested by the model when one is set up (else by impact).
+        Nothing runs until the user confirms a list."""
+        from . import scope
 
         r = self.ensure()
-        out = aimap.build(r.graph, r.findings)
-        unused = {u["file"]: u["reason"] for u in self.amap().unused}
-        for f in out["files"]:
-            f["unused"] = unused.get(f["file"], "")
-        return out
+        return scope.plan(r.findings, r.scope.get("changed", []), self.root, use_ai=use_ai)
 
     def ask(self, question: str, history: list[dict] | None = None) -> dict:
         self.ensure()

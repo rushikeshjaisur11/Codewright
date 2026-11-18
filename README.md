@@ -52,6 +52,7 @@ The web app only answers requests addressed to `localhost`, and refuses requests
 | Dependencies | **Releases**: newer versions of each dependency, what an upgrade unlocks, and an upgrade preview for this repo: the findings an upgrade would add (things to fix first, with auto-patches marked) or resolve, from re-matching the code already scanned against the new version. **Audit**: declared against imported dependencies, with what to merge, drop or replace and how many packages leave the install |
 | Knowledge base | Every card, searchable and grouped by library and topic. With a repo open, each says whether it fits the locked version, needs an upgrade or isn't a dependency. Cards with a detector become findings; reference entries are for looking things up |
 | Settings | Model setup (provider, key, save and test), offline mode, team constraints, mute rules, MCP and CI snippets |
+| Verify what you choose | Opening a repo only re-scans (no tests). **Choose files to verify** asks your model which files are worth a test run (or ranks them by impact without one); you tick the list and only those run. Proof is cached in `.codewright/review-state.json` and reused until the file, its imports or the tests change |
 | Live review | **Go live** in the top bar re-reviews on every save (tests not run) and says what became new or resolved |
 | Repo switcher | Press `⌘K` / `Ctrl+K`: switch between open repos (branch, findings, last review), reopen recent ones (remembered in `~/.codewright/recent.json`) or browse this machine's folders to open a new one |
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -12,6 +13,7 @@ from . import critic, diffscope, graph, proof, proof_env, rank, rules, stack
 from .feedback import Feedback
 from .intents import detect
 from .models import Finding, Stack
+from .scope import ReviewState
 from .suggest import make_findings
 
 
@@ -28,6 +30,9 @@ class ReviewResult:
     feedback: Feedback = field(default_factory=Feedback)
     test_env: str = ""  # which interpreter ran the tests during proof, and why
     rules: dict = field(default_factory=dict)  # architecture rules and their violations (rules.summary)
+    scope: dict = field(default_factory=dict)  # what changed since proof last ran, and what is still unproven
+    proved_files: list[str] = field(default_factory=list)  # files whose tests ran against their patches this time
+    reused: int = 0  # findings whose proof came from an earlier run (nothing changed)
 
 
 def review(
@@ -46,9 +51,16 @@ def review(
     progress: Callable[[str, int, int], None] | None = None,
     bench: bool = False,
     bench_rounds: int = 3,
+    use_state: bool = True,
+    files: set[str] | None = None,
+    fresh: bool = False,
 ) -> ReviewResult:
     """`progress(stage, done, total)` reports each stage as it starts (stages: stack, graph, detect,
-    check, baseline, proof, rank) and counts within it; total is 0 when the stage has nothing to count."""
+    check, baseline, proof, rank) and counts within it; total is 0 when the stage has nothing to count.
+
+    Proof is the slow stage, so it is incremental: a finding whose file, imports, tests and patch are the same
+    as when its proof last ran keeps that result (stored in ``.codewright/review-state.json``) and is not run
+    again. `files` limits proof to those files (the rest keep what they had); `fresh` ignores the stored proofs."""
     t0 = time.perf_counter()
     root = Path(root).resolve()
     tell = progress or (lambda stage, done, total: None)
@@ -91,12 +103,21 @@ def review(
 
     # Drop malformed or hallucinated findings before spending time on proof.
     kept, rejected = critic.review(findings)
+    state = ReviewState(root) if use_state else None
+    reused: set[str] = set()
+    if state is not None and not fresh:
+        reused = state.reuse(kept, g)
+        k2, broke = critic.review(kept)  # a cached "broke tests" result drops the finding again
+        kept, rejected = k2, rejected + broke
+    proved_files: set[str] = set()
     if run_proof:
         from .graph import is_test_file
 
-        importers = {f.file: sorted(p for p in g.importers_of(f.file) if is_test_file(p)) for f in kept if f.patch}
+        todo = [f for f in kept if f.id not in reused and (files is None or f.file in files)]
+        proved_files = {f.file for f in todo if f.patch}
+        importers = {f.file: sorted(p for p in g.importers_of(f.file) if is_test_file(p)) for f in todo if f.patch}
         proof.prove(
-            kept,
+            todo,
             root,
             py,
             timeout=test_timeout,
@@ -110,9 +131,21 @@ def review(
         )
         kept, broke = critic.review(kept)
         rejected += broke
+        for f in kept:  # the ones left out of this run (not chosen) say why they are unproven
+            if f.patch and f.file not in proved_files and f.id not in reused and f.proof.value == "unverified":
+                f.proof_detail = f.proof_detail or "not selected for this run; choose it to run the tests against it"
     else:
         for f in kept:
-            f.proof_detail = "proof skipped (--no-proof)"
+            if f.id not in reused:
+                f.proof_detail = (
+                    "proof not run for this finding (run the review with proof, or choose its file to verify)"
+                )
+    scope: dict = {}
+    if state is not None:
+        if base is None:
+            with contextlib.suppress(OSError):
+                state.save(kept, g, proved_files=proved_files)
+        scope = state.summary(kept)
     tell("rank", 0, 0)
     weights = {f.id: fb.weight_for(f) for f in kept}
     return ReviewResult(
@@ -127,4 +160,7 @@ def review(
         fb,
         test_env if run_proof else "",
         arch,
+        scope,
+        sorted(proved_files),
+        len(reused),
     )

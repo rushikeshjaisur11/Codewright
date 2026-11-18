@@ -108,7 +108,7 @@ export default function App() {
     api.review(wid).then((d) => {
       setData(d);
       if (!d.has_result && !d.running) {
-        api.runReview(wid, true, "").then(() => reload());
+        api.runReview(wid, false, "").then(() => reload()); // a quick scan: tests only run on files you choose
       } else if (d.running) reload();
     });
     return () => { if (poll.current != null) { clearInterval(poll.current); poll.current = null; } };
@@ -242,8 +242,9 @@ export default function App() {
               </button>
             )}
             {wid && route.page !== "design" && (
-              <button className="btn primary" disabled={!!data?.running} onClick={() => runReview(true)}>
-                {data?.running ? <Spinner size={14} /> : <Play size={14} />}Run review
+              <button className="btn primary" disabled={!!data?.running} onClick={() => runReview(false)}
+                title="Re-scan the code for suggestions. Fast: tests are not run, and proof already gathered for unchanged files is kept">
+                {data?.running ? <Spinner size={14} /> : <Play size={14} />}Re-scan
               </button>
             )}
             {data?.running && <ProgressBar percent={data.progress?.percent} label="Review progress" />}

@@ -134,7 +134,7 @@ function ReleaseList({ tabs }: { tabs: JSX.Element }) {
         <div className="callout amber row" style={{ marginBottom: 14 }}>
           <Sparkles size={16} />
           <span className="grow">{fresh.length} new release{fresh.length > 1 ? "s" : ""} since the last check: {fresh.map((r) => `${r.name} ${r.latest}`).join(", ")}. A re-scan can catch new deprecations.</span>
-          <button className="btn sm" onClick={() => runReview(true)}>Re-scan</button>
+          <button className="btn sm" onClick={() => runReview(false)}>Re-scan</button>
         </div>
       )}
       <div className="card">
