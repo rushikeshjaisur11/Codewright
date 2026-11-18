@@ -33,12 +33,14 @@ export default function MapPage() {
   const [qOpen, setQOpen] = useState(false);
   const [showUnused, setShowUnused] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
-  const has = !!data?.result;
+  // The map needs only the parsed code: draw it as soon as that is ready, and refresh when findings arrive.
+  const has = !!data?.result || !!data?.graph_ready;
+  const done = !!data?.result;
 
   useEffect(() => {
     if (!wid || !has) return;
     api.mapMeta(wid).then(setMeta).catch((e) => toast(e.message, "error"));
-  }, [wid, has, toast]);
+  }, [wid, has, done, toast]);
 
   useEffect(() => {
     if (!wid || !has) return;
@@ -50,7 +52,7 @@ export default function MapPage() {
     api.map(wid, here.level, here.target, showUnused).then(setView)
       .catch((e) => { setView(null); toast(e.message, "error"); })
       .finally(() => setLoading(false));
-  }, [wid, has, here.level, here.target, showUnused, toast]);
+  }, [wid, has, here.level, here.target, showUnused, done, toast]);
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => {

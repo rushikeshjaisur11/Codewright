@@ -113,12 +113,27 @@ function ReleaseList({ tabs }: { tabs: JSX.Element }) {
   const toast = useToast();
   const [rows, setRows] = useState<Release[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  // Refreshes keep the current rows on screen; only the first load shows a spinner.
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  // The check runs in the background: rows appear as each package answers instead of all at the end.
   const load = () => {
     if (!wid) return;
     setRefreshing(true);
-    api.releases(wid).then(setRows).catch((e) => { toast(e.message, "error"); setRows((r) => r ?? []); })
-      .finally(() => setRefreshing(false));
+    let live = true;
+    const tick = async (first: boolean) => {
+      try {
+        const p = first ? await api.releasesStart(wid) : await api.releasesProgress(wid);
+        if (!live) return;
+        setRows(p.rows);
+        setProgress({ done: p.done, total: p.total });
+        if (p.error) toast(p.error, "error");
+        if (p.running) setTimeout(() => tick(false), 500);
+        else setRefreshing(false);
+      } catch (e) {
+        toast((e as Error).message, "error"); setRows((r) => r ?? []); setRefreshing(false);
+      }
+    };
+    tick(true);
+    return () => { live = false; };
   };
   useEffect(() => setRows(null), [wid]);
   useEffect(load, [wid, data?.has_result]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -128,7 +143,7 @@ function ReleaseList({ tabs }: { tabs: JSX.Element }) {
     <div className="page">
       <div className="page-head">
         <div><h1>Release watcher</h1><p>New releases of your dependencies: what each upgrade unlocks, and a preview of what it would change in this repo's code.</p></div>
-        <div className="actions">{tabs}<button className="btn" onClick={load} disabled={refreshing}>{refreshing ? <Spinner size={14} /> : <RefreshCw size={14} />}Check PyPI</button></div>
+        <div className="actions">{tabs}<button className="btn" onClick={load} disabled={refreshing}>{refreshing ? <Spinner size={14} /> : <RefreshCw size={14} />}{refreshing && progress?.total ? `Checking ${progress.done}/${progress.total}` : "Check PyPI"}</button></div>
       </div>
       {fresh.length > 0 && (
         <div className="callout amber row" style={{ marginBottom: 14 }}>
@@ -138,7 +153,7 @@ function ReleaseList({ tabs }: { tabs: JSX.Element }) {
         </div>
       )}
       <div className="card">
-        {rows == null ? <div className="card-pad"><Spinner /></div> : rows.length === 0 ? (
+        {rows == null || (rows.length === 0 && refreshing) ? <div className="card-pad"><Spinner /></div> : rows.length === 0 ? (
           <Empty icon={<Package size={22} />} title="No dependencies">Add a lockfile, requirements file or pyproject dependencies to this repo.</Empty>
         ) : (
           <table className="table">

@@ -190,7 +190,10 @@ export default function App() {
 
   // A repo's first review: pages that need a result show the progress instead of an empty state.
   const needsResult = !["design", "knowledge", "settings"].includes(route.page);
-  const firstRun = needsResult && !!data && !data.result && data.running;
+  // These pages need only the parsed code, so they show as soon as it is read, while findings are still computed.
+  const graphOnly = ["map", "ai", "releases", "rules"].includes(route.page);
+  const firstRun = needsResult && !!data && !data.result && data.running && !(graphOnly && data.graph_ready);
+  const finishing = graphOnly && !!data && !data.result && data.running && !!data.graph_ready;
   const flush = !firstRun && (route.page === "map" || route.page === "chat");
   return (
     <AppCtx.Provider value={ctx}>
@@ -252,6 +255,7 @@ export default function App() {
           <main className={`content ${flush ? "flush" : ""}`}>
             <Suspense fallback={<div className="page"><Spinner /></div>}>
             {firstRun && <ReviewProgress name={data!.name} progress={data!.progress} />}
+            {finishing && <div className="callout row" style={{ margin: "10px 16px 0", fontSize: 13 }}><Spinner size={13} />Findings are still being worked out{data?.progress ? ` (${data.progress.label.toLowerCase()}, ${data.progress.percent}%)` : ""}. This page is already live and fills in when they land.</div>}
             {!firstRun && <>
             {route.page === "overview" && <Overview />}
             {route.page === "review" && <Review />}

@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from packaging.version import InvalidVersion, Version
@@ -97,38 +98,39 @@ def bump(installed: str | None, new: str) -> str:
     return "patch"
 
 
-def check(stack: Stack, root: str | Path | None = None, names: list[str] | None = None, graph=None) -> list[dict]:
+def check(
+    stack: Stack,
+    root: str | Path | None = None,
+    names: list[str] | None = None,
+    graph=None,
+    on_row: Callable[[dict], None] | None = None,
+) -> list[dict]:
     """Newer releases per dependency, the cards an upgrade unlocks and, with the repo's code graph,
-    an upgrade preview: findings that would appear or go away at the latest version."""
+    an upgrade preview: findings that would appear or go away at the latest version.
+
+    `on_row(row)` is called as each dependency's lookup finishes, so a UI can show rows while the rest are
+    still being asked. The returned list is sorted by how big the bump is."""
     index = resolve_index(root)
     cache = _load_cache(root, index)
     previous = {k: v.get("version") for k, v in cache.items()}
     cards = card_store.load()
-    out = []
     names = names or sorted(stack.dependencies)
-    prefetch(names, cache, index=index)
     libraries = {c.library for c in cards if c.library and c.intent != card_store.REFERENCE}
-    matches = None
-    if graph is not None:
-        from .intents import detect
+    matches: list | None = None  # detected on first use: only an upgrade preview needs it
 
-        matches = detect(graph)  # once, shared by every preview
-    for name in names:
+    def row_for(name: str, info: dict | None) -> dict:
+        nonlocal matches
         dep = stack.dependencies.get(name)
-        info = latest(name, cache, index=index)
-        if info is None:
-            out.append(
-                {
-                    "name": name,
-                    "installed": dep.version if dep else None,
-                    "latest": None,
-                    "bump": "unknown",
-                    "new_since_last_check": False,
-                    "unlocks": [],
-                }
-            )
-            continue
         installed = dep.version if dep else None
+        if info is None:
+            return {
+                "name": name,
+                "installed": installed,
+                "latest": None,
+                "bump": "unknown",
+                "new_since_last_check": False,
+                "unlocks": [],
+            }
         unlocks = [
             {"card": c.id, "title": c.title, "topic": c.topic, "reference": c.intent == card_store.REFERENCE}
             for c in cards
@@ -137,22 +139,38 @@ def check(stack: Stack, root: str | Path | None = None, names: list[str] | None 
             and card_store.version_matches(info["version"], c.versions)
             and not card_store.version_matches(installed, c.versions)
         ]
-        out.append(
-            {
-                "name": name,
-                "installed": installed,
-                "latest": info["version"],
-                "released": info["released"],
-                "bump": bump(installed, info["version"]),
-                "new_since_last_check": previous.get(name) not in (None, info["version"]),
-                "unlocks": unlocks,
-                "preview": (
-                    upgrade_preview(graph, stack, name, info["version"], matches, cards)
-                    if graph is not None and installed and installed != info["version"] and name in libraries
-                    else None
-                ),
-            }
-        )
+        preview = None
+        if graph is not None and installed and installed != info["version"] and name in libraries:
+            if matches is None:
+                from .intents import detect
+
+                matches = detect(graph)
+            preview = upgrade_preview(graph, stack, name, info["version"], matches, cards)
+        return {
+            "name": name,
+            "installed": installed,
+            "latest": info["version"],
+            "released": info["released"],
+            "bump": bump(installed, info["version"]),
+            "new_since_last_check": previous.get(name) not in (None, info["version"]),
+            "unlocks": unlocks,
+            "preview": preview,
+        }
+
+    out = []
+    todo = [n for n in dict.fromkeys(names)]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(latest, n, cache, 8.0, index): n for n in todo}
+        for fut in as_completed(futures):
+            name = futures[fut]
+            try:
+                info = fut.result()
+            except Exception:
+                info = None
+            row = row_for(name, info)
+            out.append(row)
+            if on_row:
+                on_row(row)
     _save_cache(root, cache, index)
     order = {"major": 0, "minor": 1, "patch": 2, "unknown": 3, "current": 4}
     return sorted(out, key=lambda r: (order[r["bump"]], r["name"]))

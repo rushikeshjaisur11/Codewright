@@ -54,6 +54,7 @@ def review(
     use_state: bool = True,
     files: set[str] | None = None,
     fresh: bool = False,
+    on_graph: Callable[[graph.CodeGraph, Stack], None] | None = None,
 ) -> ReviewResult:
     """`progress(stage, done, total)` reports each stage as it starts (stages: stack, graph, detect,
     check, baseline, proof, rank) and counts within it; total is 0 when the stage has nothing to count.
@@ -68,6 +69,8 @@ def review(
     st = stack.discover(root)
     tell("graph", 0, 0)
     g = graph.build(root, lambda done, total: tell("graph", done, total))
+    if on_graph:  # the map, files and dependencies need only this: show them while the rest runs
+        on_graph(g, st)
     tell("detect", 0, 0)
     matches = detect(g)
     all_cards = card_store.load(extra_cards)

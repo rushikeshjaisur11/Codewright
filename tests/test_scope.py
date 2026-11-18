@@ -135,3 +135,53 @@ def test_workspace_builds_the_ai_page_once_per_review(repo):
     first = w.ai_map()
     w.run_review(proof=False)
     assert w.ai_map() is not first
+
+
+def test_map_and_dependencies_are_available_before_the_review_finishes(repo, monkeypatch):
+    import threading
+
+    from codewright import engine
+    from codewright.service import Pending
+
+    gate, reached = threading.Event(), threading.Event()
+    real = engine.detect
+
+    def slow(g):
+        reached.set()
+        gate.wait(10)
+        return real(g)
+
+    monkeypatch.setattr(engine, "detect", slow)
+    w = Workspace(repo)
+    t = threading.Thread(target=lambda: w.run_review(proof=False))
+    t.start()
+    try:
+        assert reached.wait(10)  # the graph is built; detection is stuck
+        assert w.result is None and w.graph_ready
+        assert w.amap().system()  # the map already draws
+        assert w.ai()["files"] is not None
+        assert w.deps(online=False)["declared"] >= 0
+    finally:
+        gate.set()
+        t.join(20)
+    assert w.result is not None and w.early is None
+    fresh = Workspace(repo)
+    fresh.running = True  # first parse still going: callers are told to wait, not blocked
+    with pytest.raises(Pending):
+        fresh.view()
+
+
+def test_release_rows_stream_as_each_lookup_finishes(repo, monkeypatch):
+    from codewright import watcher
+
+    seen = []
+
+    def fake_latest(name, cache=None, timeout=8.0, index=None):
+        return {"version": "99.0", "released": "2026-01-01", "fetched": 1e12}
+
+    monkeypatch.setattr(watcher, "latest", fake_latest)
+    monkeypatch.setattr(watcher, "resolve_index", lambda root=None: watcher.PackageIndex("https://x/simple", ""))
+    r = review(repo, run_proof=False, top=None)
+    rows = watcher.check(r.stack, repo, on_row=seen.append)
+    assert len(seen) == len(rows) == len(r.stack.dependencies)
+    assert {x["name"] for x in seen} == {x["name"] for x in rows}
