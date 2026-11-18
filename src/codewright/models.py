@@ -180,6 +180,7 @@ class Finding:
     category: str = "library"  # see CATEGORIES: architecture, agents, performance, reliability, upgrade, library
     covered: bool = False  # a test reaches this function: run during proof, else by the call graph
     reached_by: list[str] = field(default_factory=list)  # test ids that ran it during proof (first few)
+    proof_cached: bool = False  # proof is from an earlier run: the file, its imports and the tests are unchanged
     perf: dict[str, Any] | None = None  # measured before/after timing of the function (proof with --bench)
 
     def to_dict(self) -> dict[str, Any]:

@@ -120,7 +120,16 @@ export interface ReviewData {
   files: number; functions: number; entry_points: number; intent_matches: number; seconds: number;
   base: string | null; findings: Finding[]; rejected: Finding[]; muted: Finding[]; metrics: Metrics;
   rules?: RulesSummary;
+  scope?: ReviewScope; proved_files?: string[]; reused_proofs?: number;
 }
+/** What the last review knows about proof: files edited since the tests last ran on them, and what is unproven. */
+export interface ReviewScope {
+  changed: string[]; changed_count: number; never_reviewed: boolean; unproven: number; unproven_files: number; last_proof: number | null;
+}
+export interface PlanFile {
+  file: string; reason: string; selected: boolean; findings: number; impact: number; hot: number; covered: number; intents: string[]; changed: boolean;
+}
+export interface ReviewPlan { source: "ai" | "ranking"; note: string; files: PlanFile[]; total: number; changed: number }
 
 export interface Progress {
   stage: string; label: string; step: number; steps: number; stages: { key: string; label: string }[];
@@ -315,8 +324,9 @@ export const api = {
   forgetRecent: (path: string) => req<{ forgot: string }>("DELETE", `/api/recent?path=${q(path)}`),
   folders: (path = "") => req<FolderListing>("GET", `/api/fs?path=${q(path)}`),
   review: (id: string) => req<ReviewPayload>("GET", `${w(id)}/review`),
-  runReview: (id: string, proof: boolean, base: string, bench = false) =>
-    req<WorkspaceInfo>("POST", `${w(id)}/review`, { proof, base, bench }),
+  runReview: (id: string, proof: boolean, base: string, bench = false, files?: string[], fresh = false) =>
+    req<WorkspaceInfo>("POST", `${w(id)}/review`, { proof, base, bench, files, fresh }),
+  reviewPlan: (id: string, ai = true) => req<ReviewPlan>("GET", `${w(id)}/review/plan?ai=${ai}`),
   watch: (id: string, on: boolean) => req<WorkspaceInfo>("POST", `${w(id)}/watch`, { on }),
   revision: (id: string) => req<Revision>("GET", `${w(id)}/revision`),
   feedback: (id: string, fid: string, status: string, reason = "") =>

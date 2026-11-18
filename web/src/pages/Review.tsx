@@ -4,6 +4,7 @@ import {
   Search, ShieldAlert, ShieldCheck, ThumbsDown, ThumbsUp, TriangleAlert, Wand2,
 } from "lucide-react";
 import { useApp } from "../App";
+import VerifyPanel from "../VerifyPanel";
 import { api, Category, Finding } from "../api";
 import {
   CATEGORY, CATEGORY_ORDER, CategoryBadge, CodeView, CopyButton, DiffView, Empty, Inline, Modal, ProofBadge, Source, Spinner, Tabs,
@@ -54,7 +55,7 @@ export default function Review() {
 
   if (!data) return <Empty icon={<Spinner />} title="Loading" />;
   if (!r) return <Empty icon={data.running ? <Spinner /> : <Play size={20} />} title={data.running ? "Reviewing the repository" : "No review yet"}>
-    {data.running ? "Findings appear here when the run finishes." : <button className="btn primary" onClick={() => runReview(true)}><Play size={14} />Run review</button>}
+    {data.running ? "Findings appear here when the run finishes." : <button className="btn primary" onClick={() => runReview(false)}><Play size={14} />Scan the repo</button>}
   </Empty>;
 
   async function verdict(f: Finding, s: string, why = "") {
@@ -130,6 +131,8 @@ export default function Review() {
           <button className="btn" onClick={() => showReport("md")}><Download size={14} />Report</button>
         </div>
       </div>
+
+      {!r.base && <VerifyPanel scope={r.scope} reused={r.reused_proofs ?? 0} />}
 
       {prMode && (
         <div className="prbar">

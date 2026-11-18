@@ -4,6 +4,7 @@ import {
   ShieldCheck, ThumbsUp, XCircle,
 } from "lucide-react";
 import { useApp } from "../App";
+import VerifyPanel from "../VerifyPanel";
 import { api, Drift, Insight, Release } from "../api";
 import { CATEGORY, CATEGORY_ORDER, CategoryBadge, Empty, Inline, ProofBadge, Spinner, Stat, intentLabel, useToast } from "../ui";
 
@@ -75,6 +76,8 @@ export default function Overview() {
           <p className="mono faint" style={{ fontSize: 12.5 }}>{data.root}</p>
         </div>
       </div>
+
+      {!r.base && <VerifyPanel scope={r.scope} reused={r.reused_proofs ?? 0} />}
 
       <div className="stats">
         <Stat label="Findings shown" icon={<AlertCircle size={14} />} value={m.shown}

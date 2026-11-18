@@ -158,6 +158,9 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
                     ],
                 },
                 "files": len(r.graph.files),
+                "scope": r.scope,
+                "proved_files": r.proved_files,
+                "reused_proofs": r.reused,
                 "functions": sum(1 for _ in r.graph.functions()),
                 "entry_points": len(r.graph.entry_points) + len(r.graph.app_entries),
                 "intent_matches": r.total_matches,
@@ -186,18 +189,27 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         proof: Annotated[bool, Body(embed=True)] = True,
         base: Annotated[str, Body(embed=True)] = "",
         bench: Annotated[bool, Body(embed=True)] = False,
+        files: Annotated[list[str] | None, Body(embed=True)] = None,
+        fresh: Annotated[bool, Body(embed=True)] = False,
     ):
+        """Review the repo. `files` limits the test runs to those files; findings whose file and tests are
+        unchanged keep their earlier proof unless `fresh`."""
         w = ws(wid)
         if w.running:
             return ws_summary(wid, w)
 
         def run():
             with contextlib.suppress(Exception):  # the error is recorded on w.error
-                w.run_review(proof=proof, base=base or None, bench=bench)
+                w.run_review(proof=proof, base=base or None, bench=bench, files=files, fresh=fresh)
 
         w.running = True
         threading.Thread(target=run, daemon=True).start()
         return ws_summary(wid, w)
+
+    @app.get("/api/w/{wid}/review/plan")
+    def review_plan(wid: str, ai: bool = True):
+        """Which files to run the tests on, chosen by the model when one is set up. Only suggests."""
+        return ws(wid).plan(use_ai=ai)
 
     @app.post("/api/w/{wid}/watch")
     def watch(wid: str, on: Annotated[bool, Body(embed=True)]):

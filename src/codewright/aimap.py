@@ -377,6 +377,7 @@ class AiMap:
         self._aliases: dict[tuple[str, str], str] = {}  # (file, var) -> agent id, for `x = make_agent()`
         self._graph_vars: dict[tuple[str, str], str] = {}  # (file, var) -> graph id, for StateGraph and .compile()
         self.sdk_files: dict[str, list[str]] = {}
+        self._run_names: tuple[set[str], re.Pattern] | None = None
         for path, pf in graph.files.items():
             if is_test_file(path):
                 continue
@@ -792,8 +793,12 @@ class AiMap:
         if not self.agents:
             return
         names = set(self._vars)
-        src = pf.source
-        if not any(n.encode() in src for n in names):
+        if self._run_names is None or self._run_names[0] != names:
+            self._run_names = (
+                names,
+                re.compile(rb"\b(?:" + b"|".join(re.escape(n).encode() for n in sorted(names)) + rb")\b"),
+            )
+        if self._run_names[1].search(pf.source) is None:  # one regex pass, not a substring scan per name
             return
         for n in _walk(pf.root):
             if n.type != "call" or (callee := n.child_by_field_name("function")) is None:
@@ -892,6 +897,7 @@ class AiMap:
             af = get(path)
             af.via = sorted(targets)[:6]
 
+        runner_files = {r.file for r in self.runs}
         for path, af in out.items():
             roles = []
             if af.agents:
@@ -900,7 +906,7 @@ class AiMap:
                 roles.append("model calls")
             if af.tools:
                 roles.append("tools")
-            if any(r.file == path for r in self.runs):
+            if path in runner_files:
                 roles.append("runs agents")
             if af.via:
                 roles.append("calls AI code")

@@ -269,6 +269,10 @@ def is_tooling(path: str) -> bool:
     return parts[-1] in TOOLING_FILES or any(p in TOOLING_DIRS for p in parts[:-1])
 
 
+# A quote followed by a dotted name: `"pkg.plugins.csv"` or `'a.b:func'` (importlib, plugin lists, entry points).
+_STRING_DOTTED = re.compile(rb"[\"']([A-Za-z_][\w]*(?:\.[A-Za-z_]\w*)+)")
+
+
 class ArchMap:
     def __init__(self, graph: CodeGraph, findings: list[Finding] | None = None, include_unused: bool = False):
         self.g = graph
@@ -342,6 +346,7 @@ class ArchMap:
         launch = self._launch_text()
         roots = set()
         weak = set()  # roots only because of their file name (app.py nobody imports): not proof of an app
+        entry_files = {k.partition("::")[0] for k in self.g.entry_points}
         for p in files:
             if is_tooling(p):
                 continue
@@ -350,14 +355,10 @@ class ArchMap:
             names = [mod, *importable_names(mod)]
             base = p.rsplit("/", 1)[-1]
             entry = self.g.app_entries.get(p)
-            if (
-                entry is not None
-                and all(r.startswith("is named") for r in entry.reasons)
-                and not any(k.partition("::")[0] == p for k in self.g.entry_points)
-            ):
+            if entry is not None and all(r.startswith("is named") for r in entry.reasons) and p not in entry_files:
                 weak.add(p)
             if (
-                any(k.partition("::")[0] == p for k in self.g.entry_points)
+                p in entry_files
                 or p in self.g.app_entries
                 or pf.module.has_main_guard
                 or p.endswith(("__main__.py", "wsgi.py", "asgi.py"))
@@ -383,11 +384,17 @@ class ArchMap:
                     stack.append(parent)
             stack.extend(self.modules[m] for m in imports[p] if self.modules[m] not in used)
         # Dynamic imports: a module named in a string by code in use (importlib, plugin lists).
-        sources = b"\n".join(self.g.files[p].source for p in used)
+        # One pass over the used files collects every dotted name a string literal starts with, so each
+        # unused module is a set lookup (the old substring search over all sources was O(modules x bytes)).
+        literals: set[str] = set()
+        for p in used:
+            for m in _STRING_DOTTED.finditer(self.g.files[p].source):
+                parts = m.group(1).decode().split(".")
+                literals.update(".".join(parts[:i]) for i in range(2, len(parts) + 1))
         for p in files:
             if p not in used and not is_tooling(p):
                 mod = module_name(p)
-                if any(f"{q}{n}".encode() in sources for n in [mod, *importable_names(mod)] if "." in n for q in "\"'"):
+                if any(n in literals for n in [mod, *importable_names(mod)] if "." in n):
                     used.add(p)
         tested_only = set()
         for path in self.g.files:
