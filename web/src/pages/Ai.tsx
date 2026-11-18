@@ -33,13 +33,15 @@ export default function AiPage() {
   const [focus, setFocusPt] = useState<{ id: string; n: number } | null>(null);
   const [showMermaid, setShowMermaid] = useState(false);
   const [root, setRoot] = useState("");
-  const has = !!data?.result;
+  // The map needs only the parsed code: draw it as soon as that is ready, and refresh when findings arrive.
+  const has = !!data?.result || !!data?.graph_ready;
+  const done = !!data?.result;
 
   useEffect(() => {
     if (!wid || !has) return;
     setLoading(true);
     api.ai(wid).then(setRep).catch((e) => toast(e.message, "error")).finally(() => setLoading(false));
-  }, [wid, has, data?.revision, toast]);
+  }, [wid, has, done, data?.revision, toast]);
 
   const byId = useMemo(() => new Map((rep?.architecture.nodes ?? []).map((n) => [n.id, n])), [rep]);
   const node = sel ? byId.get(sel) ?? null : null;

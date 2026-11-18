@@ -139,7 +139,7 @@ export interface Progress {
 export interface WorkspaceInfo {
   id: string; root: string; name: string; running: boolean; progress?: Progress | null; last_run: number | null; error: string | null;
   has_result: boolean; branch: string | null; findings: number | null; verified: number | null; files: number | null;
-  watching?: boolean; revision?: number;
+  watching?: boolean; revision?: number; graph_ready?: boolean;
 }
 export interface ChangeItem { id: string; title: string; file: string; line: number }
 export interface Revision {
@@ -203,6 +203,7 @@ export interface Release {
   unlocks: { card: string; title: string; topic?: string; reference?: boolean }[];
   preview?: { new: PreviewItem[]; resolved: PreviewItem[] } | null;
 }
+export interface ReleaseProgress { running: boolean; total: number; done: number; rows: Release[]; error: string | null }
 export interface PreviewItem { card: string; title: string; file: string; line: number; autofix: boolean }
 
 export type FitStatus = "fits" | "upgrade" | "older" | "unused" | "unknown";
@@ -347,6 +348,8 @@ export const api = {
   chat: (id: string, question: string, history: { role: string; content: string }[]) =>
     req<ChatAnswer>("POST", `${w(id)}/chat`, { question, history }),
   releases: (id: string) => req<Release[]>("GET", `${w(id)}/releases`),
+  releasesStart: (id: string) => req<ReleaseProgress>("POST", `${w(id)}/releases/start`),
+  releasesProgress: (id: string) => req<ReleaseProgress>("GET", `${w(id)}/releases/progress`),
   rules: (id: string) => req<RulesSummary>("GET", `${w(id)}/rules`),
   applyMany: (id: string, ids: string[] | null, verified_only: boolean, dry_run: boolean) =>
     req<ApplyResult>("POST", `${w(id)}/apply`, { ids, verified_only, dry_run }),

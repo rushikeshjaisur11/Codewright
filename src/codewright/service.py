@@ -78,6 +78,16 @@ def diff_findings(before: dict, findings: list) -> tuple[dict, list, list]:
 
 
 @dataclass
+class Snapshot:
+    """What is known before a review finishes: the parsed code and the stack, with no findings yet.
+    Enough for the map, the file lists, the dependency audit and the rules."""
+
+    graph: object
+    stack: object
+    findings: list = field(default_factory=list)
+
+
+@dataclass
 class Workspace:
     root: Path
     result: ReviewResult | None = None
@@ -91,6 +101,8 @@ class Workspace:
     watching: bool = False
     last_change: dict | None = None  # what the latest watched re-review found new or resolved
     _watch_stop: threading.Event | None = None
+    early: Snapshot | None = None  # the graph of the review in progress, before findings exist
+    _releases: dict | None = None  # progress and rows of the running (or last) release check
     _cache_lock: threading.RLock = field(default_factory=threading.RLock)
     _cache: dict = field(default_factory=dict)  # maps and the AI page, built once per revision of `result`
 
@@ -122,6 +134,7 @@ class Workspace:
                     bench=bench and proof,
                     files=set(files) if files else None,
                     fresh=fresh,
+                    on_graph=self._graph_ready,
                 )
                 self.revision += 1
                 self._cache.clear()
@@ -134,7 +147,26 @@ class Workspace:
                 self.error = f"{type(exc).__name__}: {exc}"
                 raise
             finally:
-                self.running, self.progress = False, None
+                self.running, self.progress, self.early = False, None, None
+
+    def _graph_ready(self, g, st) -> None:
+        self.early = Snapshot(g, st)
+
+    @property
+    def graph_ready(self) -> bool:
+        return self.result is not None or self.early is not None
+
+    def view(self):
+        """The newest thing with a graph and a stack: the finished review, else the one in progress.
+        While the first parse is running it waits for the graph (not for the findings)."""
+        deadline = time.time() + 600
+        while self.result is None and self.early is None and self.running and time.time() < deadline:
+            time.sleep(0.05)
+        if self.result is not None:
+            return self.result
+        if self.early is not None:
+            return self.early
+        return self.ensure()
 
     # --------------------------------------------------------------- live watch
     def start_watch(self, interval: float = 1.0) -> None:
@@ -211,7 +243,7 @@ class Workspace:
     def _cached(self, key, build):
         """Build once per revision of the review: the maps are pure functions of it, and the UI asks for them
         on every page visit and every click on a node."""
-        r = self.ensure()
+        r = self.view()
         with self._cache_lock:
             hit = self._cache.get(key)
             if hit is None or hit[0] is not r:
@@ -268,18 +300,45 @@ class Workspace:
         intent = design.load_intended(self.root)
         if intent is None:
             return None
-        r = self.ensure()
+        r = self.view()
         return design.drift(intent, self.amap().system(), r.graph)
 
     def releases(self) -> list[dict]:
-        r = self.ensure()
+        r = self.view()
         return watcher.check(r.stack, self.root, graph=r.graph)
+
+    def releases_start(self) -> dict:
+        """Check releases in the background and keep the rows found so far, so the page fills in as they arrive."""
+        cur = self._releases
+        if cur and cur["running"]:
+            return self.releases_progress()
+        r = self.view()
+        state = {"running": True, "total": len(r.stack.dependencies), "rows": [], "error": None, "started": time.time()}
+        self._releases = state
+
+        def run() -> None:
+            try:
+                state["rows"] = []
+                watcher.check(r.stack, self.root, graph=r.graph, on_row=state["rows"].append)
+            except Exception as exc:
+                state["error"] = f"{type(exc).__name__}: {exc}"
+            finally:
+                state["running"] = False
+
+        threading.Thread(target=run, daemon=True, name=f"codewright-releases-{self.root.name}").start()
+        return self.releases_progress()
+
+    def releases_progress(self) -> dict:
+        s = self._releases or {"running": False, "total": 0, "rows": [], "error": None}
+        order = {"major": 0, "minor": 1, "patch": 2, "unknown": 3, "current": 4}
+        rows = sorted(list(s["rows"]), key=lambda r: (order[r["bump"]], r["name"]))
+        return {"running": s["running"], "total": s["total"], "done": len(rows), "rows": rows, "error": s["error"]}
 
     # --------------------------------------------------------------- architecture rules
     def rules(self) -> dict:
         from . import rules as rules_mod
 
-        return rules_mod.summary(self.ensure().graph, self.root)
+        return rules_mod.summary(self.view().graph, self.root)
 
     def rules_init(self, overwrite: bool = False) -> dict:
         """Write the rules today's code keeps (dependency directions between packages)."""
@@ -365,7 +424,7 @@ class Workspace:
         from . import deps as deps_mod
         from . import proof_env
 
-        r = self.ensure()
+        r = self.view()
         # python="" means: don't run any interpreter (licences and import names then come from the tables).
         # Only the repo's own environment describes its packages; Codewright's own would mislead.
         if python is None:
@@ -378,7 +437,7 @@ class Workspace:
     def migrations(self) -> list[dict]:
         from . import migrate
 
-        r = self.ensure()
+        r = self.view()
         return migrate.overview(r.graph, r.stack, self.root)
 
     def migration_plan(self, name: str, batch: int = 5, version: str | None = None, save: bool = True) -> dict:

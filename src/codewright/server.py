@@ -79,6 +79,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
             "findings": len(w.result.findings) if w.result else None,
             "verified": sum(1 for f in w.result.findings if f.proof.value == "verified") if w.result else None,
             "files": len(w.result.graph.files) if w.result else None,
+            "graph_ready": w.graph_ready,
             "watching": w.watching,
             "revision": w.revision,
         }
@@ -369,6 +370,15 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     @app.get("/api/w/{wid}/drift")
     def drift(wid: str):
         return ws(wid).drift()
+
+    @app.post("/api/w/{wid}/releases/start")
+    def releases_start(wid: str):
+        """Start a release check in the background; poll /releases/progress for rows as they arrive."""
+        return ws(wid).releases_start()
+
+    @app.get("/api/w/{wid}/releases/progress")
+    def releases_progress(wid: str):
+        return ws(wid).releases_progress()
 
     @app.get("/api/w/{wid}/releases")
     def releases(wid: str):
