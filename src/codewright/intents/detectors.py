@@ -11,11 +11,12 @@ same way later; the critic and proof stages treat both identically.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Iterator
 
-from tree_sitter import Node
+from tree_sitter import Node, Query, QueryCursor
 
-from ..graph import CodeGraph, ParsedFile, is_test_file, resolve, text
+from ..graph import PY, CodeGraph, ParsedFile, is_test_file, resolve, text
 from ..models import Function, IntentMatch
 
 Detector = Callable[[ParsedFile, Function, Node, CodeGraph], list[IntentMatch]]
@@ -80,6 +81,24 @@ def graph_detector(intent: str):
 
 def all_intents() -> set[str]:
     return set(DETECTORS) | set(MODULE_DETECTORS) | set(GRAPH_DETECTORS)
+
+
+_QUERIES: dict[tuple[str, ...], Query] = {}
+
+
+def nodes(pf: ParsedFile, *types: str) -> list[Node]:
+    """Every node of these types anywhere in the file (nested definitions included), in the order a
+    depth-first walk meets them. One native query per file and type set, cached on the file: several
+    detectors scan whole files, and walking every node in Python was most of detection on big repos."""
+    key = ("nodes", *types)
+    hit = pf.cache.get(key)
+    if hit is None:
+        q = _QUERIES.get(types)
+        if q is None:
+            q = _QUERIES[types] = Query(PY, "[" + " ".join(f"({t})" for t in types) + "] @n")
+        found = QueryCursor(q).captures(pf.root).get("n", [])
+        hit = pf.cache[key] = sorted(found, key=lambda n: (n.start_byte, -n.end_byte))
+    return hit
 
 
 def walk(node: Node, *, into_defs: bool = False) -> Iterator[Node]:
@@ -294,7 +313,10 @@ def is_celery_task(fn: Function, pf: ParsedFile) -> bool:
 
 
 def _imports_adk(pf: ParsedFile) -> bool:
-    return any(v.startswith("google.adk") for v in pf.module.imports.values())
+    hit = pf.cache.get("imports_adk")
+    if hit is None:
+        hit = pf.cache["imports_adk"] = any(v.startswith("google.adk") for v in pf.module.imports.values())
+    return hit
 
 
 @detector("agent-orchestrator")
@@ -387,18 +409,22 @@ def _file_triggers(pf: ParsedFile) -> dict[str, tuple[bytes, ...]]:
     return out
 
 
-def detect(graph: CodeGraph, only: set[str] | None = None) -> list[IntentMatch]:
+def file_hash(pf: ParsedFile) -> str:
+    h = pf.cache.get("sha1")
+    if h is None:
+        h = pf.cache["sha1"] = hashlib.sha1(pf.source).hexdigest()
+    return h
+
+
+def detect_file(pf: ParsedFile, graph: CodeGraph, only: set[str] | None = None) -> list[IntentMatch]:
+    """Function and module detectors for one file. They read only that file, so the result can be reused
+    for as long as the file's bytes are the same."""
     matches: list[IntentMatch] = []
-    file_triggers: dict[str, dict[str, tuple[bytes, ...]]] = {}
-    for pf, fn in graph.functions():
-        if is_test_file(pf.path):
-            continue
+    triggers = _file_triggers(pf)
+    for fn in pf.module.functions:
         node = pf.nodes.get(fn.qualname)
         if node is None:
             continue
-        if pf.path not in file_triggers:
-            file_triggers[pf.path] = _file_triggers(pf)
-        triggers = file_triggers[pf.path]
         source = pf.source[node.start_byte : node.end_byte]
         for intent, det in DETECTORS.items():
             if only and intent not in only:
@@ -407,13 +433,65 @@ def detect(graph: CodeGraph, only: set[str] | None = None) -> list[IntentMatch]:
             if words is not None and not any(w in source for w in words):
                 continue
             matches.extend(det(pf, fn, node, graph))
-    for pf in graph.files.values():
-        if is_test_file(pf.path):
-            continue
-        for intent, mdet in MODULE_DETECTORS.items():
-            if not only or intent in only:
-                matches.extend(mdet(pf))
-    for intent, gdet in GRAPH_DETECTORS.items():
+    for intent, mdet in MODULE_DETECTORS.items():
         if not only or intent in only:
-            matches.extend(gdet(graph))
+            matches.extend(mdet(pf))
+    return matches
+
+
+GRAPH_KEY = "<whole graph>"  # cache entry for the whole-graph detectors
+
+
+def detect(
+    graph: CodeGraph,
+    only: set[str] | None = None,
+    cache: dict[str, dict] | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> list[IntentMatch]:
+    """Every match in the repo. With `cache` ({file: {"h": sha1, "m": matches}}), a file whose hash is
+    unchanged keeps its matches without being looked at again, and the cache is updated in place; the
+    whole-graph detectors always run. `progress(done, total)` is called as files are done."""
+    matches: list[IntentMatch] = []
+    use_cache = cache is not None and not only
+    files = [pf for pf in graph.files.values() if not is_test_file(pf.path)]
+    reused = 0
+    for n, pf in enumerate(files):
+        if progress and n % 50 == 0:
+            progress(n, len(files))
+        h = file_hash(pf) if use_cache else ""
+        hit = cache.get(pf.path) if use_cache else None
+        if hit is not None and hit.get("h") == h:
+            by_name = {fn.qualname: fn for fn in pf.module.functions}
+            for m in hit["m"]:  # point at this graph's Function objects
+                m.function = by_name.get(m.function.qualname, m.function)
+            matches.extend(hit["m"])
+            reused += 1
+            continue
+        found = detect_file(pf, graph, only)
+        if use_cache:
+            cache[pf.path] = {"h": h, "m": found}
+        matches.extend(found)
+    if not use_cache:
+        for intent, gdet in GRAPH_DETECTORS.items():
+            if not only or intent in only:
+                matches.extend(gdet(graph))
+        return matches
+    for path in [p for p in cache if p != GRAPH_KEY and p not in graph.files]:
+        del cache[path]
+    graph.__dict__["detect_reused"] = reused
+    # Whole-graph detectors (import cycles, layering...) depend on every file, tests included: reuse their
+    # matches only when no file at all changed.
+    whole = hashlib.sha1("".join(f"{p}:{file_hash(pf)};" for p, pf in sorted(graph.files.items())).encode())
+    whole = whole.hexdigest()
+    hit = cache.get(GRAPH_KEY)
+    if hit is not None and hit.get("h") == whole:
+        by_key = {(pf.path, fn.qualname): fn for pf, fn in graph.functions()}
+        for m in hit["m"]:
+            m.function = by_key.get((m.function.file, m.function.qualname), m.function)
+        matches.extend(hit["m"])
+        graph.__dict__["detect_graph_reused"] = True
+        return matches
+    found = [m for gdet in GRAPH_DETECTORS.values() for m in gdet(graph)]
+    cache[GRAPH_KEY] = {"h": whole, "m": found}
+    matches.extend(found)
     return matches

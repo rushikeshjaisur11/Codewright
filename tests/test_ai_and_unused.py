@@ -364,3 +364,21 @@ def test_adk_root_agent_and_langgraph_json_are_entry_points(tmp_path):
     assert ("adk:agent_pkg/agent.py", "agent_pkg/agent.py::root_agent", "runs") in edges
     assert ("lg:main", "graphs/flow.py::g", "runs") in edges
     assert ("graphs/flow.py::g#work", "graphs/flow.py::worker", "runs agent") in edges
+
+
+def test_one_file_the_ai_scanner_trips_on_is_skipped_not_fatal(tmp_path, monkeypatch):
+    from codewright import aimap, graph
+
+    (tmp_path / "a.py").write_text("from google.adk.agents import Agent\nroot_agent = Agent(name='a', model='m')\n")
+    (tmp_path / "b.py").write_text("from google.adk.agents import Agent\nb_agent = Agent(name='b', model='m')\n")
+    real = aimap.AiMap._scan_file
+
+    def flaky(self, pf):
+        if pf.path == "b.py":
+            raise TypeError("sequence item 0: expected str instance, NoneType found")
+        return real(self, pf)
+
+    monkeypatch.setattr(aimap.AiMap, "_scan_file", flaky)
+    out = aimap.build(graph.build(tmp_path))
+    assert [a["name"] for a in out["agents"]] == ["a"]
+    assert out["errors"][0]["file"] == "b.py" and "expected str" in out["errors"][0]["error"]

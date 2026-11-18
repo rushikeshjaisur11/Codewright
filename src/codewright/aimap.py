@@ -24,9 +24,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from tree_sitter import Node as TSNode
+from tree_sitter import Query, QueryCursor
 
 from .archmap import module_name
-from .graph import CodeGraph, ParsedFile, is_test_file, text
+from .graph import PY, CodeGraph, ParsedFile, is_test_file, text
 from .models import Finding
 
 # import prefix -> what it is (provider or framework)
@@ -201,6 +202,16 @@ class AiFile:
 
 
 # --------------------------------------------------------------------------- tree helpers
+
+
+_CALLS_AND_ASSIGNMENTS = Query(PY, "[(call) (assignment)] @n")
+
+
+def _calls_and_assignments(pf: ParsedFile) -> list[TSNode]:
+    """Every call and assignment in the file, in the order a depth-first walk meets them. A native
+    tree-sitter query is several times faster than walking every node in Python."""
+    caps = QueryCursor(_CALLS_AND_ASSIGNMENTS).captures(pf.root)
+    return sorted(caps.get("n", []), key=lambda n: (n.start_byte, -n.end_byte))
 
 
 def _walk(node: TSNode):
@@ -378,6 +389,10 @@ class AiMap:
         self._graph_vars: dict[tuple[str, str], str] = {}  # (file, var) -> graph id, for StateGraph and .compile()
         self.sdk_files: dict[str, list[str]] = {}
         self._run_names: tuple[set[str], re.Pattern] | None = None
+        self.errors: list[dict] = []  # files a step failed on: skipped, so one odd file can't blank the page
+        self._ref_memo: dict[tuple[str, str], tuple[str, int] | None] = {}
+        self._mod_index: tuple[dict, dict] | None = None
+        self._paths: list[str] = []
         for path, pf in graph.files.items():
             if is_test_file(path):
                 continue
@@ -393,20 +408,40 @@ class AiMap:
                 if not is_test_file(path) and graph.resolver.imported_files(pf) & scan:
                     scan.add(path)
         for path in sorted(scan):
-            self._scan_file(graph.files[path])
+            self._guard(path, "reading agents and model calls", self._scan_file, graph.files[path])
         self._resolve_aliases()
         self._factory_arguments()
         self._index()
         for agent, pf, kw, pos in self._pending:
-            self._link(agent, pf, kw, pos)
+            self._guard(pf.path, f"linking agent {agent.name}", self._link, agent, pf, kw, pos)
         for a in self.agents.values():
             for st in a.steps:
                 if st.get("ref") and (ref := self._agent_ref(graph.files[a.file], st["ref"], a.scope)) is not None:
                     st["agent"] = ref.id
         for path, pf in graph.files.items():
             if not is_test_file(path):
-                self._scan_runs(pf)
+                self._guard(path, "finding code that runs agents", self._scan_runs, pf)
         self._scan_builds()
+
+    def _guard(self, path: str, step: str, fn, *args) -> None:
+        try:
+            fn(*args)
+        except Exception as exc:  # one file the scanner can't handle must not fail the whole AI page
+            import logging
+            import traceback
+
+            where = traceback.extract_tb(exc.__traceback__)[-1]
+            self.errors.append(
+                {
+                    "file": path,
+                    "step": step,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "at": f"{Path(where.filename).name}:{where.lineno}",
+                }
+            )
+            logging.getLogger("codewright").warning(
+                "AI map: skipped %s while %s: %s\n%s", path, step, exc, traceback.format_exc()
+            )
 
     # ----------------------------------------------------------------- repo agent classes and references
     def _agent_classes(self) -> dict[tuple[str, str], tuple[str, str]]:
@@ -512,7 +547,8 @@ class AiMap:
 
     # ----------------------------------------------------------------- agents and model calls
     def _scan_file(self, pf: ParsedFile) -> None:
-        for n in _walk(pf.root):
+        nodes = _calls_and_assignments(pf)
+        for n in nodes:
             if n.type == "assignment" and (left := n.child_by_field_name("left")) is not None:
                 right = n.child_by_field_name("right")
                 if right is not None and right.type == "list" and left.type == "identifier":
@@ -527,7 +563,7 @@ class AiMap:
         graphs: dict[str, Agent] = {}
         langchain = any(t.startswith("langchain") for t in pf.module.imports.values())
         lc_models: set[str] = set()
-        for n in _walk(pf.root):
+        for n in nodes:
             if n.type != "call" or (callee := n.child_by_field_name("function")) is None:
                 continue
             written = text(callee)
@@ -693,12 +729,36 @@ class AiMap:
         if "." in name:
             target = target + "." + name.split(".", 1)[1]
         mod, _, fname = target.rpartition(".")
-        for path, other in self.g.files.items():
-            mn = module_name(path)
-            if mn == mod or mn.endswith("." + mod) or mod.endswith("." + mn):
-                for f in other.module.functions:
-                    if f.qualname == fname:
-                        return path, f.def_line
+        key = (mod, fname)
+        if key not in self._ref_memo:
+            self._ref_memo[key] = self._find_function(mod, fname)
+        return self._ref_memo[key]
+
+    def _find_function(self, mod: str, fname: str) -> tuple[str, int] | None:
+        """The first file (in graph order) whose module name matches `mod` (equal, or one ends with the
+        other) and defines `fname`. Uses an index of module names instead of scanning every file per call,
+        which made the AI page take minutes on big repos."""
+        if self._mod_index is None:
+            by_suffix: dict[str, list[int]] = defaultdict(list)  # every dotted suffix of a module -> files
+            exact: dict[str, list[int]] = defaultdict(list)
+            self._paths = list(self.g.files)
+            for i, path in enumerate(self._paths):
+                mn = module_name(path)
+                exact[mn].append(i)
+                parts = mn.split(".")
+                for k in range(len(parts)):
+                    by_suffix[".".join(parts[k:])].append(i)
+            self._mod_index = (by_suffix, exact)
+        by_suffix, exact = self._mod_index
+        cands = set(by_suffix.get(mod, ()))  # mn == mod or mn ends with "." + mod
+        parts = mod.split(".")
+        for k in range(1, len(parts)):  # mod ends with "." + mn
+            cands.update(exact.get(".".join(parts[k:]), ()))
+        for i in sorted(cands):
+            path = self._paths[i]
+            for f in self.g.files[path].module.functions:
+                if f.qualname == fname:
+                    return path, f.def_line
         return None
 
     def _agent_ref(self, pf: ParsedFile, name: str, scope: str = "<module>") -> Agent | None:
@@ -800,7 +860,7 @@ class AiMap:
             )
         if self._run_names[1].search(pf.source) is None:  # one regex pass, not a substring scan per name
             return
-        for n in _walk(pf.root):
+        for n in _calls_and_assignments(pf):
             if n.type != "call" or (callee := n.child_by_field_name("function")) is None:
                 continue
             written = text(callee)
@@ -1142,6 +1202,7 @@ class AiMap:
             "model_calls": [asdict(c) for c in self.calls],
             "runs": [asdict(r) for r in self.runs],
             "architecture": arch,
+            "errors": self.errors,
             "summary": {
                 "files": len(files),
                 "need_model": sum(1 for f in files if {"agents", "model calls"} & set(f.roles)),

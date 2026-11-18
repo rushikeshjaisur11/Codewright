@@ -153,7 +153,8 @@ export interface FolderListing {
   dirs: { name: string; path: string; git: boolean; python: boolean }[];
 }
 
-export interface ReviewPayload extends WorkspaceInfo { result: ReviewData | null }
+export interface ReviewPayload extends WorkspaceInfo { result: ReviewData | null; from_cache?: boolean; saved_at?: number }
+export interface ActivityEvent { seq: number; at: number; repo: string; message: string; level: string }
 
 export interface MapNode {
   id: string; label: string; kind: string; files: { file: string; line: number; name?: string }[];
@@ -260,6 +261,7 @@ export interface AiReport {
   files: AiFile[]; agents: AiAgent[]; model_calls: AiModelCall[];
   runs: { file: string; function: string; line: number; agent: string; how: string }[];
   architecture: { nodes: MapNode[]; edges: MapEdge[] }; mermaid: string;
+  errors?: { file: string; step: string; error: string; at: string }[];
   summary: { files: number; need_model: number; agents: number; workflows: number; tools: number; model_calls: number;
     models: string[]; frameworks: string[] };
 }
@@ -317,6 +319,8 @@ const w = (id: string) => `/api/w/${id}`;
 const q = (s: string) => encodeURIComponent(s);
 
 export const api = {
+  activity: (since: number, workspace = "") =>
+    req<{ events: ActivityEvent[]; last: number }>("GET", `/api/activity?since=${since}&workspace=${q(workspace)}`),
   status: () => req<{ version: string; intents: string[]; workspaces: WorkspaceInfo[] }>("GET", "/api/status"),
   open: (path: string) => req<WorkspaceInfo>("POST", "/api/workspaces", { path }),
   workspaces: () => req<WorkspaceInfo[]>("GET", "/api/workspaces"),

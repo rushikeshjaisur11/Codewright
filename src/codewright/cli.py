@@ -214,6 +214,9 @@ def serve(
             f"[yellow]Bound to {host}: only requests addressed to localhost are served. "
             "Pass --allow-host <name> for each name other machines use to reach it.[/]"
         )
+    from .activity import configure_terminal
+
+    configure_terminal()  # one line per step: parsing, detection, tests, release lookups, map builds
     console.print(f"Codewright on [bold]http://{host}:{port}[/]  (repo: {path.resolve()})")
     uvicorn.run(create_app([str(path)], allowed_hosts=hosts), host=host, port=port, log_level="warning")
 

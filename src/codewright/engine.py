@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import cards as card_store
-from . import critic, diffscope, graph, proof, proof_env, rank, rules, stack
+from . import critic, detectcache, diffscope, graph, proof, proof_env, rank, rules, stack
 from .feedback import Feedback
 from .intents import detect
 from .models import Finding, Stack
@@ -72,7 +72,10 @@ def review(
     if on_graph:  # the map, files and dependencies need only this: show them while the rest runs
         on_graph(g, st)
     tell("detect", 0, 0)
-    matches = detect(g)
+    dcache = detectcache.load(root) if use_state else None
+    matches = detect(g, cache=dcache, progress=lambda done, total: tell("detect", done, total))
+    if dcache is not None:
+        detectcache.save(root, dcache)
     all_cards = card_store.load(extra_cards)
     findings = make_findings(matches, st, g, all_cards)
 

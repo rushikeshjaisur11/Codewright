@@ -17,6 +17,7 @@ from .models import Finding
 
 GITIGNORE = (
     "# Local caches; feedback.json, design.json and config.json are meant to be committed.\nsnapshots/\nreleases.json\n"
+    "review-state.json\nlast-review.json\ncache/\n"
 )
 
 
@@ -27,6 +28,11 @@ def ensure_dir(root) -> Path:
     gi = d / ".gitignore"
     if not gi.exists():
         gi.write_text(GITIGNORE)
+    else:  # repos set up by an older version: add the caches added since
+        have = gi.read_text()
+        missing = [x for x in GITIGNORE.splitlines() if x and not x.startswith("#") and x not in have.splitlines()]
+        if missing:
+            gi.write_text(have.rstrip("\n") + "\n" + "\n".join(missing) + "\n")
     return d
 
 

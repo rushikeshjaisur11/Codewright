@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import archmap, design, watcher
+from .activity import Timer, note
 from .chat import CodeIndex, answer
 from .engine import ReviewResult, review
 from .feedback import Feedback
@@ -101,9 +102,12 @@ class Workspace:
     watching: bool = False
     last_change: dict | None = None  # what the latest watched re-review found new or resolved
     _watch_stop: threading.Event | None = None
+    saved_revision: int = -1  # revision of `result` last written to .codewright/last-review.json
+    _saved: dict | None = None
     early: Snapshot | None = None  # the graph of the review in progress, before findings exist
     _releases: dict | None = None  # progress and rows of the running (or last) release check
     _cache_lock: threading.RLock = field(default_factory=threading.RLock)
+    _aimap_graph: tuple | None = None  # (graph, AiMap) of the last scan, reused when only findings changed
     _cache: dict = field(default_factory=dict)  # maps and the AI page, built once per revision of `result`
 
     # --------------------------------------------------------------- review
@@ -118,9 +122,21 @@ class Workspace:
     ) -> ReviewResult:
         with self.lock:
             started = time.time()
+            last = {"stage": None, "at": 0.0}
+            what = "with tests" if proof else "quick scan, no tests"
+            if files:
+                what += f", tests on {len(files)} chosen file(s)"
+            note(self.name, f"Review started ({what}{', since ' + base if base else ''})")
 
             def tell(stage: str, done: int, total: int) -> None:
-                self.progress = stage_progress(stage, done, total, proof=proof, started=started)
+                self.progress = p = stage_progress(stage, done, total, proof=proof, started=started)
+                now = time.time()
+                if stage != last["stage"]:
+                    last.update(stage=stage, at=now)
+                    note(self.name, f"{p['label']}" + (f" ({total})" if total else ""))
+                elif total and (now - last["at"] > 2 or done == total):  # a heartbeat, not a flood
+                    last["at"] = now
+                    note(self.name, f"  {p['label']}: {done}/{total}")
 
             self.running, self.error = True, None
             tell("stack", 0, 0)
@@ -138,6 +154,15 @@ class Workspace:
                 )
                 self.revision += 1
                 self._cache.clear()
+                r = self.result
+                reused = r.graph.__dict__.get("detect_reused")
+                note(
+                    self.name,
+                    f"Review done in {r.seconds:.1f}s: {len(r.findings)} findings in {len(r.graph.files)} files"
+                    + (f"; {reused} unchanged files reused from the last run" if reused else "")
+                    + (f"; {r.reused} proofs kept" if r.reused else "")
+                    + (f"; tests ran on {len(r.proved_files)} file(s)" if r.proved_files else ""),
+                )
                 self.index = CodeIndex(self.result.graph)
                 self.last_run = time.time()
                 with contextlib.suppress(OSError):
@@ -145,12 +170,44 @@ class Workspace:
                 return self.result
             except Exception as exc:
                 self.error = f"{type(exc).__name__}: {exc}"
+                note(self.name, f"Review failed: {self.error}", "error")
                 raise
             finally:
                 self.running, self.progress, self.early = False, None, None
 
+    # --------------------------------------------------------------- the last review, kept on disk
+    def _saved_path(self) -> Path:
+        return self.root / ".codewright" / "last-review.json"
+
+    def save_review(self, payload: dict) -> None:
+        """Keep what the web app shows, so reopening the repo shows it at once instead of an empty page."""
+        from .feedback import ensure_dir
+
+        self.saved_revision = self.revision
+        try:
+            ensure_dir(self.root)
+            tmp = self._saved_path().with_suffix(".tmp")
+            tmp.write_text(json.dumps({"at": time.time(), "result": payload}))
+            tmp.replace(self._saved_path())
+        except (OSError, TypeError, ValueError):
+            pass
+
+    def saved_review(self) -> dict | None:
+        if self._saved is None:
+            try:
+                data = json.loads(self._saved_path().read_text())
+                self._saved = data if isinstance(data.get("result"), dict) else {}
+            except (OSError, ValueError):
+                self._saved = {}
+        return self._saved or None
+
+    @property
+    def name(self) -> str:
+        return self.root.name
+
     def _graph_ready(self, g, st) -> None:
         self.early = Snapshot(g, st)
+        note(self.name, f"Code parsed: {len(g.files)} files; the map, AI and dependency pages can load now")
 
     @property
     def graph_ready(self) -> bool:
@@ -247,7 +304,11 @@ class Workspace:
         with self._cache_lock:
             hit = self._cache.get(key)
             if hit is None or hit[0] is not r:
-                hit = self._cache[key] = (r, build(r))
+                label = {"aimap": "Building the AI map", "ai": "Listing AI files and agents"}.get(
+                    key if isinstance(key, str) else key[0], "Building the code map"
+                )
+                with Timer(self.name, label):
+                    hit = self._cache[key] = (r, build(r))
         return hit[1]
 
     def amap(self, include_unused: bool = False) -> archmap.ArchMap:
@@ -258,7 +319,18 @@ class Workspace:
     def ai_map(self):
         from . import aimap
 
-        return self._cached("aimap", lambda r: aimap.AiMap(r.graph, r.findings))
+        def build(r):
+            # The scan reads only the code; findings are just counted. When the review that finishes has the
+            # same parsed code the page was drawn from, reuse the scan instead of repeating it.
+            prev = self._aimap_graph
+            if prev is not None and prev[0] is r.graph:
+                prev[1].findings = r.findings
+                return prev[1]
+            m = aimap.AiMap(r.graph, r.findings)
+            self._aimap_graph = (r.graph, m)
+            return m
+
+        return self._cached("aimap", build)
 
     def ai(self) -> dict:
         """Files that need a model and the agent architecture (see aimap)."""
@@ -317,11 +389,19 @@ class Workspace:
         self._releases = state
 
         def run() -> None:
+            def got(row: dict) -> None:
+                state["rows"].append(row)
+                latest = row.get("latest") or "no answer"
+                note(self.name, f"  {row['name']}: {row.get('installed') or '?'} -> {latest} ({row['bump']})")
+
+            note(self.name, f"Checking {state['total']} dependencies for new releases")
             try:
                 state["rows"] = []
-                watcher.check(r.stack, self.root, graph=r.graph, on_row=state["rows"].append)
+                watcher.check(r.stack, self.root, graph=r.graph, on_row=got)
+                note(self.name, f"Release check done: {len(state['rows'])} dependencies")
             except Exception as exc:
                 state["error"] = f"{type(exc).__name__}: {exc}"
+                note(self.name, f"Release check failed: {state['error']}", "error")
             finally:
                 state["running"] = False
 

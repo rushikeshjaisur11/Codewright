@@ -93,6 +93,14 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
             "workspaces": [ws_summary(k, v) for k, v in svc.workspaces.items()],
         }
 
+    @app.get("/api/activity")
+    def activity_feed(since: int = 0, workspace: str = ""):
+        """What the server is doing, newest last: poll with `since` set to the last `last` you got."""
+        from . import activity
+
+        repo = ws(workspace).name if workspace else None
+        return activity.since(since, repo)
+
     @app.get("/api/workspaces")
     def workspaces():
         return [ws_summary(k, v) for k, v in svc.workspaces.items()]
@@ -141,7 +149,17 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     def result_payload(wid: str, w: Workspace) -> dict:
         base = ws_summary(wid, w)
         if w.result is None:
+            saved = w.saved_review()  # the last review, from disk: shown at once while the refresh runs
+            if saved is not None:
+                return {**base, "result": saved["result"], "from_cache": True, "saved_at": saved.get("at")}
             return {**base, "result": None}
+        if w.saved_revision != w.revision:
+            out = _result_payload(base, w)
+            w.save_review(out["result"])
+            return out
+        return _result_payload(base, w)
+
+    def _result_payload(base: dict, w: Workspace) -> dict:
         r = w.result
         fb = Feedback.load(w.root)
         findings = [f.to_dict() for f in r.findings]

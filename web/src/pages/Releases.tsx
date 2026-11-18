@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleCheck, Package, PackageMinus, RefreshCw, Sparkles, TriangleAlert, Wand2 } from "lucide-react";
 import { useApp } from "../App";
 import { api, DepAudit, Release } from "../api";
@@ -10,6 +10,44 @@ function topicCounts(unlocks: Release["unlocks"]): string {
   const counts = new Map<string, number>();
   unlocks.forEach((u) => counts.set(u.topic || "Other", (counts.get(u.topic || "Other") ?? 0) + 1));
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t, n]) => `${t} ${n}`).join(", ");
+}
+
+/**
+ * One release check for the repo, run in the background by the server. Rows arrive as each package's
+ * lookup finishes, so the page fills in live instead of waiting for the slowest package.
+ */
+function useReleaseCheck(onDone?: () => void) {
+  const { wid } = useApp();
+  const toast = useToast();
+  const [rows, setRows] = useState<Release[] | null>(null);
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const live = useRef(0);
+  const done = useRef(onDone);
+  done.current = onDone;
+  useEffect(() => () => { live.current++; }, []);
+  useEffect(() => { setRows(null); setProgress(null); }, [wid]);
+  const start = useCallback(() => {
+    if (!wid) return;
+    const run = ++live.current;
+    setRunning(true);
+    const tick = async (first: boolean) => {
+      try {
+        const p = first ? await api.releasesStart(wid) : await api.releasesProgress(wid);
+        if (run !== live.current) return;
+        setRows(p.rows);
+        setProgress({ done: p.done, total: p.total });
+        if (p.error) toast(p.error, "error");
+        if (p.running) setTimeout(() => tick(false), 400);
+        else { setRunning(false); done.current?.(); }
+      } catch (e) {
+        if (run !== live.current) return;
+        toast((e as Error).message, "error"); setRows((r) => r ?? []); setRunning(false);
+      }
+    };
+    tick(true);
+  }, [wid, toast]);
+  return { rows, running, progress, start };
 }
 
 export default function Releases() {
@@ -42,6 +80,9 @@ function Audit({ tabs }: { tabs: JSX.Element }) {
     api.deps(wid, online).then(setAudit).catch((e) => toast(e.message, "error")).finally(() => setLoading(false));
   };
   useEffect(() => { setAudit(null); load(false); }, [wid, data?.last_run]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Release dates stream in per package; once all are in, the audit re-runs on the warm cache to flag abandoned ones.
+  const dates = useReleaseCheck(() => load(true));
+  const seen = new Map((dates.rows ?? []).map((r) => [r.name, r]));
 
   return (
     <div className="page grid">
@@ -49,8 +90,9 @@ function Audit({ tabs }: { tabs: JSX.Element }) {
         <div><h1>Dependency audit</h1><p>What the project declares against what the code imports: libraries to merge, drop or replace with the standard library, and what each change takes out of the install.</p></div>
         <div className="actions">
           {tabs}
-          <button className="btn" onClick={() => load(true)} disabled={loading} title="Also ask the package index when each dependency last released">
-            {loading ? <Spinner size={14} /> : <RefreshCw size={14} />}Check release dates
+          <button className="btn" onClick={dates.start} disabled={loading || dates.running} title="Ask the package index when each dependency last released; rows fill in as answers arrive">
+            {loading || dates.running ? <Spinner size={14} /> : <RefreshCw size={14} />}
+            {dates.running && dates.progress?.total ? `Checking ${dates.progress.done}/${dates.progress.total}` : "Check release dates"}
           </button>
         </div>
       </div>
@@ -95,7 +137,8 @@ function Audit({ tabs }: { tabs: JSX.Element }) {
                     <td className="mono">{d.files}{d.test_files ? <span className="faint"> +{d.test_files} test</span> : null}</td>
                     <td className="mono">{d.requires ? `${d.requires}${d.unique ? ` (${d.unique} only via this)` : ""}` : <span className="faint">—</span>}</td>
                     <td className="faint" style={{ fontSize: 12.5 }}>{d.license || "—"}</td>
-                    <td className="faint">{d.released || "—"}</td>
+                    <td className="faint">{d.released || seen.get(d.name)?.released?.slice(0, 10)
+                      || (dates.running ? <Spinner size={12} /> : "—")}</td>
                   </tr>
                 ))}
                 {!audit.dependencies.length && <tr><td colSpan={7} className="muted">No declared dependencies (pyproject.toml or requirements files).</td></tr>}
@@ -110,32 +153,7 @@ function Audit({ tabs }: { tabs: JSX.Element }) {
 
 function ReleaseList({ tabs }: { tabs: JSX.Element }) {
   const { wid, data, runReview } = useApp();
-  const toast = useToast();
-  const [rows, setRows] = useState<Release[] | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  // The check runs in the background: rows appear as each package answers instead of all at the end.
-  const load = () => {
-    if (!wid) return;
-    setRefreshing(true);
-    let live = true;
-    const tick = async (first: boolean) => {
-      try {
-        const p = first ? await api.releasesStart(wid) : await api.releasesProgress(wid);
-        if (!live) return;
-        setRows(p.rows);
-        setProgress({ done: p.done, total: p.total });
-        if (p.error) toast(p.error, "error");
-        if (p.running) setTimeout(() => tick(false), 500);
-        else setRefreshing(false);
-      } catch (e) {
-        toast((e as Error).message, "error"); setRows((r) => r ?? []); setRefreshing(false);
-      }
-    };
-    tick(true);
-    return () => { live = false; };
-  };
-  useEffect(() => setRows(null), [wid]);
+  const { rows, running: refreshing, progress, start: load } = useReleaseCheck();
   useEffect(load, [wid, data?.has_result]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fresh = (rows ?? []).filter((r) => r.new_since_last_check);

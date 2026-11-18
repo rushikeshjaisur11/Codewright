@@ -19,7 +19,7 @@ from tree_sitter import Node
 
 from ..graph import CodeGraph, ParsedFile, text
 from ..models import Function, IntentMatch
-from .detectors import graph_detector, is_test_file, line, walk
+from .detectors import graph_detector, is_test_file, line, nodes, walk
 
 DB_LIBRARIES = ("sqlalchemy", "psycopg", "psycopg2", "asyncpg", "sqlite3", "pymongo", "motor", "pymysql", "aiosqlite")
 DB_METHODS = (
@@ -66,7 +66,7 @@ def _import_sites(graph: CodeGraph, amap) -> dict[tuple[str, str], list[dict]]:
     for path, pf in graph.files.items():
         if is_test_file(path):
             continue
-        for node in walk(pf.root, into_defs=True):
+        for node in nodes(pf, "import_statement", "import_from_statement"):
             if node.type not in ("import_statement", "import_from_statement"):
                 continue
             tmp = Module(path)
@@ -83,12 +83,26 @@ def _import_sites(graph: CodeGraph, amap) -> dict[tuple[str, str], list[dict]]:
                 name = target.rsplit(".", 1)[-1] if node.type == "import_from_statement" else alias
                 if f"/{dest}".endswith((f"/{name}.py", f"/{name}/__init__.py")):
                     # `from . import docs` / `import pkg.docs`: the module itself, so name what is used from it
-                    used = sorted(set(re.findall(rb"\b" + re.escape(alias.encode()) + rb"\.([A-Za-z_]\w*)", pf.source)))
-                    names = [f"{name}.{u.decode()}" for u in used] or [name]
+                    used = sorted(_attribute_uses(pf).get(alias, ()))
+                    names = [f"{name}.{u}" for u in used] or [name]
                 else:
                     names = [name]
                 sites[(path, dest)].append({"line": line(node), "names": names, "deferred": deferred})
     return sites
+
+
+_ATTR = re.compile(rb"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)")
+
+
+def _attribute_uses(pf) -> dict[str, set[str]]:
+    """name -> attributes used on it (`docs.render` -> {"docs": {"render"}}), one scan per file."""
+    hit = pf.cache.get("attribute_uses")
+    if hit is None:
+        hit = defaultdict(set)
+        for m in _ATTR.finditer(pf.source):
+            hit[m.group(1).decode()].add(m.group(2).decode())
+        pf.cache["attribute_uses"] = hit
+    return hit
 
 
 def _short(graph: CodeGraph, path: str) -> str:

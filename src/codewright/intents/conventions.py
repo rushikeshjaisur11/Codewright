@@ -20,7 +20,7 @@ from tree_sitter import Node
 
 from ..graph import CodeGraph, ParsedFile, resolve, text
 from ..models import Function, IntentMatch
-from .detectors import graph_detector, is_test_file, line, module_detector, walk
+from .detectors import graph_detector, is_test_file, line, module_detector, nodes
 
 FASTAPI_PARAMS = {"Depends", "Security", "Query", "Path", "Body", "Header", "Cookie", "Form", "File"}
 FASTAPI_MODULES = ("fastapi", "fastapi.params", "fastapi.param_functions")
@@ -157,7 +157,7 @@ def _shared_dependencies(graph: CodeGraph) -> dict[tuple[str, str], int]:
         for pf in graph.files.values():
             if b"Depends" not in pf.source or is_test_file(pf.path):
                 continue
-            for n in walk(pf.root, into_defs=True):
+            for n in nodes(pf, "typed_default_parameter"):
                 if n.type == "typed_default_parameter" and _fastapi_kind(pf, n.child_by_field_name("value")) in (
                     "Depends",
                     "Security",
@@ -294,7 +294,7 @@ def detect_pydantic_annotated(pf: ParsedFile) -> list[IntentMatch]:
         return []
     ann, imports = annotated_name(pf)
     edits, names, classes, uses_annotated = [], [], [], False
-    for cls in walk(pf.root, into_defs=True):
+    for cls in nodes(pf, "class_definition"):
         if cls.type != "class_definition" or text(cls.child_by_field_name("name")) not in models:
             continue
         cls_name = text(cls.child_by_field_name("name"))
@@ -364,7 +364,7 @@ def detect_repeated_constraints(graph: CodeGraph) -> list[IntentMatch]:
         if b"Field" not in pf.source or is_test_file(pf.path):
             continue
         models = _pydantic_models(pf)
-        for cls in walk(pf.root, into_defs=True):
+        for cls in nodes(pf, "class_definition"):
             if cls.type != "class_definition" or text(cls.child_by_field_name("name")) not in models:
                 continue
             for a, name, typ, call in _model_fields(pf, cls):

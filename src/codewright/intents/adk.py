@@ -34,7 +34,10 @@ WEB_FRAMEWORKS = ("fastapi", "flask", "starlette", "django", "quart", "aiohttp",
 
 
 def imports_adk(pf: ParsedFile) -> bool:
-    return any(v.startswith("google.adk") for v in pf.module.imports.values())
+    hit = pf.cache.get("imports_adk")  # asked by many detectors for every function: answer once per file
+    if hit is None:
+        hit = pf.cache["imports_adk"] = any(v.startswith("google.adk") for v in pf.module.imports.values())
+    return hit
 
 
 def _runner_call(call: Node) -> tuple[Node, Node] | None:

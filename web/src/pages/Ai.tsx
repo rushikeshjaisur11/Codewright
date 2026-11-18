@@ -35,7 +35,7 @@ export default function AiPage() {
   const [root, setRoot] = useState("");
   // The map needs only the parsed code: draw it as soon as that is ready, and refresh when findings arrive.
   const has = !!data?.result || !!data?.graph_ready;
-  const done = !!data?.result;
+  const done = !!data?.has_result; // true once this session's review (not the saved one) has landed
 
   useEffect(() => {
     if (!wid || !has) return;
@@ -122,6 +122,12 @@ export default function AiPage() {
         </div>
       </div>
 
+      {!!rep.errors?.length && (
+        <div className="callout amber" style={{ marginBottom: 14, fontSize: 13 }}>
+          {rep.errors.length} file{rep.errors.length === 1 ? "" : "s"} could not be read for agents and were skipped; the rest of the page is complete.
+          {rep.errors.slice(0, 5).map((e, i) => <div key={i} className="mono" style={{ fontSize: 12 }}>{e.file}: {e.error} ({e.step}, {e.at})</div>)}
+        </div>
+      )}
       <div className="stats">
         <Stat label="Files that need a model" icon={<Sparkles size={14} />} value={s.need_model}
           sub={`${s.files} files touch AI in some way`} />

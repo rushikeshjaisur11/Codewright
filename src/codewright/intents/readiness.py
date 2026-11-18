@@ -21,7 +21,7 @@ import re
 from ..graph import ParsedFile, text
 from ..models import Function, IntentMatch
 from .architecture import DB_OBJECTS
-from .detectors import calls_in, detector, is_test_file, line, module_detector, walk
+from .detectors import calls_in, detector, is_test_file, line, module_detector, nodes, walk
 
 QUERY_METHODS = {
     "execute",
@@ -294,7 +294,7 @@ def detect_no_pre_ping(pf: ParsedFile) -> list[IntentMatch]:
     from ..graph import resolve
 
     out = []
-    for call in walk(pf.root, into_defs=True):
+    for call in nodes(pf, "call"):
         if call.type != "call":
             continue
         f = call.child_by_field_name("function")

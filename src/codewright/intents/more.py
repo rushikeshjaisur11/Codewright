@@ -13,7 +13,7 @@ from tree_sitter import Node
 
 from ..graph import resolve, text
 from ..models import IntentMatch
-from .detectors import calls_in, detector, line, walk
+from .detectors import calls_in, detector, line, nodes, walk
 
 BLOCKING_HTTP = {
     "requests.get",
@@ -233,6 +233,8 @@ def detect_pydantic_v1(pf, fn, node, graph):
     if (body := _body(node)) is None:
         return []
     models = _pydantic_models(pf)
+    if not models:  # only calls on this file's own models are rewritten
+        return []
     edits, first, used = [], None, set()
     for call in walk(body):
         if call.type != "call" or (callee := _callee(call)) is None or callee.type != "attribute":
@@ -264,7 +266,7 @@ def _pydantic_models(pf) -> set[str]:
 
 def _find_pydantic_models(pf) -> set[str]:
     names = set()
-    for n in walk(pf.root, into_defs=True):
+    for n in nodes(pf, "class_definition"):
         if n.type == "class_definition":
             supers = n.child_by_field_name("superclasses")
             if supers is not None and any(
