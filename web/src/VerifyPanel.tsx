@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, ShieldCheck, Sparkles, Flame, FileCode2 } from "lucide-react";
 import { useApp } from "./App";
 import { api, PlanFile, ReviewPlan, ReviewScope } from "./api";
@@ -15,6 +15,18 @@ export default function VerifyPanel({ scope, reused }: { scope?: ReviewScope; re
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const running = !!data?.running;
+  const unproven = scope?.unproven ?? 0;
+  // Show the suggested files straight away. This ranking is free; the model is only asked on request.
+  useEffect(() => {
+    if (!wid || !unproven || running) return;
+    let live = true;
+    api.reviewPlan(wid, false).then((p) => {
+      if (!live) return;
+      setPlan(p);
+      setChosen(new Set(p.files.filter((f) => f.selected).map((f) => f.file)));
+    }).catch(() => {});
+    return () => { live = false; };
+  }, [wid, unproven, running, data?.revision]);
   if (!scope || !wid) return null;
   if (!scope.unproven && !plan) {
     return reused ? <div className="prbar"><ShieldCheck size={15} className="faint" /><span className="faint" style={{ fontSize: 13 }}>
@@ -34,7 +46,6 @@ export default function VerifyPanel({ scope, reused }: { scope?: ReviewScope; re
   async function verify() {
     if (!chosen.size) return;
     await api.runReview(wid!, true, "", false, [...chosen]);
-    setPlan(null);
     await reload();
   }
 
@@ -49,16 +60,17 @@ export default function VerifyPanel({ scope, reused }: { scope?: ReviewScope; re
           {scope.changed_count ? <> · {scope.changed_count} file{scope.changed_count === 1 ? "" : "s"} edited since they last ran</> : null}.
         </span>
         <span className="grow" />
-        {!plan && <button className="btn primary sm" disabled={running || loading} onClick={() => suggest(true)}>
-          {loading ? <Spinner size={13} /> : <Sparkles size={13} />}Choose files to verify
-        </button>}
+        <button className="btn sm" disabled={running || loading} onClick={() => suggest(true)}
+          title="Ask your configured model which of these files are worth a test run">
+          {loading ? <Spinner size={13} /> : <Sparkles size={13} />}{plan?.source === "ai" ? "Ask again" : "Ask AI to refine"}
+        </button>
       </div>
       {plan && (
         <>
           <div className="faint" style={{ fontSize: 13 }}>
             {plan.source === "ai"
               ? <>Suggested by <code>{plan.note}</code>. Untick anything you don't want to run.</>
-              : <>Ranked by impact, edits and test coverage{plan.note ? <> (no model: {plan.note})</> : null}. Untick anything you don't want to run.</>}
+              : <>Files that need a test run, ranked by impact, edits and test coverage. Untick anything you don't want to run.</>}
           </div>
           <div style={{ maxHeight: 280, overflow: "auto", display: "grid", gap: 2 }}>
             {plan.files.map((f) => (
@@ -79,8 +91,7 @@ export default function VerifyPanel({ scope, reused }: { scope?: ReviewScope; re
             </button>
             <button className="btn sm" onClick={() => setChosen(new Set(plan.files.map((f) => f.file)))}>All {plan.files.length}</button>
             <button className="btn sm" onClick={() => setChosen(new Set())}>None</button>
-            <button className="btn sm" onClick={() => setPlan(null)}>Cancel</button>
-            {plan.source === "ranking" && <span className="faint" style={{ fontSize: 12.5 }}>Set up a model in Settings to have AI choose.</span>}
+            {plan.source === "ranking" && plan.note && <span className="faint" style={{ fontSize: 12.5 }}>AI refine unavailable: {plan.note}.</span>}
           </div>
         </>
       )}
