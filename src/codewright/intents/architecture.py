@@ -17,9 +17,9 @@ from pathlib import Path
 
 from tree_sitter import Node
 
-from ..graph import CodeGraph, ParsedFile, text
+from ..graph import CodeGraph, ParsedFile, import_statements, on_parse, text
 from ..models import Function, IntentMatch
-from .detectors import graph_detector, is_test_file, line, nodes, walk
+from .detectors import graph_detector, is_test_file, line, walk
 
 DB_LIBRARIES = ("sqlalchemy", "psycopg", "psycopg2", "asyncpg", "sqlite3", "pymongo", "motor", "pymysql", "aiosqlite")
 DB_METHODS = (
@@ -59,20 +59,13 @@ def _components(graph: CodeGraph) -> tuple[dict[str, str], dict[str, str]]:
 def _import_sites(graph: CodeGraph, amap) -> dict[tuple[str, str], list[dict]]:
     """(importer file, imported file) -> [{line, names, deferred}] for imports between repo files."""
     from ..archmap import module_name, resolve_relative
-    from ..graph import record_imports
-    from ..models import Module
 
     sites: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for path, pf in graph.files.items():
         if is_test_file(path):
             continue
-        for node in nodes(pf, "import_statement", "import_from_statement"):
-            if node.type not in ("import_statement", "import_from_statement"):
-                continue
-            tmp = Module(path)
-            record_imports(node, tmp)
-            deferred = any(p.type == "function_definition" for p in _parents(node))
-            for alias, target in tmp.imports.items():
+        for ln, deferred, kind, imported in import_statements(pf):  # recorded at parse time: no tree needed
+            for alias, target in imported.items():
                 full = resolve_relative(target, path)
                 mod = amap._internal_target(full)
                 if mod is None or mod == module_name(path):
@@ -80,14 +73,14 @@ def _import_sites(graph: CodeGraph, amap) -> dict[tuple[str, str], list[dict]]:
                 dest = amap.modules.get(mod)
                 if dest is None or dest == path:
                     continue
-                name = target.rsplit(".", 1)[-1] if node.type == "import_from_statement" else alias
+                name = target.rsplit(".", 1)[-1] if kind == "import_from_statement" else alias
                 if f"/{dest}".endswith((f"/{name}.py", f"/{name}/__init__.py")):
                     # `from . import docs` / `import pkg.docs`: the module itself, so name what is used from it
                     used = sorted(_attribute_uses(pf).get(alias, ()))
                     names = [f"{name}.{u}" for u in used] or [name]
                 else:
                     names = [name]
-                sites[(path, dest)].append({"line": line(node), "names": names, "deferred": deferred})
+                sites[(path, dest)].append({"line": ln, "names": names, "deferred": deferred})
     return sites
 
 
@@ -263,10 +256,10 @@ def detect_layer_bypass(graph: CodeGraph) -> list[IntentMatch]:
     for pf, fn in graph.functions():
         if is_test_file(pf.path) or not any(d.split("(", 1)[0].endswith(ROUTE_SUFFIXES) for d in fn.decorators):
             continue
-        node = pf.nodes.get(fn.qualname)
-        if node is None:
-            continue
-        own = _db_calls(pf, node)
+        src = "".join(pf.lines[fn.start_line - 1 : fn.end_line])
+        could = any(f".{m}(" in src for m in DB_METHODS)  # no query method named: no tree needed to know
+        node = pf.nodes.get(fn.qualname) if could else None
+        own = _db_calls(pf, node) if node is not None else []
         if own:
             direct.append((pf, fn, own[0]))
             continue
@@ -315,9 +308,36 @@ def detect_layer_bypass(graph: CodeGraph) -> list[IntentMatch]:
 
 
 def _statements(pf: ParsedFile, fn: Function) -> int:
-    node = pf.nodes.get(fn.qualname)
-    body = node.child_by_field_name("body") if node is not None else None
-    return 0 if body is None else sum(1 for s in body.named_children if s.type != "comment")
+    return _statement_counts(pf).get(fn.qualname, 0)
+
+
+@on_parse
+def _fingerprints(pf: ParsedFile) -> dict[str, tuple]:
+    """qualname -> body fingerprint, read while the tree is in memory (duplicate logic compares the whole repo)."""
+    hit = pf.cache.get("fingerprints")
+    if hit is None:
+        hit = {}
+        if not is_test_file(pf.path):
+            for fn in pf.module.functions:
+                node = pf.nodes.get(fn.qualname)
+                fp = _body_fingerprint(pf, node) if node is not None else None
+                if fp:
+                    hit[fn.qualname] = fp
+        pf.cache["fingerprints"] = hit
+    return hit
+
+
+@on_parse
+def _statement_counts(pf: ParsedFile) -> dict[str, int]:
+    hit = pf.cache.get("statement_counts")
+    if hit is None:
+        hit = {}
+        for fn in pf.module.functions:
+            node = pf.nodes.get(fn.qualname)
+            body = node.child_by_field_name("body") if node is not None else None
+            hit[fn.qualname] = 0 if body is None else sum(1 for s in body.named_children if s.type != "comment")
+        pf.cache["statement_counts"] = hit
+    return hit
 
 
 @graph_detector("arch-untested-hotspot")
@@ -437,8 +457,7 @@ def detect_duplicate_logic(graph: CodeGraph) -> list[IntentMatch]:
         if (pf.path, fn.qualname) in seen:
             continue  # a redefinition shares its name (and node) with the first: one function, not a copy
         seen.add((pf.path, fn.qualname))
-        node = pf.nodes.get(fn.qualname)
-        fp = _body_fingerprint(pf, node) if node is not None else None
+        fp = _fingerprints(pf).get(fn.qualname)
         if fp:
             if pf.path not in projects:
                 projects[pf.path] = _project_of(graph, pf.path)

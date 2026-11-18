@@ -50,12 +50,30 @@ ROUTE_SUFFIXES = (".get", ".post", ".put", ".patch", ".delete", ".api_route", ".
 ADK_DEPRECATED = ("SequentialAgent", "ParallelAgent", "LoopAgent")
 
 
-def detector(intent: str, triggers: tuple[str, ...] = ()):
+USES_GRAPH: set[str] = set()  # function detectors that read other files (hot paths): never cached per file
+# intent -> fn(match, graph) -> match or None: the part of a detector that needs the whole graph (is it on a hot
+# path?), applied after the per-file part, which can then be cached and run while the graph is being built.
+GRAPH_FILTERS: dict[str, Callable[[IntentMatch, CodeGraph], IntentMatch | None]] = {}
+
+
+def graph_filter(intent: str):
+    def wrap(fn):
+        GRAPH_FILTERS[intent] = fn
+        return fn
+
+    return wrap
+
+
+def detector(intent: str, triggers: tuple[str, ...] = (), uses_graph: bool = False):
     """Register a function-level detector. `triggers` must be necessary: a function whose source
-    contains none of them (nor a name imported from something containing them) can't match."""
+    contains none of them (nor a name imported from something containing them) can't match. Set
+    `uses_graph` when the result depends on other files (callers, hot paths): it then runs on every review
+    instead of being reused while the file is unchanged."""
 
     def wrap(fn: Detector) -> Detector:
         DETECTORS[intent] = fn
+        if uses_graph:
+            USES_GRAPH.add(intent)
         if triggers:
             TRIGGERS[intent] = tuple(t.encode() for t in triggers)
         return fn
@@ -91,13 +109,14 @@ def nodes(pf: ParsedFile, *types: str) -> list[Node]:
     depth-first walk meets them. One native query per file and type set, cached on the file: several
     detectors scan whole files, and walking every node in Python was most of detection on big repos."""
     key = ("nodes", *types)
-    hit = pf.cache.get(key)
+    cache = pf.tree_cache  # syntax nodes: kept with the tree, dropped with it
+    hit = cache.get(key)
     if hit is None:
         q = _QUERIES.get(types)
         if q is None:
             q = _QUERIES[types] = Query(PY, "[" + " ".join(f"({t})" for t in types) + "] @n")
         found = QueryCursor(q).captures(pf.root).get("n", [])
-        hit = pf.cache[key] = sorted(found, key=lambda n: (n.start_byte, -n.end_byte))
+        hit = cache[key] = sorted(found, key=lambda n: (n.start_byte, -n.end_byte))
     return hit
 
 
@@ -416,9 +435,12 @@ def file_hash(pf: ParsedFile) -> str:
     return h
 
 
-def detect_file(pf: ParsedFile, graph: CodeGraph, only: set[str] | None = None) -> list[IntentMatch]:
-    """Function and module detectors for one file. They read only that file, so the result can be reused
-    for as long as the file's bytes are the same."""
+def detect_file(
+    pf: ParsedFile, graph: CodeGraph | None, only: set[str] | None = None, local: bool | None = None
+) -> list[IntentMatch]:
+    """Function and module detectors for one file. With `local=True` only those that read just this file
+    (their result can be reused while its bytes are the same); with `local=False` only those that read the
+    graph (USES_GRAPH); with None, all."""
     matches: list[IntentMatch] = []
     triggers = _file_triggers(pf)
     for fn in pf.module.functions:
@@ -429,14 +451,34 @@ def detect_file(pf: ParsedFile, graph: CodeGraph, only: set[str] | None = None) 
         for intent, det in DETECTORS.items():
             if only and intent not in only:
                 continue
+            if local is not None and (intent in USES_GRAPH) == local:
+                continue
             words = triggers.get(intent)
             if words is not None and not any(w in source for w in words):
                 continue
             matches.extend(det(pf, fn, node, graph))
-    for intent, mdet in MODULE_DETECTORS.items():
-        if not only or intent in only:
-            matches.extend(mdet(pf))
+    if local is not False:
+        for intent, mdet in MODULE_DETECTORS.items():
+            if not only or intent in only:
+                matches.extend(mdet(pf))
     return matches
+
+
+def fill_cache(cache: dict[str, dict]):
+    """A graph-build visitor: detect each new or edited file while its tree is in memory (see graph.on_parse),
+    so detection does not need the tree again later."""
+
+    def visit(pf: ParsedFile) -> None:
+        if is_test_file(pf.path):
+            return
+        h = file_hash(pf)
+        hit = cache.get(pf.path)
+        if hit is None or hit.get("h") != h:
+            cache[pf.path] = {"h": h, "m": detect_file(pf, None, local=True)}
+            visit.fresh.add(pf.path)
+
+    visit.fresh = set()  # type: ignore[attr-defined]  # files detected now, not reused
+    return visit
 
 
 GRAPH_KEY = "<whole graph>"  # cache entry for the whole-graph detectors
@@ -467,10 +509,21 @@ def detect(
             matches.extend(hit["m"])
             reused += 1
             continue
-        found = detect_file(pf, graph, only)
+        found = detect_file(pf, graph, only, local=True if use_cache else None)
         if use_cache:
             cache[pf.path] = {"h": h, "m": found}
         matches.extend(found)
+    if GRAPH_FILTERS:
+        kept = []
+        for m in matches:
+            f = GRAPH_FILTERS.get(m.intent)
+            m = f(m, graph) if f is not None else m
+            if m is not None:
+                kept.append(m)
+        matches[:] = kept
+    if use_cache and USES_GRAPH:  # these read other files: run every time, on the files that could match
+        for pf in files:
+            matches.extend(detect_file(pf, graph, only, local=False))
     if not use_cache:
         for intent, gdet in GRAPH_DETECTORS.items():
             if not only or intent in only:
@@ -478,7 +531,7 @@ def detect(
         return matches
     for path in [p for p in cache if p != GRAPH_KEY and p not in graph.files]:
         del cache[path]
-    graph.__dict__["detect_reused"] = reused
+    graph.__dict__["detect_reused"] = reused - len(graph.__dict__.get("detect_fresh", ()))
     # Whole-graph detectors (import cycles, layering...) depend on every file, tests included: reuse their
     # matches only when no file at all changed.
     whole = hashlib.sha1("".join(f"{p}:{file_hash(pf)};" for p, pf in sorted(graph.files.items())).encode())

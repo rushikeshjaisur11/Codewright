@@ -26,7 +26,7 @@ from pathlib import Path
 
 from tree_sitter import Node
 
-from .graph import CodeGraph, ParsedFile, _calls, is_test_file, text
+from .graph import CodeGraph, ParsedFile, _calls, is_test_file, on_parse, text
 from .models import Function
 
 MODULE = "<module>"
@@ -200,6 +200,19 @@ def console_scripts(root: str | Path) -> dict[str, list[str]]:
     return out
 
 
+@on_parse
+def entry_summary(pf: ParsedFile) -> dict:
+    """What `detect` reads from a file's top-level statements, kept as plain data while its tree is in memory."""
+    hit = pf.cache.get("entry_summary")
+    if hit is None:
+        stmts = list(_module_statements(pf))
+        app = next((a for s in stmts if (a := _app_object(pf, s))), None)
+        start = next((st for s in stmts if s.type != "if_statement" and (st := _start_call(pf, s)) is not None), None)
+        calls = sorted({c for s in stmts for c in _calls(s)})
+        hit = pf.cache["entry_summary"] = {"app": app, "start": start, "has_stmts": bool(stmts), "calls": calls}
+    return hit
+
+
 def detect(graph: CodeGraph) -> dict[str, AppEntry]:
     """App entries by file, kept on `graph.app_entries`."""
     from .archmap import importable_names, module_name
@@ -212,26 +225,21 @@ def detect(graph: CodeGraph) -> dict[str, AppEntry]:
         name = path.rsplit("/", 1)[-1]
         mod = module_name(path)
         reasons, framework, trigger, line = [], "", "", 1
-        stmts = list(_module_statements(pf))
-        for stmt in stmts:
-            if app := _app_object(pf, stmt):
-                framework, tmpl, var, line = app
-                trigger = tmpl.format(mod=mod, var=var, file=path)
-                reasons.append(f"builds a {framework} app (`{var}`)")
-                break
+        summary = entry_summary(pf)
+        stmts = summary["has_stmts"]
+        if app := summary["app"]:
+            framework, tmpl, var, line = app
+            trigger = tmpl.format(mod=mod, var=var, file=path)
+            reasons.append(f"builds a {framework} app (`{var}`)")
         for prefix, (fw, tmpl) in SCRIPT_FRAMEWORKS.items():
             if any(t == prefix or t.startswith(prefix + ".") for t in pf.module.imports.values()) and stmts:
                 framework, trigger = framework or fw, trigger or tmpl.format(file=path)
                 reasons.append(f"a {fw} app")
                 break
-        start = None
-        for stmt in stmts:
-            if stmt.type == "if_statement":
-                continue  # the __main__ guard is reported on its own below
-            if (start := _start_call(pf, stmt)) is not None:
-                reasons.append(f"starts at module level: `{start[0]}()`")
-                line = line if framework else start[1]
-                break
+        start = summary["start"]  # the __main__ guard is reported on its own below
+        if start is not None:
+            reasons.append(f"starts at module level: `{start[0]}()`")
+            line = line if framework else start[1]
         if pf.module.has_main_guard:
             reasons.append('has an `if __name__ == "__main__"` block')
         if name == "__main__.py":
@@ -255,7 +263,7 @@ def detect(graph: CodeGraph) -> dict[str, AppEntry]:
 
     for path, entry in out.items():
         pf = graph.files[path]
-        calls = sorted({c for stmt in _module_statements(pf) for c in _calls(stmt)})
+        calls = entry_summary(pf)["calls"]
         pseudo = Function(MODULE, MODULE, path, 1, max(1, len(pf.lines)), 1, calls=calls)
         key = f"{path}::{MODULE}"
         callees: set[str] = set()

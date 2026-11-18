@@ -231,10 +231,11 @@ def search_knowledge(query: str, repo: str = "", library: str = "", limit: int =
     from . import knowledge
     from . import stack as stack_mod
 
-    st = stack_mod.discover(POLICY.resolve(repo)[0]) if repo else None
+    root = POLICY.resolve(repo)[0] if repo else None
+    st = stack_mod.discover(root) if root else None
     keep = ("id", "title", "symbol", "library", "versions", "topic", "suggestion", "gain", "risk", "when_not")
     out = []
-    for c in knowledge.search(query, card_store.load(), st, library=library, limit=limit):
+    for c in knowledge.search(query, card_store.for_repo(root), st, library=library, limit=limit):
         out.append({k: c[k] for k in keep} | {"snippet": c["snippet"], "sources": c["sources"], "fit": c["fit"]})
     return out
 

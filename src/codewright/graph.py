@@ -10,7 +10,11 @@ to matching a method name, and never for names that builtin types already define
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+import threading
+import weakref
 from collections import OrderedDict, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -18,8 +22,9 @@ from functools import cached_property
 from pathlib import Path
 
 import tree_sitter_python
-from tree_sitter import Language, Node, Parser
+from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
+from . import graphcache
 from .models import Function, Module
 from .stack import SKIP_DIRS
 
@@ -46,15 +51,95 @@ def text(node: Node | None) -> str:
     return node.text.decode("utf-8", errors="replace") if node is not None else ""
 
 
-@dataclass
+# Syntax trees take about 24 times the memory of their source: 180 MB of Python is over 4 GB of trees. A file
+# keeps its source and what was read from it (imports, functions, calls); its tree lives in this bounded cache
+# and is parsed again from the source when something needs it after being evicted. Repos whose trees fit the
+# budget (a few thousand files) never re-parse.
+TREE_FACTOR = 24
+TREE_BUDGET = int(os.environ.get("CODEWRIGHT_TREE_MB", "600")) * 2**20
+_TREES: OrderedDict[int, tuple[weakref.ref, int]] = OrderedDict()
+_TREE_BYTES = [0]
+_TREE_LOCK = threading.Lock()
+
+
+def _forget(key: int) -> None:
+    with _TREE_LOCK:
+        hit = _TREES.pop(key, None)
+        if hit is not None:
+            _TREE_BYTES[0] -= hit[1]
+
+
+def _remember(pf: ParsedFile) -> None:
+    key = id(pf)
+    size = len(pf.source) * TREE_FACTOR
+    with _TREE_LOCK:
+        if key in _TREES:
+            _TREES.move_to_end(key)
+            return
+        _TREES[key] = (weakref.ref(pf, lambda _r, k=key: _forget(k)), size)
+        _TREE_BYTES[0] += size
+        while _TREE_BYTES[0] > TREE_BUDGET and len(_TREES) > 1:
+            _, (ref, n) = _TREES.popitem(last=False)
+            _TREE_BYTES[0] -= n
+            old = ref()
+            if old is not None:
+                old._entry = None  # nodes already handed out keep their own tree alive until dropped
+
+
 class ParsedFile:
-    path: str  # relative
-    source: bytes
-    root: Node
-    module: Module
-    nodes: dict[str, Node] = field(default_factory=dict)  # qualname -> function_definition node
-    classes: dict[str, list[str]] = field(default_factory=dict)  # qualname -> base classes as written
-    cache: dict[str, object] = field(default_factory=dict)  # per-file results detectors compute once
+    """One parsed file. `root`, `nodes` and `tree_cache` belong to its syntax tree, which may be dropped and
+    parsed again; everything else (source, imports, functions, `cache`) stays."""
+
+    def __init__(
+        self,
+        path: str,
+        source: bytes,
+        root: Node | None,
+        module: Module,
+        nodes: dict[str, Node] | None = None,
+        classes: dict[str, list[str]] | None = None,
+        cache: dict[str, object] | None = None,
+    ):
+        self.path = path  # relative
+        self.source = source
+        self.module = module
+        self.classes: dict[str, list[str]] = classes if classes is not None else {}  # qualname -> bases as written
+        self.cache: dict[str, object] = cache if cache is not None else {}  # plain per-file results, kept
+        self._entry: dict | None = None
+        if root is not None:
+            self._entry = {"root": root, "nodes": nodes if nodes is not None else {}, "cache": {}}
+            _remember(self)
+
+    def _tree(self) -> dict:
+        e = self._entry
+        if e is None:
+            root = _PARSER.parse(self.source).root_node
+            e = self._entry = {"root": root, "nodes": _index_definitions(root), "cache": {}}
+        _remember(self)
+        return e
+
+    @property
+    def root(self) -> Node:
+        return self._tree()["root"]
+
+    @property
+    def nodes(self) -> dict[str, Node]:
+        """qualname -> function_definition node."""
+        return self._tree()["nodes"]
+
+    @property
+    def tree_cache(self) -> dict:
+        """Per-file results that hold syntax nodes: dropped with the tree."""
+        return self._tree()["cache"]
+
+    @cached_property
+    def defined(self) -> frozenset[str]:
+        """Qualnames of the file's functions (the keys of `nodes`), without needing the tree."""
+        return frozenset(fn.qualname for fn in self.module.functions)
+
+    @property
+    def has_tree(self) -> bool:
+        return self._entry is not None
 
     @cached_property
     def lines(self) -> list[str]:
@@ -205,6 +290,34 @@ def parse_file(path: Path, root: Path, source: bytes | None = None) -> ParsedFil
     return pf
 
 
+def _index_definitions(root: Node) -> dict[str, Node]:
+    """qualname -> function_definition node, found the way `_collect` finds them (for a re-parsed tree)."""
+    out: dict[str, Node] = {}
+
+    def visit(node: Node, prefix: str) -> None:
+        for child in node.children:
+            kind = child.type
+            if kind == "decorated_definition":
+                defn = child.child_by_field_name("definition")
+            elif kind in ("function_definition", "class_definition"):
+                defn = child
+            else:
+                if kind in ("block", "if_statement", "try_statement", "with_statement", "else_clause"):
+                    visit(child, prefix)
+                continue
+            if defn is None:
+                continue
+            qual = f"{prefix}{text(defn.child_by_field_name('name'))}"
+            body = defn.child_by_field_name("body")
+            if defn.type == "function_definition":
+                out[qual] = defn
+            if body is not None:
+                visit(body, f"{qual}.")
+
+    visit(root, "")
+    return out
+
+
 def _collect(node: Node, pf: ParsedFile, prefix: str) -> None:
     for child in node.children:
         kind = child.type
@@ -311,19 +424,195 @@ def resolve(module: Module, dotted: str) -> str:
     return f"{target}.{rest}" if rest else target
 
 
-def build(root: str | Path, progress: Callable[[int, int], None] | None = None) -> CodeGraph:
-    """`progress(done, total)` is called as files are parsed."""
+# Functions that read something from every file while its tree is fresh (see `on_parse`).
+FILE_VISITORS: list[Callable[[ParsedFile], None]] = []
+
+
+def on_parse(fn: Callable[[ParsedFile], None]) -> Callable[[ParsedFile], None]:
+    """Register `fn(pf)` to run on each file as the graph is built, while its tree is in memory. It should store
+    plain results in `pf.cache` (and return early when they are there), so whole-repo passes later need no tree."""
+    FILE_VISITORS.append(fn)
+    return fn
+
+
+_IMPORT_QUERY: list = []
+
+
+def import_statements(pf: ParsedFile) -> list[tuple[int, bool, str, dict[str, str]]]:
+    """(line, inside a function, statement kind, {alias: target}) for every import in the file. Kept on the
+    file, so passes over the whole repo's imports don't need its tree."""
+    hit = pf.cache.get("import_stmts")
+    if hit is None:
+        if not _IMPORT_QUERY:
+            _IMPORT_QUERY.append(Query(PY, "[(import_statement) (import_from_statement)] @n"))  # compile once
+        out = []
+        caps = QueryCursor(_IMPORT_QUERY[0]).captures(pf.root).get("n", [])
+        for node in sorted(caps, key=lambda n: n.start_byte):
+            tmp = Module(pf.path)
+            record_imports(node, tmp)
+            deferred, p = False, node.parent
+            while p is not None:
+                if p.type == "function_definition":
+                    deferred = True
+                    break
+                p = p.parent
+            out.append((node.start_point[0] + 1, deferred, node.type, dict(tmp.imports)))
+        hit = pf.cache["import_stmts"] = out
+    return hit
+
+
+on_parse(import_statements)
+
+
+# Parsing in worker processes: the GIL keeps threads from parsing in parallel. A worker parses, runs the
+# visitors and (optionally) detection, and sends back only plain data; the tree stays behind, and the main
+# process parses a file again only if something later asks for its tree. Below PARALLEL_MIN files to parse
+# (or with CODEWRIGHT_WORKERS=0) everything happens in this process.
+PARALLEL_MIN = 300
+CHUNK = 48
+
+
+def _workers() -> int:
+    env = os.environ.get("CODEWRIGHT_WORKERS")
+    if env is not None:
+        return max(0, int(env or 0))
+    return min(8, max(1, (os.cpu_count() or 2) - 1))
+
+
+def _parse_chunk(root: str, rels: list[str], detect: bool) -> list[tuple]:
+    """In a worker: (path, module, classes, cache, detection entry or None) per file."""
+    import pickle
+
+    from . import entries  # noqa: F401  (registers its visitor)
+    from .intents import (
+        architecture,  # noqa: F401
+        detectors,
+    )
+
+    base = Path(root)
+    out = []
+    for rel in rels:
+        try:
+            pf = parse_file(base / rel, base)
+        except (OSError, ValueError):
+            continue
+        for visit in FILE_VISITORS:
+            visit(pf)
+        det = None
+        h = detectors.file_hash(pf)
+        if detect and not is_test_file(pf.path):
+            det = {"h": h, "m": detectors.detect_file(pf, None, local=True)}
+            try:
+                pickle.dumps(det["m"])
+            except Exception:  # a match holding a syntax node: detect it in the main process instead
+                det = None
+        out.append((pf.path, pf.module, pf.classes, pf.cache, det))
+    return out
+
+
+def _parse_in_workers(
+    root: Path, todo: list[tuple[Path, bytes]], detect_cache: dict | None, progress, done: int, total: int
+) -> dict[str, ParsedFile]:
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    sources = {str(p.relative_to(root)): src for p, src in todo}
+    rels = list(sources)
+    chunks = [rels[i : i + CHUNK] for i in range(0, len(rels), CHUNK)]
+    out: dict[str, ParsedFile] = {}
+    # spawn, not fork: the server has threads, and a forked child can inherit a lock another thread held.
+    ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=_workers(), mp_context=ctx) as pool:
+        futures = [pool.submit(_parse_chunk, str(root), c, detect_cache is not None) for c in chunks]
+        for fut in as_completed(futures):
+            for rel, module, classes, cache, det in fut.result():
+                src = sources.get(rel)
+                if src is None:
+                    continue
+                pf = ParsedFile(rel, src, None, module, classes=classes, cache=cache)
+                out[rel] = pf
+                if det is not None and detect_cache is not None:
+                    detect_cache[rel] = det
+            done += CHUNK
+            if progress:
+                progress(min(done, total), total)
+    return out
+
+
+def build(
+    root: str | Path,
+    progress: Callable[[int, int], None] | None = None,
+    visitors: list[Callable[[ParsedFile], None]] | tuple = (),
+    detect_cache: dict | None = None,
+) -> CodeGraph:
+    """`progress(done, total)` is called as files are parsed; `visitors` (and those registered with `on_parse`)
+    run on each file right after, while its syntax tree is still in memory. With `detect_cache` (see
+    intents.detectors.detect) new and edited files are detected as they are parsed."""
+    from . import entries
+    from .intents import architecture  # noqa: F401
+
     root = Path(root).resolve()
     graph = CodeGraph(root=str(root))
     paths = list(iter_python_files(root))
-    for n, path in enumerate(paths):
-        if progress and n % 20 == 0:
-            progress(n, len(paths))
+    # Files unchanged since this process last parsed them are reused; the rest are parsed, in parallel when many.
+    fresh: list[tuple[Path, bytes]] = []
+    for path in paths:
         try:
-            pf = parse_cached(path, root)
-        except (OSError, ValueError):
+            source = path.read_bytes()
+        except OSError:
             continue
+        hit = _PARSED.get(str(path.resolve()))
+        if hit is None or hit.source != source or hit.path != str(path.relative_to(root)):
+            fresh.append((path, source))
+    parsed: dict[str, ParsedFile] = {}
+    # Files unchanged since the last run (in any process) come back from the on-disk cache without parsing.
+    disk = graphcache.load(root) if fresh else {}
+    if disk:
+        still = []
+        for path, source in fresh:
+            rel = str(path.relative_to(root))
+            hit = disk.get(rel)
+            sha = hashlib.sha1(source).hexdigest()
+            if hit is not None and hit[0] == sha:
+                pf = ParsedFile(rel, source, None, hit[1], classes=hit[2], cache=dict(hit[3]))
+                pf.cache["sha1"] = sha
+                parsed[rel] = pf
+            else:
+                still.append((path, source))
+        fresh = still
+    changed = bool(fresh) or set(disk) != {str(p.relative_to(root)) for p in paths}
+    if len(fresh) >= PARALLEL_MIN and _workers() > 1:
+        try:
+            parsed.update(_parse_in_workers(root, fresh, detect_cache, progress, len(paths) - len(fresh), len(paths)))
+        except Exception as exc:  # a pool that cannot start (sandbox, frozen app): parse here instead
+            import logging
+
+            logging.getLogger("codewright").warning("parsing in this process (workers failed: %s)", exc)
+    for n, path in enumerate(paths):
+        if progress and n % 20 == 0 and not parsed:
+            progress(n, len(paths))
+        rel = str(path.relative_to(root))
+        if rel in parsed:
+            pf = parsed[rel]
+            _PARSED[str(path.resolve())] = pf
+        else:
+            try:
+                pf = parse_cached(path, root)
+            except (OSError, ValueError):
+                continue
         graph.files[pf.path] = pf
+        for visit in (*FILE_VISITORS, *visitors):
+            visit(pf)
+    while len(_PARSED) > PARSE_CACHE_SIZE:
+        _PARSED.popitem(last=False)
+    if changed and len(graph.files) >= PARALLEL_MIN:  # small repos parse in well under a second: not worth it
+        graphcache.save(
+            root,
+            {
+                rel: (pf.cache.get("sha1") or hashlib.sha1(pf.source).hexdigest(), pf.module, pf.classes, pf.cache)
+                for rel, pf in graph.files.items()
+            },
+        )
 
     resolver = graph.resolver = Resolver(graph)
     for pf, fn in graph.functions():
@@ -334,7 +623,6 @@ def build(root: str | Path, progress: Callable[[int, int], None] | None = None) 
                     graph.edges[caller].add(callee)
         if _is_entry_point(fn, pf.module):
             graph.entry_points.add(caller)
-    from . import entries  # files run directly: app.py, Streamlit, uvicorn targets, module-level starts
 
     entries.detect(graph)
     return graph
@@ -442,7 +730,7 @@ class Resolver:
             return None
         for prefix in _scopes(scope):
             name = f"{prefix}.{head}" if prefix else head
-            if name in pf.classes or name in pf.nodes:
+            if name in pf.classes or name in pf.defined:
                 return f"{own[0]}.{prefix}.{dotted}" if prefix else f"{own[0]}.{dotted}"
         return None
 
@@ -523,7 +811,7 @@ class Resolver:
         if len(parts) == 1:
             scope = fn.qualname
             while scope:  # nested helpers: `inner()` inside `outer` is `outer.inner`
-                if scope not in pf.classes and f"{scope}.{head}" in pf.nodes:
+                if scope not in pf.classes and f"{scope}.{head}" in pf.defined:
                     return [f"{path}::{scope}.{head}"]
                 scope = scope.rpartition(".")[0]
         if head in ("self", "cls") and cls and len(parts) == 2:

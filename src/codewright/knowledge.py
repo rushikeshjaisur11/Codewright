@@ -61,6 +61,7 @@ def _versioned(installed: str, spec: str, label: str) -> dict:
 def card_dict(card: Card, stack: Stack | None = None) -> dict:
     d = asdict(card)
     d["reference"] = card.intent == REFERENCE
+    d["origin"] = card.origin
     d["fit"] = fit(card, stack)
     return d
 

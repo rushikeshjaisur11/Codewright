@@ -135,7 +135,9 @@ def test_architecture_graph(tmp_path):
     arch = AiMap(graph.build(agent_repo(tmp_path))).architecture()
     kinds = {n["label"]: n["kind"] for n in arch["nodes"]}
     assert kinds["root"] == "agent" and kinds["pipeline"] == "workflow" and kinds["search_docs"] == "tool"
-    assert kinds["gemini-2.5-flash"] == "llm" and kinds["chat"] == "entry"
+    assert (
+        kinds["gemini-2.5-flash"] == "llm" and kinds["POST /chat"] == "entry"
+    )  # a route is named by its method and path
     edges = {(e["source"].rsplit("::", 1)[-1], e["target"].rsplit("::", 1)[-1], e["label"]) for e in arch["edges"]}
     assert ("chat", "root_agent", "runs") in edges
     assert ("root_agent", "pipeline", "delegates") in edges
@@ -285,7 +287,7 @@ def test_every_box_on_both_maps_has_details(tmp_path):
         assert d["kind"] != "unknown" and d["summary"], n["id"]
     root = client.get(f"/api/w/{wid}/ai/node", params={"id": "app/agent.py::root_agent"}).json()
     facts = {f["label"]: f["value"] for f in root["facts"]}
-    assert facts["Model"] == "gemini-2.5-flash" and facts["Run by"] == "chat"
+    assert facts["Model"] == "gemini-2.5-flash" and facts["Run by"] == "POST /chat"
     assert root["code"]["text"].startswith("root_agent = Agent(")
     writer = client.get(f"/api/w/{wid}/ai/node", params={"id": "app/agent.py::writer"}).json()
     assert {f["label"]: f["value"] for f in writer["facts"]}["Model"].startswith("anthropic/claude-haiku-5-5")

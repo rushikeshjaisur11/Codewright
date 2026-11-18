@@ -259,6 +259,8 @@ def detect_pydantic_v1(pf, fn, node, graph):
 
 def _pydantic_models(pf) -> set[str]:
     """Classes in the file that subclass a pydantic model. Computed once per file, not per function."""
+    if "pydantic_models" not in pf.cache and not any(v.startswith("pydantic") for v in pf.module.imports.values()):
+        pf.cache["pydantic_models"] = set()  # no pydantic import: no model to find, and no need for the tree
     if "pydantic_models" not in pf.cache:
         pf.cache["pydantic_models"] = _find_pydantic_models(pf)
     return pf.cache["pydantic_models"]

@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { BookOpen, Radar, Search, Wand2 } from "lucide-react";
+import { BookOpen, GraduationCap, Layers, Radar, Search, Trash2, Users, Wand2 } from "lucide-react";
 import { api, Card, FitStatus } from "../api";
-import { CodeView, Source, Spinner, Tabs, intentLabel } from "../ui";
+import { CodeView, Source, Spinner, Tabs, intentLabel, useToast } from "../ui";
+import TeachCard from "../TeachCard";
 
 const FIT: Record<FitStatus, { cls: string; label: string }> = {
   fits: { cls: "green", label: "fits this repo" },
@@ -19,7 +20,14 @@ export default function Knowledge({ wid }: { wid: string | null }) {
   const [library, setLibrary] = useState("all");
   const [fitsOnly, setFitsOnly] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
-  useEffect(() => { setCards(null); api.cards(wid).then(setCards); }, [wid]);
+  const [teach, setTeach] = useState<{ deepen: Card | null } | null>(null);
+  const toast = useToast();
+  const refresh = () => api.cards(wid).then(setCards);
+  useEffect(() => { setCards(null); refresh(); }, [wid]); // eslint-disable-line react-hooks/exhaustive-deps
+  async function forget(c: Card) {
+    if (!wid || !confirm(`Delete ${c.id} from .codewright/cards/?`)) return;
+    try { await api.forgetCard(wid, c.id); toast(`Deleted ${c.id}`); refresh(); } catch (e) { toast((e as Error).message, "error"); }
+  }
 
   const libraries = useMemo(() => {
     const counts = new Map<string, number>();
@@ -53,6 +61,9 @@ export default function Knowledge({ wid }: { wid: string | null }) {
       <div className="page-head">
         <div><h1>Knowledge base</h1><p>What each library version offers: the API, gain, risk, “when not to” and sources. Cards with a detector become findings; reference entries are for looking things up.</p></div>
         <div className="actions">
+          {wid && <button className="btn primary" onClick={() => setTeach({ deepen: null })} title="Add a practice, convention or API your team knows to this repo's knowledge base">
+            <GraduationCap size={14} />Teach Codewright
+          </button>}
           <div className="row" style={{ position: "relative" }}>
             <Search size={14} style={{ position: "absolute", left: 10, color: "var(--text-3)" }} />
             <input className="input" style={{ paddingLeft: 30, width: 260 }} placeholder="Search, e.g. persist sessions" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search the knowledge base" />
@@ -75,7 +86,7 @@ export default function Knowledge({ wid }: { wid: string | null }) {
               </label>
             )}
           </div>
-          <div className="faint">{list.length} of {cards.length} entries · {detectors} with a detector, {cards.length - detectors} reference. Add your own with <code>codewright review --cards ./my-cards</code>.</div>
+          <div className="faint">{list.length} of {cards.length} entries · {detectors} with a detector, {cards.length - detectors} reference. {(cards ?? []).some((c) => c.origin === "repo") ? ` ${(cards ?? []).filter((c) => c.origin === "repo").length} added by your team.` : ""} Teach it more with <b>Teach Codewright</b>, or open a card and <b>Deepen with AI</b>.</div>
           {groups.map(([key, cs]) => {
             const [library, topic] = key.split("\u0000");
             return (
@@ -93,6 +104,7 @@ export default function Knowledge({ wid }: { wid: string | null }) {
                                 ? <span className="badge outline">reference</span>
                                 : <span className="badge outline" title={`Found by the ${intentLabel(c.intent)} detector`}><Radar size={11} />detector</span>}
                               {" "}{c.autofix && <span className="badge blue"><Wand2 size={11} />auto-patch</span>}
+                              {" "}{c.origin === "repo" && <span className="badge teal" title="Added by your team in .codewright/cards/"><Users size={11} />your team</span>}
                             </td>
                             <td className="mono muted">{c.versions}</td>
                             <td style={{ whiteSpace: "nowrap" }}>{wid && <span className={`badge ${FIT[c.fit.status].cls}`} title={c.fit.detail}>{FIT[c.fit.status].label}</span>}</td>
@@ -111,6 +123,14 @@ export default function Knowledge({ wid }: { wid: string | null }) {
                                 {c.snippet && <CodeView text={c.snippet} lang={c.snippet_lang} />}
                                 <div className="faint mono" style={{ fontSize: 11.5 }}>impact {c.impact} · effort {c.effort} · {c.kind}{c.reference ? "" : ` · intent ${c.intent}`}</div>
                                 <div className="col sources" style={{ gap: 3 }}>{c.sources.map((s) => <Source key={s} url={s} />)}</div>
+                                {wid && (
+                                  <div className="row wrap" style={{ gap: 8 }}>
+                                    <button className="btn sm" onClick={() => setTeach({ deepen: c })} title="Have the model draft a related card that goes further than this one">
+                                      <Layers size={13} />Deepen with AI
+                                    </button>
+                                    {c.origin === "repo" && <button className="btn sm danger" onClick={() => forget(c)}><Trash2 size={13} />Delete</button>}
+                                  </div>
+                                )}
                               </div>
                             </td></tr>
                           )}
@@ -123,6 +143,9 @@ export default function Knowledge({ wid }: { wid: string | null }) {
             );
           })}
         </div>
+      )}
+      {teach && wid && (
+        <TeachCard wid={wid} deepen={teach.deepen} onClose={() => setTeach(null)} onSaved={() => { setTeach(null); refresh(); }} />
       )}
     </div>
   );

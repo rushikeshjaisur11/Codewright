@@ -105,6 +105,7 @@ class Card:
     # Applies only when none of these is in the lockfile (e.g. an extra's package that was never installed).
     unless_installed: list[str] = field(default_factory=list)
     extra: str = ""  # with unless_installed: the `library[extra]` that would install them
+    origin: str = "built-in"  # "repo" for cards a team added in .codewright/cards (set by the loader)
 
 
 # What kind of advice a finding is, for tags and filters. Order is the display order.

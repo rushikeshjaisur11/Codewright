@@ -268,3 +268,27 @@ def test_old_gitignore_gains_the_cache_entries(tmp_path):
     ensure_dir(tmp_path)
     lines = (d / ".gitignore").read_text().splitlines()
     assert {"review-state.json", "cache/", "last-review.json", "snapshots/"} <= set(lines)
+
+
+def test_detectors_that_read_the_graph_are_marked():
+    """A function detector that reads other files (hot paths, callers) can't be cached per file or run while the
+    graph is still being built: it must say so with uses_graph=True."""
+    import ast
+    from pathlib import Path
+
+    from codewright.intents import detectors
+
+    for p in sorted((Path(detectors.__file__).parent).glob("*.py")):
+        for fn in ast.walk(ast.parse(p.read_text())):
+            if not isinstance(fn, ast.FunctionDef):
+                continue
+            decos = [
+                d for d in fn.decorator_list if isinstance(d, ast.Call) and getattr(d.func, "id", "") == "detector"
+            ]
+            if not decos or "graph" not in [a.arg for a in fn.args.args]:
+                continue
+            reads = any(isinstance(n, ast.Name) and n.id == "graph" for n in ast.walk(ast.Module(fn.body, [])))
+            marked = any(k.arg == "uses_graph" for k in decos[0].keywords)
+            intent = decos[0].args[0].value
+            filtered = intent in detectors.GRAPH_FILTERS  # reads the graph only when given one; filter does the rest
+            assert reads == (marked or filtered), f"{p.name}:{fn.name}: mark uses_graph or add a graph_filter"

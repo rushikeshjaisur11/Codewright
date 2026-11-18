@@ -30,8 +30,7 @@ from pathlib import Path
 
 import yaml
 
-from .graph import CodeGraph, is_test_file, record_imports, text
-from .models import Module
+from .graph import CodeGraph, import_statements, is_test_file, text
 
 KINDS = ("forbid-import", "only-in", "layers", "no-blocking-in-async")
 RULES_FILE = "rules.yaml"
@@ -243,7 +242,6 @@ class ImportSite:
 def import_sites(graph: CodeGraph) -> list[ImportSite]:
     """Every import statement in non-test files, with its line and the repo file it points to."""
     from .archmap import ArchMap, resolve_relative
-    from .intents.detectors import walk
 
     if "rule_import_sites" in graph.__dict__:
         return graph.__dict__["rule_import_sites"]
@@ -252,13 +250,8 @@ def import_sites(graph: CodeGraph) -> list[ImportSite]:
     for path, pf in sorted(graph.files.items()):
         if is_test_file(path):
             continue
-        for node in walk(pf.root, into_defs=True):
-            if node.type not in ("import_statement", "import_from_statement"):
-                continue
-            tmp = Module(path)
-            record_imports(node, tmp)
-            ln = node.start_point[0] + 1
-            for target in set(tmp.imports.values()):
+        for ln, _deferred, _kind, imported in import_statements(pf):  # recorded at parse time: no tree needed
+            for target in set(imported.values()):
                 full = resolve_relative(target, path)
                 mod = amap._internal_target(full)
                 internal = amap.modules.get(mod) if mod else None

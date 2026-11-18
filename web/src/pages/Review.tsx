@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { useApp } from "../App";
 import VerifyPanel from "../VerifyPanel";
+import ProofActions, { AiVerdictBadge } from "../ProofActions";
 import { api, Category, Finding } from "../api";
 import {
   CATEGORY, CATEGORY_ORDER, CategoryBadge, CodeView, CopyButton, DiffView, Empty, Inline, Modal, ProofBadge, Source, Spinner, Tabs,
@@ -201,6 +202,7 @@ export default function Review() {
                 <div className="meta">
                   <CategoryBadge category={f.category} />
                   {tab === "dropped" ? <span className="badge red">{f.rejected_reason}</span> : <ProofBadge proof={f.proof} />}
+                  <AiVerdictBadge check={f.ai_check} />
                   {f.patch && <span className="badge"><Wand2 size={11} />Patch</span>}
                   {f.hot_path && <span className="badge"><Flame size={11} />Hot</span>}
                   {f.status === "accepted" && <span className="badge green"><Check size={11} />Accepted</span>}
@@ -280,6 +282,7 @@ function Detail({ f, dropped, onAccept, onReject, onMute, onApply, onCode }: {
           <CategoryBadge category={f.category} size="md" />
           <span className="badge outline">{intentLabel(f.intent)}</span>
           {!dropped && <ProofBadge proof={f.proof} />}
+          <AiVerdictBadge check={f.ai_check} />
           {f.hot_path && <span className="badge"><Flame size={11} />Hot path</span>}
           <span className={`badge ${f.symbol_check === "missing" ? "red" : ""}`}>
             {f.symbol_check === "ok" ? <Check size={11} /> : null}API {f.symbol_check === "ok" ? "exists" : f.symbol_check}
@@ -354,9 +357,11 @@ function Detail({ f, dropped, onAccept, onReject, onMute, onApply, onCode }: {
 
         <div>
           <div className="section-title"><ShieldCheck size={14} />Proof</div>
-          <div className={`callout ${f.proof === "verified" ? "green" : f.proof === "broke-tests" ? "red" : "amber"}`} style={{ whiteSpace: "pre-wrap" }}>
-            <Inline text={f.proof_detail || "Not run."} />
-          </div>
+          {dropped ? (
+            <div className={`callout ${f.proof === "broke-tests" ? "red" : "amber"}`} style={{ whiteSpace: "pre-wrap" }}>
+              <Inline text={f.proof_detail || "Not run."} />
+            </div>
+          ) : <ProofActions key={f.id} f={f} />}
         </div>
 
         <div>

@@ -2,7 +2,16 @@
 
 export type Proof = "verified" | "unverified" | "broke-tests";
 
+export interface AiCheck {
+  verdict: "confirmed" | "needs-changes" | "wrong"; confidence: number; reason: string; risks: string[]; test: string;
+  model: string; at: number;
+}
+export interface Insight {
+  id: string; severity: "high" | "medium" | "low"; title: string; why: string; fix: string; file: string; line: number;
+  evidence: string; nodes: string[]; source: "rule" | "ai";
+}
 export interface Finding {
+  ai_check?: AiCheck;
   id: string;
   intent: string;
   file: string;
@@ -212,7 +221,7 @@ export interface Card {
   id: string; intent: string; title: string; symbol: string; kind: string; library: string | null;
   versions: string; suggestion: string; gain: string; effort: number; impact: number; risk: string;
   when_not: string; threshold: string; sources: string[]; snippet: string; snippet_lang: string; autofix: boolean;
-  topic: string; reference: boolean; extra: string; fit: { status: FitStatus; detail: string };
+  topic: string; reference: boolean; extra: string; fit: { status: FitStatus; detail: string }; origin?: "built-in" | "repo";
 }
 
 export type ProviderId = "anthropic" | "openai" | "gemini" | "litellm";
@@ -262,6 +271,7 @@ export interface AiReport {
   runs: { file: string; function: string; line: number; agent: string; how: string }[];
   architecture: { nodes: MapNode[]; edges: MapEdge[] }; mermaid: string;
   errors?: { file: string; step: string; error: string; at: string }[];
+  insights?: Insight[];
   summary: { files: number; need_model: number; agents: number; workflows: number; tools: number; model_calls: number;
     models: string[]; frameworks: string[] };
 }
@@ -344,6 +354,8 @@ export const api = {
   map: (id: string, level: string, target = "", unused = false) =>
     req<MapView>("GET", `${w(id)}/map/${level}?target=${q(target)}${unused ? "&unused=true" : ""}`),
   ai: (id: string) => req<AiReport>("GET", `${w(id)}/ai`),
+  aiCheck: (id: string, fid: string) => req<AiCheck>("POST", `${w(id)}/findings/${fid}/ai-check`),
+  aiReview: (id: string) => req<{ insights: Insight[]; model?: string; error?: string }>("POST", `${w(id)}/ai/review`),
   aiNode: (id: string, node: string) => req<NodeDetails>("GET", `${w(id)}/ai/node?id=${q(node)}`),
   mapNode: (id: string, node: string, level: string, target = "", unused = false) =>
     req<NodeDetails>("GET", `${w(id)}/inspect?id=${q(node)}&level=${level}&target=${q(target)}${unused ? "&unused=true" : ""}`),
@@ -371,6 +383,10 @@ export const api = {
     req<{ applied: boolean; files: string[]; status: MigrationPlan }>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/apply`),
   critique: (id: string, text: string) => req<PlanReview>("POST", `${w(id)}/critique`, { text }),
   insights: (id: string) => req<Insight[]>("GET", `${w(id)}/insights`),
+  teachCard: (id: string, card: Record<string, unknown>) => req<Card>("POST", `${w(id)}/cards`, { card }),
+  forgetCard: (id: string, cardId: string) => req<{ deleted: string }>("DELETE", `${w(id)}/cards/${encodeURIComponent(cardId)}`),
+  draftCard: (id: string, body: { topic: string; library: string; notes: string; deepen: string }) =>
+    req<Record<string, unknown> & { model: string }>("POST", `${w(id)}/cards/draft`, body),
   cards: (wid?: string | null) => req<Card[]>("GET", `/api/cards${wid ? `?workspace=${encodeURIComponent(wid)}` : ""}`),
   settings: (id: string) => req<Settings>("GET", `${w(id)}/settings`),
   saveSettings: (id: string, s: Partial<{ offline: boolean; constraints: string[] }>) =>

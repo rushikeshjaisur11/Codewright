@@ -143,7 +143,8 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         from . import stack as stack_mod
 
         st = stack_mod.discover(ws(workspace).root) if workspace else None
-        return knowledge.search(q, card_store.load(), st, library=library, limit=None)
+        root = ws(workspace).root if workspace else None
+        return knowledge.search(q, card_store.for_repo(root), st, library=library, limit=None)
 
     # ------------------------------------------------------------------ review
     def result_payload(wid: str, w: Workspace) -> dict:
@@ -163,6 +164,10 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         r = w.result
         fb = Feedback.load(w.root)
         findings = [f.to_dict() for f in r.findings]
+        from . import aicheck
+
+        rejected, muted = [f.to_dict() for f in r.rejected], [f.to_dict() for f in r.muted]
+        aicheck.attach(w.root, findings + rejected + muted)
         verified = sum(1 for f in r.findings if f.proof.value == "verified")
         return {
             **base,
@@ -188,8 +193,8 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
                 "base": r.base,
                 "findings": findings,
                 "rules": r.rules,
-                "rejected": [f.to_dict() for f in r.rejected],
-                "muted": [f.to_dict() for f in r.muted],
+                "rejected": rejected,
+                "muted": muted,
                 "metrics": {
                     "shown": len(findings),
                     "verified": verified,
@@ -273,6 +278,25 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         undo: Annotated[bool, Body(embed=True)] = False,
     ):
         return ws(wid).mute(intent, path, reason, undo)
+
+    @app.post("/api/w/{wid}/findings/{fid}/ai-check")
+    def ai_check(wid: str, fid: str):
+        """Ask the configured model whether this finding is right for this code (what tests could not prove)."""
+        from . import aicheck
+        from .activity import note
+
+        w = ws(wid)
+        f = w.finding(fid)
+        if f is None:
+            raise HTTPException(404, "unknown finding")
+        note(w.name, f"Asking the model to check: {f.title} ({f.file}:{f.line})")
+        try:
+            out = aicheck.check(w.root, f)
+        except RuntimeError as e:
+            note(w.name, f"AI check failed: {e}", "error")
+            raise HTTPException(409, str(e)) from None
+        note(w.name, f"AI check: {out['verdict']} ({round(out['confidence'] * 100)}%) for {f.title}")
+        return out
 
     @app.post("/api/w/{wid}/findings/{fid}/apply")
     def apply_patch(wid: str, fid: str):
@@ -365,9 +389,71 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     def chat(wid: str, question: Annotated[str, Body(embed=True)], history: list[dict] = Body([], embed=True)):
         return ws(wid).ask(question, history)
 
+    # ------------------------------------------------------------------ knowledge: teach
+    @app.post("/api/w/{wid}/cards")
+    def teach_card(wid: str, card: Annotated[dict, Body(embed=True)]):
+        """Add a card to the repo's knowledge base (.codewright/cards/), from the Knowledge page."""
+        from . import teach
+        from .activity import note
+
+        w = ws(wid)
+        try:
+            saved = teach.save(w.root, card)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        note(w.name, f"Knowledge: added card {saved['id']} ({saved['title']})")
+        return saved
+
+    @app.delete("/api/w/{wid}/cards/{card_id}")
+    def forget_card(wid: str, card_id: str):
+        from . import teach
+
+        try:
+            teach.delete(ws(wid).root, card_id)
+        except FileNotFoundError:
+            raise HTTPException(404, "not one of this repo's cards") from None
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        return {"deleted": card_id}
+
+    @app.post("/api/w/{wid}/cards/draft")
+    def draft_card(
+        wid: str,
+        topic: Annotated[str, Body(embed=True)] = "",
+        library: Annotated[str, Body(embed=True)] = "",
+        notes: Annotated[str, Body(embed=True)] = "",
+        deepen: Annotated[str, Body(embed=True)] = "",
+    ):
+        """A card drafted by the configured model from a topic and pasted notes (or deeper than card `deepen`)."""
+        from . import stack as stack_mod
+        from . import teach
+        from .activity import Timer
+
+        w = ws(wid)
+        base = next((c for c in card_store.for_repo(w.root) if c.id == deepen), None) if deepen else None
+        lib = library or (base.library if base and base.library else "")
+        installed = stack_mod.discover(w.root).version_of(lib) if lib else None
+        try:
+            with Timer(w.name, f"Drafting a knowledge card about {topic or (base.title if base else lib)}"):
+                return teach.draft(w.root, topic=topic, library=lib, notes=notes, base=base, installed=installed)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+
     @app.get("/api/w/{wid}/ai")
     def ai(wid: str):
         return ws(wid).ai()
+
+    @app.post("/api/w/{wid}/ai/review")
+    def ai_review(wid: str):
+        """The configured model's review of the agent architecture, on top of the rule-based insights."""
+        from .activity import Timer
+        from .agentreview import deep_review
+        from .llm import LLMConfig
+
+        w = ws(wid)
+        m = w.ai_map()
+        with Timer(w.name, "Asking the model to review the agent architecture"):
+            return deep_review(m, w.ai().get("insights", []), LLMConfig.load(w.root))
 
     @app.get("/api/w/{wid}/ai/node")
     def ai_node(wid: str, id: str):

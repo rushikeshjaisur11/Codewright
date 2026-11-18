@@ -5,6 +5,7 @@ import { AiFile, AiReport, AiRole, api, NodeDetails } from "../api";
 import Graph, { KIND_ICON } from "../Graph";
 import { CopyButton, Empty, KIND_STYLE, Spinner, Stat, Tabs, useToast } from "../ui";
 import Inspector from "../Inspector";
+import ArchitectureReview from "../ArchitectureReview";
 
 const kindName = (k: string) => (k === "entry" ? "Runs agents" : k === "llm" ? "Model" : KIND_STYLE[k]?.label ?? k);
 
@@ -136,6 +137,13 @@ export default function AiPage() {
         <Stat label="Tools" icon={<Wrench size={14} />} value={s.tools} sub="functions and toolsets agents can call" />
         <Stat label="Direct model calls" icon={<Cpu size={14} />} value={s.model_calls} sub={s.models.length ? `${s.models.length} model${s.models.length > 1 ? "s" : ""}: ${s.models.slice(0, 2).join(", ")}${s.models.length > 2 ? "…" : ""}` : "no literal model names"} />
       </div>
+
+      {!!rep.insights?.length && (
+        <ArchitectureReview insights={rep.insights} onFocus={(id) => {
+          pick(id);
+          document.querySelector(".ai-arch")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }} />
+      )}
 
       {hasGraph && (
         <div className="card ai-arch">

@@ -12,6 +12,7 @@ from . import cards as card_store
 from . import critic, detectcache, diffscope, graph, proof, proof_env, rank, rules, stack
 from .feedback import Feedback
 from .intents import detect
+from .intents import detectors as detect_mod
 from .models import Finding, Stack
 from .scope import ReviewState
 from .suggest import make_findings
@@ -68,15 +69,20 @@ def review(
     tell("stack", 0, 0)
     st = stack.discover(root)
     tell("graph", 0, 0)
-    g = graph.build(root, lambda done, total: tell("graph", done, total))
+    dcache = detectcache.load(root) if use_state else None
+    # New and edited files are detected while their syntax tree is in memory; on a big repo the trees don't all
+    # fit, and detecting afterwards would parse them a second time.
+    visitors = [detect_mod.fill_cache(dcache)] if dcache is not None else []
+    g = graph.build(root, lambda done, total: tell("graph", done, total), visitors=visitors, detect_cache=dcache)
+    if visitors:
+        g.__dict__["detect_fresh"] = visitors[0].fresh
     if on_graph:  # the map, files and dependencies need only this: show them while the rest runs
         on_graph(g, st)
     tell("detect", 0, 0)
-    dcache = detectcache.load(root) if use_state else None
     matches = detect(g, cache=dcache, progress=lambda done, total: tell("detect", done, total))
     if dcache is not None:
         detectcache.save(root, dcache)
-    all_cards = card_store.load(extra_cards)
+    all_cards = card_store.for_repo(root, extra_cards)
     findings = make_findings(matches, st, g, all_cards)
 
     arch = rules.summary(g, root)
