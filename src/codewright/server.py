@@ -26,7 +26,7 @@ from .intents import DETECTORS
 from .llm import LLMConfig
 from .llm import status as llm_status
 from .report import to_json, to_markdown, to_pr_comment
-from .service import Pending, Service, Workspace, browse, forget, git_branch, load_recent
+from .service import Service, Workspace, browse, forget, git_branch, load_recent
 
 STATIC = Path(__file__).parent / "web"
 
@@ -58,10 +58,6 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         if origin and "*" not in hosts and _origin_host(origin) not in hosts:
             return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
         return await call_next(request)
-
-    @app.exception_handler(Pending)
-    async def still_reading(request: Request, exc: Pending):
-        return JSONResponse({"detail": str(exc), "pending": True}, status_code=425)
 
     def ws(wid: str) -> Workspace:
         try:

@@ -87,10 +87,6 @@ class Snapshot:
     findings: list = field(default_factory=list)
 
 
-class Pending(RuntimeError):
-    """The repo is still being read; nothing can be shown yet."""
-
-
 @dataclass
 class Workspace:
     root: Path
@@ -162,13 +158,14 @@ class Workspace:
 
     def view(self):
         """The newest thing with a graph and a stack: the finished review, else the one in progress.
-        Raises Pending while the first parse is still running, so a page can wait instead of blocking."""
+        While the first parse is running it waits for the graph (not for the findings)."""
+        deadline = time.time() + 600
+        while self.result is None and self.early is None and self.running and time.time() < deadline:
+            time.sleep(0.05)
         if self.result is not None:
             return self.result
         if self.early is not None:
             return self.early
-        if self.running:
-            raise Pending("still reading the repository")
         return self.ensure()
 
     # --------------------------------------------------------------- live watch

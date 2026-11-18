@@ -141,7 +141,6 @@ def test_map_and_dependencies_are_available_before_the_review_finishes(repo, mon
     import threading
 
     from codewright import engine
-    from codewright.service import Pending
 
     gate, reached = threading.Event(), threading.Event()
     real = engine.detect
@@ -165,10 +164,6 @@ def test_map_and_dependencies_are_available_before_the_review_finishes(repo, mon
         gate.set()
         t.join(20)
     assert w.result is not None and w.early is None
-    fresh = Workspace(repo)
-    fresh.running = True  # first parse still going: callers are told to wait, not blocked
-    with pytest.raises(Pending):
-        fresh.view()
 
 
 def test_release_rows_stream_as_each_lookup_finishes(repo, monkeypatch):
