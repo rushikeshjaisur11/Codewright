@@ -175,3 +175,104 @@ def test_safety_endpoint_runs_the_check_in_the_background(tmp_path, monkeypatch)
             break
         time.sleep(0.1)
     assert "Settings" in s["error"] and s["check"]["breaking"] == 1  # no model: says so, keeps the check
+
+
+# ---------------------------------------------------------------- without the repo's tests
+
+
+def _lib_repo(tmp_path):
+    """A repo with no tests that uses `fakelib`; the "upgrade" is a patch that changes fakelib's behaviour."""
+    (tmp_path / "requirements.txt").write_text("fakelib==1.0\n")
+    (tmp_path / "fakelib").mkdir()
+    (tmp_path / "fakelib" / "__init__.py").write_text(
+        "import json\n\n\ndef encode(d):\n    return json.dumps(d)\n\n\ndef ok():\n    return 1\n"
+    )
+    (tmp_path / "app.py").write_text("import fakelib\n\n\ndef body(d):\n    return fakelib.encode(d).encode()\n")
+    (tmp_path / "other.py").write_text("from fakelib import ok\n\n\ndef one():\n    return ok()\n")
+    return tmp_path
+
+
+UPGRADE = (  # the new fakelib: compact JSON, and `ok` is gone
+    "--- a/fakelib/__init__.py\n+++ b/fakelib/__init__.py\n@@ -1,9 +1,5 @@\n import json\n \n \n"
+    " def encode(d):\n-    return json.dumps(d)\n-\n-\n-def ok():\n-    return 1\n"
+    '+    return json.dumps(d, separators=(",", ":"))\n'
+)
+
+
+def _no_tests(tmp_path, monkeypatch):
+    """No tests; today's env is this Python, the upgraded one the same Python under another path."""
+    import os
+    import sys
+
+    root = _lib_repo(tmp_path).resolve()
+    monkeypatch.setattr(proof, "has_tests", lambda r: False)
+    after_py = os.path.join(tmp_path, "py-after")
+    os.symlink(sys.executable, after_py)
+
+    def resolve(r, py=None, build=True):
+        return proof_env.TestEnv(sys.executable if r == root else after_py, "t")
+
+    monkeypatch.setattr(proof_env, "resolve", resolve)
+    return root
+
+
+BODY = 'from app import body\nrecord("body: dict", lambda: body({"a": 1}))\n'
+
+
+def test_trial_without_tests_compares_imports_and_behaviour(tmp_path, monkeypatch):
+    root = _no_tests(tmp_path, monkeypatch)
+    r = review(root, run_proof=False, top=None)
+    targets = upgradesafety.probe_targets(r.graph, "fakelib")
+    assert {t["function"] for t in targets} == {"body", "one"}
+    probes = [
+        {
+            "file": "app.py",
+            "function": "body",
+            "code": BODY + 'record("body: empty", lambda: body({}))\n',
+        },
+    ]
+    out = upgradesafety.trial(root, "fakelib", "2.0", [UPGRADE], graph=r.graph, probes=probes)
+    assert out["tests_ran"] is False and out["patches_applied"] == 1
+    assert out["imports"]["modules"] == 2
+    assert [b["module"] for b in out["imports"]["broken"]] == ["other"]  # `from fakelib import ok` fails after
+    [changed] = out["behaviour"]["changed"]  # the empty dict encodes the same; the other doesn't
+    assert changed["scenario"] == "body: dict"
+    assert changed["before"] == {"returned": {"bytes": '{"a": 1}'}} and changed["after"] == {
+        "returned": {"bytes": '{"a":1}'}
+    }
+    assert not out["safe"] and len(out["reasons"]) == 2
+    probs = upgradesafety.behaviour_problems(r.graph, "fakelib", "2.0", out, probes)
+    assert (
+        probs[0]["function"] == "body" and probs[0]["issue"] == "behaviour" and "today's result" in probs[0]["detail"]
+    )
+
+
+def test_trial_without_tests_is_safe_when_nothing_changes(tmp_path, monkeypatch):
+    root = _no_tests(tmp_path, monkeypatch)
+    r = review(root, run_proof=False, top=None)
+    probes = [
+        {
+            "file": "app.py",
+            "function": "body",
+            "code": 'from app import body\nrecord("body: dict", lambda: body({"a": 1}))\n',
+        }
+    ]
+    out = upgradesafety.trial(root, "fakelib", "2.0", [], graph=r.graph, probes=probes)
+    assert out["safe"] and out["behaviour"]["changed"] == [] and out["imports"]["broken"] == []
+    assert "1 call(s) in 1 function(s) compared" in out["evidence"]
+
+
+def test_write_probes_asks_for_inputs_only(tmp_path, monkeypatch):
+    root = _lib_repo(tmp_path)
+    r = review(root, run_proof=False, top=None)
+    monkeypatch.setattr(llm, "status", lambda cfg: {"available": True, "reason": ""})
+    seen = []
+    monkeypatch.setattr(
+        llm,
+        "complete",
+        lambda cfg, system, msgs, **k: seen.append(system) or '```python\nrecord("body: x", lambda: 1)\n```',
+    )
+    out = upgradesafety.write_probes(root, r.graph, "fakelib", upgradesafety.probe_targets(r.graph, "fakelib"))
+    assert len(out["probes"]) == 2 and "Never assert" in seen[0]
+    monkeypatch.setattr(llm, "status", lambda cfg: {"available": False, "reason": "no key"})
+    assert "no key" in upgradesafety.write_probes(root, r.graph, "fakelib", [])["why"]

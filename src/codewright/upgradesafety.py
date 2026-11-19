@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 from pathlib import Path
 
 from .graph import CodeGraph, text
@@ -394,25 +395,289 @@ def _summary(run) -> dict:
     }
 
 
-def trial(root: str | Path, name: str, version: str, patches: list[str], *, progress=None, timeout: int = 1800) -> dict:
-    """Run the tests on today's code and on a copy with the upgrade applied; what fails only after is the risk."""
+# --------------------------------------------------------------------------- behaviour, without the repo's tests
+
+IMPORT_SCRIPT = r"""
+import importlib, json, sys, traceback
+out = {}
+for mod in json.loads(sys.argv[1]):
+    try:
+        importlib.import_module(mod)
+        out[mod] = None
+    except BaseException as exc:
+        out[mod] = f"{type(exc).__name__}: {exc}"[:400]
+print("@@CODEWRIGHT@@" + json.dumps(out))
+"""
+
+# Runs a probe written by the model: each `record(name, fn)` calls fn and keeps what came back (or what it
+# raised) in a form that compares across versions: no memory addresses, sets sorted, objects by type and fields.
+PROBE_HARNESS = r"""
+import asyncio, inspect, json, re, sys
+_OUT = {}
+_ADDR = re.compile(r" at 0x[0-9a-fA-F]+")
+
+
+def _describe(v, depth=0):
+    if depth > 6:
+        return "..."
+    if v is None or isinstance(v, (bool, int, str)):
+        return v
+    if isinstance(v, float):
+        return round(v, 9)
+    if isinstance(v, bytes):
+        return {"bytes": v[:400].decode("utf-8", "replace")}
+    if isinstance(v, dict):
+        return {str(k): _describe(x, depth + 1) for k, x in list(v.items())[:100]}
+    if isinstance(v, (list, tuple)):
+        return [_describe(x, depth + 1) for x in list(v)[:100]]
+    if isinstance(v, (set, frozenset)):
+        return sorted((_describe(x, depth + 1) for x in v), key=repr)[:100]
+    for dump in ("model_dump", "dict", "_asdict"):
+        f = getattr(v, dump, None)
+        if callable(f):
+            try:
+                return {"type": type(v).__name__, "value": _describe(f(), depth + 1)}
+            except Exception:
+                pass
+    if hasattr(v, "__dict__") and not inspect.isroutine(v) and not inspect.isclass(v):
+        fields = {k: x for k, x in vars(v).items() if not k.startswith("_")}
+        if fields:
+            return {"type": type(v).__name__, "fields": _describe(fields, depth + 1)}
+    return {"type": type(v).__name__, "repr": _ADDR.sub("", repr(v))[:300]}
+
+
+def record(name, fn):
+    try:
+        v = fn()
+        if inspect.isawaitable(v):
+
+            async def _wait(x=v):
+                return await x
+
+            v = asyncio.run(_wait())
+        _OUT[name] = {"returned": _describe(v)}
+    except BaseException as exc:
+        _OUT[name] = {"raised": type(exc).__name__, "message": _ADDR.sub("", str(exc))[:300]}
+
+
+def _done():
+    print("@@CODEWRIGHT@@" + json.dumps(_OUT, default=str))
+"""
+
+PROBE_SYSTEM = (
+    "You write a short Python probe that exercises functions in a repository so their behaviour can be compared "
+    "before and after a library upgrade. The probe calls `record(name, lambda: <call>)` once per scenario "
+    "(`record` is already defined; it runs the call, awaits coroutines and keeps the result or the exception). "
+    "Use 3 to 6 scenarios per function with realistic inputs covering the normal path, edge cases and errors, "
+    "chosen so the library's code actually runs. Make it deterministic and offline: patch network clients, "
+    "clocks, randomness, environment and files outside the working directory with unittest.mock (start the "
+    "patches with `.start()`, not a `with` block around `record`), but do NOT mock the upgraded library itself "
+    "unless it would reach the network: its behaviour is what is being compared. Never assert anything. Import "
+    "the functions from their modules. Reply with the Python code only, in one ```python block."
+)
+
+
+def _module_name(path: str) -> str:
+    parts = path[:-3].split("/")
+    if parts[0] == "src" and len(parts) > 1:
+        parts = parts[1:]
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _run_script(work: Path, python: str, code: str, args: list[str], timeout: int) -> tuple[dict | None, str]:
+    """Run `code` with the repo copy importable; returns (the JSON it printed, the output tail)."""
+    script = work / "_codewright_probe.py"
+    script.write_text(code)
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(work), str(work / "src")]), "PYTHONHASHSEED": "0"}
+    env.pop("VIRTUAL_ENV", None)
+    try:
+        proc = subprocess.run(
+            [python, str(script), *args], cwd=work, capture_output=True, text=True, timeout=timeout, env=env
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"timed out after {timeout}s"
+    except OSError as exc:
+        return None, str(exc)
+    finally:
+        with contextlib.suppress(OSError):
+            script.unlink()
+    out = proc.stdout + proc.stderr
+    mark = proc.stdout.rfind("@@CODEWRIGHT@@")
+    if mark < 0:
+        return None, out[-2000:]
+    try:
+        return json.loads(proc.stdout[mark + len("@@CODEWRIGHT@@") :].splitlines()[0]), out[-2000:]
+    except (ValueError, IndexError):
+        return None, out[-2000:]
+
+
+def import_modules(graph: CodeGraph, name: str) -> list[str]:
+    """The repo's modules that import the library (tests left out)."""
+    from .graph import is_test_file
+
+    mods = library_modules(name)
+    return sorted(
+        {
+            _module_name(path)
+            for path, pf in graph.files.items()
+            if not is_test_file(path)
+            and any(t == m or t.startswith(m + ".") for t in pf.module.imports.values() for m in mods)
+        }
+    )
+
+
+def probe_targets(graph: CodeGraph, name: str, problems: list[dict] | None = None, limit: int = 8) -> list[dict]:
+    """The functions whose behaviour the upgrade could change, most at risk first: those with a problem from
+    the check, then those that use the library most. [{file, function, uses}]"""
+    from .graph import is_test_file
+
+    count: dict[tuple[str, str], int] = {}
+    for s in usage_sites(graph, name):
+        if s["kind"] == "call" and s["function"] not in ("<module>",) and not is_test_file(s["file"]):
+            count[(s["file"], s["function"])] = count.get((s["file"], s["function"]), 0) + 1
+    risky = {(p["file"], p["function"]) for p in problems or []}
+    ranked = sorted(count, key=lambda k: (k not in risky, -count[k], k))
+    return [{"file": f, "function": fn, "uses": count[(f, fn)]} for f, fn in ranked[:limit]]
+
+
+def write_probes(root: str | Path, graph: CodeGraph, name: str, targets: list[dict]) -> dict:
+    """The model writes one probe per function: inputs only, no expected values; today's code is the
+    reference. {probes: [{file, function, code}], skipped: [{file, function, why}], model}"""
+    from .llm import LLMConfig, complete, last_error
+    from .llm import status as llm_status
+
+    cfg = LLMConfig.load(root)
+    st = llm_status(cfg)
+    if not st["available"]:
+        return {"probes": [], "skipped": [], "model": None, "why": f"no model to write the probes: {st['reason']}"}
+    probes, skipped = [], []
+    for t in targets:
+        pf = graph.files.get(t["file"])
+        span = _function_span(pf, t["function"]) if pf else None
+        if span is None:
+            skipped.append({**t, "why": "could not find the function"})
+            continue
+        code = "".join(pf.lines[span[0] - 1 : span[1]])
+        mod = _module_name(t["file"])
+        top = t["function"].split(".")[0]
+        ask = (
+            f"Function `{t['function']}` in `{t['file']}` (import with `from {mod} import {top}`); it uses {name}.\n"
+            f"```python\n{code[:8000]}```\n\nThe module's imports:\n```python\n"
+            + "".join(pf.lines[: min(len(pf.lines), 40)])
+            + "```\nName each scenario '"
+            + t["function"]
+            + ": <what it tries>'."
+        )
+        reply = complete(
+            cfg, PROBE_SYSTEM, [{"role": "user", "content": ask}], max_tokens=2000, purpose="upgrade probe"
+        )
+        if reply is None:
+            skipped.append({**t, "why": last_error() or "the model did not answer"})
+            continue
+        m = re.search(r"```(?:python)?\s*\n(.*?)```", reply, re.S)
+        body = (m.group(1) if m else reply).strip() + "\n"
+        try:
+            compile(body, "probe.py", "exec")
+        except SyntaxError as exc:
+            skipped.append({**t, "why": f"the probe is not valid Python ({exc.msg})"})
+            continue
+        probes.append({"file": t["file"], "function": t["function"], "code": body})
+    return {"probes": probes, "skipped": skipped, "model": cfg.model}
+
+
+def _probe_program(probes: list[dict]) -> str:
+    parts = [PROBE_HARNESS]
+    for i, p in enumerate(probes):  # each probe on its own: one that fails to import doesn't hide the rest
+        body = textwrap.indent(p["code"], "    ")
+        parts.append(
+            f"def _probe_{i}():\n{body}\n"
+            f"try:\n    _probe_{i}()\nexcept BaseException as exc:\n"
+            f"    _OUT[{p['function']!r} + ': (probe setup)'] = "
+            f"{{'raised': type(exc).__name__, 'message': str(exc)[:300]}}\n"
+            f"try:\n    from unittest import mock as _m\n    _m.patch.stopall()\nexcept Exception:\n    pass\n"
+        )
+    parts.append("_done()\n")
+    return "\n".join(parts)
+
+
+def _compare_probes(before: dict, after: dict) -> list[dict]:
+    diffs = []
+    for k in sorted(set(before) | set(after)):
+        if before.get(k) != after.get(k):
+            diffs.append({"scenario": k, "before": before.get(k), "after": after.get(k)})
+    return diffs
+
+
+def behaviour_problems(graph: CodeGraph, name: str, version: str, trial_out: dict, probes: list[dict]) -> list[dict]:
+    """Behaviour the trial saw change, as problems `rewrite` can fix: keep what the code does today."""
+    by_fn = {p["function"]: p["file"] for p in probes or []}
+    out = []
+    for c in ((trial_out or {}).get("behaviour") or {}).get("changed") or []:
+        fn = c["scenario"].split(":", 1)[0].strip()
+        file = by_fn.get(fn)
+        pf = graph.files.get(file) if file else None
+        span = _function_span(pf, fn) if pf else None
+        if span is None:
+            continue
+        out.append(
+            {
+                "file": file,
+                "line": span[0],
+                "function": fn,
+                "symbol": name,
+                "kind": "call",
+                "kwargs": [],
+                "issue": "behaviour",
+                "detail": f"`{c['scenario']}` gave {json.dumps(c['before'])[:400]} today and "
+                f"{json.dumps(c['after'])[:400]} with {name} {version}: change the code so it gives today's result",
+                "old_signature": None,
+                "new_signature": None,
+                "new_doc": "",
+            }
+        )
+    return out
+
+
+# --------------------------------------------------------------------------- before and after, in a sandbox
+
+
+def trial(
+    root: str | Path,
+    name: str,
+    version: str,
+    patches: list[str],
+    *,
+    graph: CodeGraph | None = None,
+    probes: list[dict] | None = None,
+    progress=None,
+    timeout: int = 1800,
+) -> dict:
+    """Today's code against a sandbox copy with the upgrade applied, three ways, none needing the repo's tests
+    to be complete: every module that imports the library is imported in both; the probes (the functions that
+    use it, called with the same inputs) must return or raise the same in both; and the repo's tests, if any,
+    must not fail only after. Nothing in the repo changes."""
     from . import proof, proof_env, upgrade
 
     root = Path(root).resolve()
     tell = progress or (lambda msg: None)
-    out: dict = {"before": None, "after": None, "lock": None, "patches_applied": 0, "patches_failed": 0}
-    if not proof.has_tests(root):
-        out["error"] = "this repo has no tests to run; the checks above are the evidence"
-        return out
+    out: dict = {
+        "before": None,
+        "after": None,
+        "lock": None,
+        "patches_applied": 0,
+        "patches_failed": 0,
+        "imports": None,
+        "behaviour": None,
+        "tests_ran": False,
+    }
+    modules = import_modules(graph, name) if graph is not None else []
     with tempfile.TemporaryDirectory(prefix="codewright-upgrade-") as tmp:
         tmp = Path(tmp)
-        tell("Running the tests on today's code")
         now = proof_env.resolve(root, None, build=True)
         base = tmp / "before"
         shutil.copytree(root, base, ignore=proof.IGNORE, symlinks=True)
-        out["before"] = _summary(proof.run_tests(base, now.python, timeout, fail_fast=False))
-        tell(f"Today: {out['before']['passed']} passed, {len(out['before']['failed'])} failing")
-
         work = tmp / "after"
         shutil.copytree(root, work, ignore=proof.IGNORE, symlinks=True)
         for e in upgrade.requirement_edits(work, name, version):
@@ -430,7 +695,7 @@ def trial(root: str | Path, name: str, version: str, patches: list[str], *, prog
                 out["patches_applied"] += 1
             else:
                 out["patches_failed"] += 1
-        tell(f"Building an environment with {name} {version} and running the tests")
+        tell(f"Building an environment with {name} {version}")
         env = proof_env.resolve(work, None, build=True)
         if env.python == now.python:
             out["error"] = (
@@ -438,13 +703,77 @@ def trial(root: str | Path, name: str, version: str, patches: list[str], *, prog
                 + (env.note or "")
             )
             return out
-        out["after"] = _summary(proof.run_tests(work, env.python, timeout, fail_fast=False))
-    before, after = set(out["before"]["failed"]), set(out["after"]["failed"])
-    out["new_failures"] = sorted(after - before)
-    out["fixed"] = sorted(before - after)
-    out["safe"] = not out["new_failures"] and out["after"]["passed"] >= out["before"]["passed"] * 0.98
+
+        if modules:  # 1. does every module that uses it still import?
+            tell(f"Importing the {len(modules)} module(s) that use {name}, before and after")
+            args = [json.dumps(modules)]
+            b, b_out = _run_script(base, now.python, IMPORT_SCRIPT, args, 300)
+            a, a_out = _run_script(work, env.python, IMPORT_SCRIPT, args, 300)
+            b, a = b or {}, a or {}
+            out["imports"] = {
+                "modules": len(modules),
+                "broken": [{"module": m, "error": a[m]} for m in modules if b.get(m) is None and a.get(m)],
+                "already_failing": [m for m in modules if b.get(m)],
+                "error": None if (b or not modules) and a else (a_out or b_out)[-600:],
+            }
+
+        if probes:  # 2. do the functions that use it behave the same?
+            tell(f"Calling {len(probes)} function(s) with the same inputs, before and after")
+            program = _probe_program(probes)
+            b, b_out = _run_script(base, now.python, program, [], 600)
+            a, a_out = _run_script(work, env.python, program, [], 600)
+            if b is None or a is None:
+                out["behaviour"] = {"error": "the probes did not run: " + ((b_out if b is None else a_out)[-800:])}
+            else:
+                ran = {k: v for k, v in b.items() if not k.endswith("(probe setup)")}
+                out["behaviour"] = {
+                    "functions": len(probes),
+                    "scenarios": len(ran),
+                    "changed": _compare_probes(b, a),
+                    "probe_errors": [k for k in b if k.endswith("(probe setup)")],
+                }
+
+        if proof.has_tests(root):  # 3. the repo's own tests, if it has any
+            tell("Running the tests on today's code")
+            out["before"] = _summary(proof.run_tests(base, now.python, timeout, fail_fast=False))
+            tell(f"Today: {out['before']['passed']} passed, {len(out['before']['failed'])} failing")
+            tell(f"Running the tests with {name} {version}")
+            out["after"] = _summary(proof.run_tests(work, env.python, timeout, fail_fast=False))
+            out["tests_ran"] = True
+
+    reasons = []
+    if out["tests_ran"]:
+        before, after = set(out["before"]["failed"]), set(out["after"]["failed"])
+        out["new_failures"] = sorted(after - before)
+        out["fixed"] = sorted(before - after)
+        if out["new_failures"]:
+            reasons.append(f"{len(out['new_failures'])} test(s) fail only after")
+        elif out["after"]["passed"] < out["before"]["passed"] * 0.98:
+            reasons.append("fewer tests pass after")
+    else:
+        out["new_failures"], out["fixed"] = [], []
+    if out["imports"] and out["imports"]["broken"]:
+        reasons.append(f"{len(out['imports']['broken'])} module(s) no longer import")
+    if out["behaviour"] and out["behaviour"].get("changed"):
+        reasons.append(f"{len(out['behaviour']['changed'])} call(s) behave differently")
+    evidence = bool(out["tests_ran"] or (out["imports"] and out["imports"]["modules"]) or out["behaviour"])
+    out["safe"] = evidence and not reasons
+    out["reasons"] = reasons
+    out["evidence"] = [
+        x
+        for x in (
+            out["imports"] and f"{out['imports']['modules']} module(s) imported",
+            out["behaviour"]
+            and "scenarios" in out["behaviour"]
+            and f"{out['behaviour']['scenarios']} call(s) in {out['behaviour']['functions']} function(s) compared",
+            out["tests_ran"] and f"{out['after']['passed']} test(s) passed after",
+        )
+        if x
+    ]
+    if not evidence:
+        out["error"] = out.get("error") or "nothing could be compared: no module imports it and no probes or tests ran"
     tell(
-        f"After the upgrade: {out['after']['passed']} passed, {len(after)} failing"
-        + (f"; {len(out['new_failures'])} newly failing" if out["new_failures"] else "; nothing newly failing")
+        ("Safe: " if out["safe"] else "Not safe yet: ")
+        + ("; ".join(reasons) if reasons else ", ".join(out["evidence"]) or "no evidence")
     )
     return out

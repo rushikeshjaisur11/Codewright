@@ -266,10 +266,14 @@ export interface UpgradeTrialRun { ok: boolean; passed: number; failed: string[]
 export interface UpgradeTrial {
   before: UpgradeTrialRun | null; after: UpgradeTrialRun | null; new_failures?: string[]; fixed?: string[]; safe?: boolean;
   patches_applied: number; patches_failed: number; lock: { ok: boolean; output: string } | null; error?: string | null;
+  tests_ran: boolean; reasons?: string[]; evidence?: string[];
+  imports: { modules: number; broken: { module: string; error: string }[]; already_failing: string[]; error: string | null } | null;
+  behaviour: { functions?: number; scenarios?: number; changed?: { scenario: string; before: unknown; after: unknown }[]; probe_errors?: string[]; error?: string } | null;
 }
 export interface UpgradeSafety {
   key: string | null; running: boolean; step: string | null; log: string[]; error: string | null;
   check: UpgradeCheck | null; rewrite: UpgradeRewrite | null; trial: UpgradeTrial | null;
+  probes: { probes: { file: string; function: string; code: string }[]; skipped: { file: string; function: string; why: string }[]; model: string | null; why?: string } | null;
 }
 export interface GitState {
   git: boolean; branch?: string | null; detached?: boolean; head?: string; default?: string; branches: string[];

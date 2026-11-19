@@ -135,17 +135,19 @@ export default function UpgradeModal({ name, version, onClose }: { name: string;
             <b><ShieldCheck size={14} /> 5. Make sure nothing breaks</b>
             <div className="faint" style={{ fontSize: 12.5 }}>
               Installs {name} {version} on its own and checks every use in this repo against its real signatures; writes the code changes for
-              what breaks; then runs your tests on today&apos;s code and on a copy with the upgrade and those changes. Your repo is not touched.
+              what breaks; then compares today&apos;s code with a copy that has the upgrade and those changes: every module that imports {name}
+              is imported, the functions that use it are called with the same inputs (AI writes the inputs, today&apos;s code gives the
+              expected answers, so no tests are needed) and your tests run if you have any. Your repo is not touched.
             </div>
             <div className="row wrap" style={{ gap: 8 }}>
               <button className="btn sm" disabled={!!mine?.running || !!safety?.running} onClick={() => safetyStep("check")}>
                 {mine?.running && mine.step === "check" ? <Spinner size={13} /> : <ShieldCheck size={13} />}1. Check every use
               </button>
-              <button className="btn sm" disabled={!mine?.check?.problems.length || !!safety?.running} onClick={() => safetyStep("rewrite")}>
+              <button className="btn sm" disabled={!(mine?.check?.problems.some((p) => p.issue !== "changed") || mine?.trial?.behaviour?.changed?.length) || !!safety?.running} onClick={() => safetyStep("rewrite")}>
                 {mine?.running && mine.step === "rewrite" ? <Spinner size={13} /> : <Bot size={13} />}2. Write the code changes with AI
               </button>
               <button className="btn sm" disabled={!!safety?.running} onClick={() => safetyStep("trial")}>
-                {mine?.running && mine.step === "trial" ? <Spinner size={13} /> : <FlaskConical size={13} />}3. Run the tests before and after
+                {mine?.running && mine.step === "trial" ? <Spinner size={13} /> : <FlaskConical size={13} />}3. Compare before and after
               </button>
             </div>
             {safety?.running && !mine && <div className="faint" style={{ fontSize: 12.5 }}>Busy with {safety.key}: wait for it to finish.</div>}
@@ -186,17 +188,7 @@ export default function UpgradeModal({ name, version, onClose }: { name: string;
                 {mine.rewrite.skipped.map((k, i) => <div key={i}>✋ <span className="mono">{k.file}</span> {k.function}: <span className="muted">{k.why}</span></div>)}
               </div>
             )}
-            {mine?.trial && (
-              <div className="col" style={{ gap: 4, fontSize: 13 }}>
-                {mine.trial.error ? <div className="muted">{mine.trial.error}</div> : mine.trial.before && mine.trial.after && (<>
-                  <div><b>{mine.trial.safe ? "✓ Safe to upgrade" : "⚠ Not safe yet"}</b>: today {mine.trial.before.passed} passed, {mine.trial.before.failed.length} failing → after {mine.trial.after.passed} passed, {mine.trial.after.failed.length} failing
-                    {mine.trial.patches_applied + mine.trial.patches_failed > 0 && <span className="faint"> (with {mine.trial.patches_applied} change(s){mine.trial.patches_failed ? `, ${mine.trial.patches_failed} did not apply` : ""})</span>}</div>
-                  {(mine.trial.new_failures ?? []).length > 0 && <div>Newly failing: {(mine.trial.new_failures ?? []).map((t) => <code key={t} style={{ marginRight: 6 }}>{t}</code>)}</div>}
-                  {(mine.trial.fixed ?? []).length > 0 && <div className="faint">Now passing: {(mine.trial.fixed ?? []).join(", ")}</div>}
-                  {!mine.trial.safe && <details><summary className="faint">Test output after the upgrade</summary><pre className="mono" style={{ fontSize: 11.5, whiteSpace: "pre-wrap" }}>{mine.trial.after.output}</pre></details>}
-                </>)}
-              </div>
-            )}
+            {mine?.trial && <TrialResult t={mine.trial} probes={mine.probes} version={version} />}
           </section>
           <section className="col" style={{ gap: 6 }}>
             <label className="row" style={{ gap: 6 }}><input type="checkbox" checked={branch.on} onChange={(e) => setBranch({ ...branch, on: e.target.checked })} /><GitBranchPlus size={13} /><b>On a new branch</b></label>
@@ -205,5 +197,55 @@ export default function UpgradeModal({ name, version, onClose }: { name: string;
         </div>
       )}
     </Modal>
+  );
+}
+
+function show(v: unknown): string {
+  const s = JSON.stringify(v);
+  return s === undefined ? "nothing" : s.length > 220 ? s.slice(0, 220) + "…" : s;
+}
+
+/** What the before/after comparison found: imports, behaviour of the functions that use the library, tests. */
+function TrialResult({ t, probes, version }: { t: NonNullable<UpgradeSafety["trial"]>; probes: UpgradeSafety["probes"]; version: string }) {
+  if (t.error && !t.evidence?.length) return <div className="muted" style={{ fontSize: 13 }}>{t.error}</div>;
+  const changed = t.behaviour?.changed ?? [];
+  return (
+    <div className="col" style={{ gap: 6, fontSize: 13 }}>
+      <div><b>{t.safe ? "✓ Safe to upgrade" : "⚠ Not safe yet"}</b>
+        {t.reasons?.length ? <span>: {t.reasons.join("; ")}</span> : t.evidence?.length ? <span className="muted">: {t.evidence.join(", ")}</span> : null}
+        {t.patches_applied + t.patches_failed > 0 && <span className="faint"> (with {t.patches_applied} change(s){t.patches_failed ? `, ${t.patches_failed} did not apply` : ""})</span>}
+      </div>
+      {t.imports && (
+        <div>Imports: {t.imports.broken.length === 0
+          ? <span className="muted">all {t.imports.modules} module(s) that use it still import at {version}</span>
+          : t.imports.broken.map((b) => <div key={b.module}>✗ <code>{b.module}</code> <span className="muted">{b.error}</span></div>)}
+        </div>
+      )}
+      {t.behaviour && (t.behaviour.error
+        ? <div className="muted">Behaviour: {t.behaviour.error}</div>
+        : <div className="col" style={{ gap: 3 }}>
+            <div>Behaviour: {changed.length === 0
+              ? <span className="muted">{t.behaviour.scenarios} call(s) in {t.behaviour.functions} function(s) gave the same result before and after</span>
+              : <b>{changed.length} of {t.behaviour.scenarios} call(s) changed</b>}</div>
+            {changed.slice(0, 20).map((c) => (
+              <div key={c.scenario} className="mono" style={{ fontSize: 12 }}>
+                <b>{c.scenario}</b><div className="faint">today: {show(c.before)}</div><div>after: {show(c.after)}</div>
+              </div>
+            ))}
+            {changed.length > 0 && <div className="faint">Write the code changes with AI uses these to keep today&apos;s behaviour.</div>}
+            {(t.behaviour.probe_errors ?? []).length > 0 && <div className="faint">Probes that could not start: {(t.behaviour.probe_errors ?? []).join(", ")}</div>}
+          </div>)}
+      {!t.behaviour && probes?.why && <div className="faint">Behaviour not compared: {probes.why}</div>}
+      {probes && probes.probes.length > 0 && (
+        <details><summary className="faint">The calls compared ({probes.model})</summary>
+          {probes.probes.map((p) => <pre key={p.function} className="mono" style={{ fontSize: 11.5, whiteSpace: "pre-wrap" }}>{`# ${p.file}: ${p.function}\n${p.code}`}</pre>)}
+        </details>
+      )}
+      {t.tests_ran && t.before && t.after ? (<>
+        <div>Tests: today {t.before.passed} passed, {t.before.failed.length} failing → after {t.after.passed} passed, {t.after.failed.length} failing</div>
+        {(t.new_failures ?? []).length > 0 && <div>Newly failing: {(t.new_failures ?? []).map((x) => <code key={x} style={{ marginRight: 6 }}>{x}</code>)}</div>}
+        {!t.safe && <details><summary className="faint">Test output after the upgrade</summary><pre className="mono" style={{ fontSize: 11.5, whiteSpace: "pre-wrap" }}>{t.after.output}</pre></details>}
+      </>) : <div className="faint">Tests: none in this repo; the imports and behaviour above are the evidence.</div>}
+    </div>
   );
 }

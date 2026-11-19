@@ -473,7 +473,7 @@ class Workspace:
             return self.upgrade_progress()
         key = f"{name}=={version}"
         if not cur or cur.get("key") != key:
-            cur = {"key": key, "check": None, "rewrite": None, "trial": None}
+            cur = {"key": key, "check": None, "rewrite": None, "trial": None, "probes": None}
         state = {**cur, "running": True, "step": step, "log": [], "error": None}
         self._upgrade_job = state
 
@@ -489,9 +489,14 @@ class Workspace:
                     state["check"] = upgradesafety.check_uses(self.root, r.graph, r.stack, name, version)
                     tell(state["check"]["summary"])
                 elif step == "rewrite":
-                    problems = (state.get("check") or {}).get("problems") or []
+                    problems = [p for p in (state.get("check") or {}).get("problems") or [] if p["issue"] != "changed"]
+                    problems += upgradesafety.behaviour_problems(
+                        r.graph, name, version, state.get("trial"), (state.get("probes") or {}).get("probes")
+                    )
                     if not problems:
-                        raise RuntimeError("run the check first: there is nothing to rewrite yet")
+                        raise RuntimeError(
+                            "nothing to rewrite yet: check every use, or run before and after, to find what changes"
+                        )
                     installed = r.stack.version_of(name)
                     tell("Reading the release notes")
                     notes = knowledgefresh.release_notes(name, installed, version)
@@ -504,7 +509,19 @@ class Workspace:
                         f"{len(state['rewrite']['skipped'])} left by hand"
                     )
                 elif step == "trial":
-                    state["trial"] = upgradesafety.trial(self.root, name, version, patches or [], progress=tell)
+                    problems = (state.get("check") or {}).get("problems") or []
+                    targets = upgradesafety.probe_targets(r.graph, name, problems)
+                    probes = None
+                    if targets:
+                        tell(f"Writing calls for {len(targets)} function(s) that use {name} (inputs only)")
+                        written = upgradesafety.write_probes(self.root, r.graph, name, targets)
+                        state["probes"] = written
+                        probes = written["probes"]
+                        if written.get("why"):
+                            tell(written["why"] + "; comparing imports and tests only")
+                    state["trial"] = upgradesafety.trial(
+                        self.root, name, version, patches or [], graph=r.graph, probes=probes, progress=tell
+                    )
                 else:
                     raise RuntimeError(f"unknown step {step!r}")
             except Exception as exc:
@@ -518,7 +535,7 @@ class Workspace:
 
     def upgrade_progress(self) -> dict:
         s = self._upgrade_job or {"running": False, "step": None, "log": [], "error": None}
-        return {k: s.get(k) for k in ("key", "running", "step", "log", "error", "check", "rewrite", "trial")}
+        return {k: s.get(k) for k in ("key", "running", "step", "log", "error", "check", "rewrite", "trial", "probes")}
 
     def forget_ai(self) -> None:
         """Rebuild the AI page next time (its corrections file changed); the scan itself is kept."""
