@@ -47,7 +47,7 @@ export default function UpgradeModal({ name, version, onClose }: { name: string;
 
   const chosenRewrites = () => (mine?.rewrite?.patches ?? []).filter((p) => rewrites.has(p.id)).map((p) => p.patch);
 
-  async function safetyStep(step: "check" | "rewrite" | "trial") {
+  async function safetyStep(step: "check" | "rewrite" | "agent" | "trial") {
     if (!wid) return;
     try { setSafety(await api.upgradeSafety(wid, step, name, version, step === "trial" ? chosenRewrites() : [])); watch(); }
     catch (e) { toast((e as Error).message, "error"); }
@@ -146,6 +146,10 @@ export default function UpgradeModal({ name, version, onClose }: { name: string;
               <button className="btn sm" disabled={!(mine?.check?.problems.some((p) => p.issue !== "changed") || mine?.trial?.behaviour?.changed?.length) || !!safety?.running} onClick={() => safetyStep("rewrite")}>
                 {mine?.running && mine.step === "rewrite" ? <Spinner size={13} /> : <Bot size={13} />}2. Write the code changes with AI
               </button>
+              <button className="btn sm" title="The agent reads the code, looks up the new version's docs and changelog on the web, edits a sandbox copy and runs your tests"
+                disabled={!(mine?.check?.problems.some((p) => p.issue !== "changed") || mine?.trial?.behaviour?.changed?.length) || !!safety?.running} onClick={() => safetyStep("agent")}>
+                {mine?.running && mine.step === "agent" ? <Spinner size={13} /> : <Wand2 size={13} />}…or hand them to the AI agent
+              </button>
               <button className="btn sm" disabled={!!safety?.running} onClick={() => safetyStep("trial")}>
                 {mine?.running && mine.step === "trial" ? <Spinner size={13} /> : <FlaskConical size={13} />}3. Compare before and after
               </button>
@@ -174,7 +178,12 @@ export default function UpgradeModal({ name, version, onClose }: { name: string;
             )}
             {mine?.rewrite && (
               <div className="col" style={{ gap: 6, fontSize: 13 }}>
-                <div className="faint">{mine.rewrite.model}: {mine.rewrite.patches.length} change(s), each checked to compile. Ticked ones go into the test run and the upgrade.</div>
+                <div className="faint">{mine.rewrite.model}: {mine.rewrite.patches.length} change(s){mine.rewrite.agent ? ` by the AI agent in ${mine.rewrite.agent.steps_used} step(s)` : ", each checked to compile"}. Ticked ones go into the test run and the upgrade.</div>
+                {mine.rewrite.agent && (
+                  <details><summary className="faint" style={{ cursor: "pointer" }}>What the agent did</summary>
+                    <div className="mono faint" style={{ fontSize: 12 }}>{mine.rewrite.agent.steps.filter((e) => e.kind === "tool").map((e, i) => <div key={i}>{e.ok ? "✓" : "✗"} {e.tool} {e.detail}</div>)}</div>
+                  </details>
+                )}
                 {mine.rewrite.patches.map((p) => (
                   <div key={p.id} className="col" style={{ gap: 4 }}>
                     <label className="row" style={{ gap: 8, alignItems: "flex-start" }}>

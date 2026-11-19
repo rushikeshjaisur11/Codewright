@@ -136,6 +136,16 @@ try {
     await text("AI usage today").waitFor();
   });
 
+  await check("AI agent: a task form, and web search in Settings", async () => {
+    await page.goto(`${base}/#/agent`);
+    await page.getByRole("heading", { name: "AI agent" }).waitFor();
+    await page.getByRole("textbox", { name: "Task for the agent" }).waitFor();
+    await text("Search the web and read docs").waitFor();
+    if (!(await page.getByRole("button", { name: "Start" }).isDisabled())) throw new Error("Start is enabled with no task");
+    await page.goto(`${base}/#/settings`);
+    await text("Web search for the AI agent").waitFor();
+  });
+
   await check("Activity feed shows what the server did", async () => {
     await page.getByRole("button", { name: "Activity" }).click();
     await text("Review done").waitFor();

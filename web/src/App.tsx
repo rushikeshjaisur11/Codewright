@@ -1,7 +1,7 @@
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen, Bot, ClipboardCheck, Compass, GitPullRequest, LayoutDashboard, MessageSquareCode, Moon, Package,
-  PenTool, Play, Radio, Settings as SettingsIcon, ShieldCheck, Sun, X,
+  PenTool, Play, Radio, Settings as SettingsIcon, ShieldCheck, Sun, Wand2, X,
 } from "lucide-react";
 import { api, ReviewPayload, WorkspaceInfo } from "./api";
 import { CodeView, ProgressBar, ReviewProgress, Spinner, timeAgo, useToast } from "./ui";
@@ -19,9 +19,10 @@ const Knowledge = lazy(() => import("./pages/Knowledge"));
 const Plans = lazy(() => import("./pages/Plans"));
 const Rules = lazy(() => import("./pages/Rules"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
+const AgentPage = lazy(() => import("./pages/Agent"));
 
 export type Page =
-  | "overview" | "review" | "map" | "ai" | "chat" | "design" | "plans" | "rules" | "releases" | "knowledge" | "settings";
+  | "overview" | "review" | "map" | "ai" | "chat" | "agent" | "design" | "plans" | "rules" | "releases" | "knowledge" | "settings";
 
 interface Ctx {
   wid: string | null;
@@ -38,7 +39,7 @@ export const useApp = () => useContext(AppCtx);
 function parseHash(): { page: Page; params: URLSearchParams } {
   const h = window.location.hash.replace(/^#\/?/, "");
   const [p, qs] = h.split("?");
-  const pages: Page[] = ["overview", "review", "map", "ai", "chat", "design", "plans", "rules", "releases", "knowledge", "settings"];
+  const pages: Page[] = ["overview", "review", "map", "ai", "chat", "agent", "design", "plans", "rules", "releases", "knowledge", "settings"];
   return { page: (pages.includes(p as Page) ? p : "overview") as Page, params: new URLSearchParams(qs || "") };
 }
 
@@ -174,6 +175,7 @@ export default function App() {
     { page: "map", label: "Map", icon: <Compass size={17} /> },
     { page: "ai", label: "AI & agents", icon: <Bot size={17} /> },
     { page: "chat", label: "Code chat", icon: <MessageSquareCode size={17} /> },
+    { page: "agent", label: "AI agent", icon: <Wand2 size={17} /> },
     { page: "design", label: "Design", icon: <PenTool size={17} /> },
     { page: "plans", label: "Plans & migrations", icon: <ClipboardCheck size={17} /> },
   ];
@@ -184,7 +186,7 @@ export default function App() {
     { page: "settings", label: "Settings", icon: <SettingsIcon size={17} /> },
   ];
   const titles: Record<Page, string> = {
-    overview: "Overview", review: "Review", map: "Map", ai: "AI & agents", chat: "Code chat", design: "Design",
+    overview: "Overview", review: "Review", map: "Map", ai: "AI & agents", chat: "Code chat", agent: "AI agent", design: "Design",
     plans: "Plans & migrations", rules: "Architecture rules",
     releases: "Dependencies", knowledge: "Knowledge base", settings: "Settings",
   };
@@ -192,7 +194,7 @@ export default function App() {
   const activity = useActivity(wid, !!data?.running);
   const latest = activity[activity.length - 1];
   // A repo's first review: pages that need a result show the progress instead of an empty state.
-  const needsResult = !["design", "knowledge", "settings"].includes(route.page);
+  const needsResult = !["design", "knowledge", "settings", "agent"].includes(route.page);
   // These pages need only the parsed code, so they show as soon as it is read, while findings are still computed.
   const graphOnly = ["map", "ai", "releases", "rules"].includes(route.page);
   const firstRun = needsResult && !!data && !data.result && data.running && !(graphOnly && data.graph_ready);
@@ -274,6 +276,7 @@ export default function App() {
             {route.page === "map" && <MapPage />}
             {route.page === "ai" && <AiPage />}
             {route.page === "chat" && <Chat />}
+            {route.page === "agent" && <AgentPage />}
             {route.page === "design" && <Design />}
             {route.page === "plans" && <Plans />}
             {route.page === "rules" && <Rules />}

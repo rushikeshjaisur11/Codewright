@@ -369,9 +369,26 @@ MIGRATE_SYSTEM = (
     "You carry out one step of a code migration. You get one function (or a file's import block) and the "
     "changes the migration needs in it, each with the recommended way to make it. Rewrite it so it follows "
     "that advice and behaves exactly as before for its callers: keep its name, arguments and return values "
-    "unless the advice says otherwise, keep comments, and change nothing the advice does not ask for. Reply "
-    "with a one-line explanation, then the complete rewritten code in one ```python block."
+    "unless the advice says otherwise, keep comments, and change nothing the advice does not ask for."
 )
+
+
+def agent_task(name: str, graph: CodeGraph, findings: list[Finding]) -> tuple[str, str]:
+    """(task, context) for the AI agent: the step's changes no detector could patch, module-level ones too."""
+    from .agent import task_for_problems
+
+    problems = [
+        {
+            "file": f.file,
+            "line": f.line,
+            "function": f.function,
+            "symbol": f.symbol or "",
+            "detail": f"{f.title}: {f.suggestion}" + (f" Watch out: {f.risk}" if f.risk else ""),
+        }
+        for f in findings
+        if not f.patch
+    ]
+    return task_for_problems(f"Migration: {CATALOG[name].title}", problems)
 
 
 def ai_changes(root: str | Path, name: str, graph: CodeGraph, findings: list[Finding]) -> dict:

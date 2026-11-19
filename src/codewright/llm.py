@@ -401,6 +401,46 @@ def _tokens(pid: str, r) -> tuple[int, int]:
         return 0, 0
 
 
+def _allowed(cfg: LLMConfig) -> dict:
+    """The usage so far, after checking a call may be made at all (configured, within today's budget)."""
+    if reason := _missing(cfg):
+        raise LLMError(reason)
+    u = usage()
+    if u["daily_calls"] and u["calls"] >= u["daily_calls"]:
+        raise LLMError(
+            f"today's AI budget of {u['daily_calls']} model calls is used up; "
+            "raise it in Settings or wait until tomorrow"
+        )
+    return u
+
+
+def _metered(cfg: LLMConfig, raw, purpose: str, seconds: float, u: dict, truncated: bool = False) -> None:
+    """Count a call in today's usage, the log and the activity feed."""
+    import logging
+
+    tin, tout = _tokens(cfg.provider, raw)
+    day = _record(tin, tout)
+    logging.getLogger("codewright").info(
+        "%-18s Model call%s: %s, %s in / %s out tokens, %.1fs (today: %s of %s calls)%s",
+        "ai",
+        f" ({purpose})" if purpose else "",
+        cfg.model,
+        tin or "?",
+        tout or "?",
+        seconds,
+        day["calls"],
+        u["daily_calls"] or "unlimited",
+        " [cut off at the token limit]" if truncated else "",
+    )
+    from . import activity
+
+    activity.note(
+        "ai",
+        f"Model call{f' ({purpose})' if purpose else ''}: {cfg.model}, {tin or '?'} in / {tout or '?'} out tokens"
+        f" · today {day['calls']}/{u['daily_calls'] or '∞'} calls",
+    )
+
+
 def generate(
     cfg: LLMConfig,
     system: str,
@@ -417,40 +457,12 @@ def generate(
     forced tool call on Claude, `response_format` on OpenAI-compatible servers and LiteLLM, a response schema
     on Gemini. Servers that don't support it fall back to plain JSON mode, then to text. An answer cut off at
     the token limit raises LLMTruncated, since half a JSON value is no answer."""
-    import logging
     import time as _t
 
-    if reason := _missing(cfg):
-        raise LLMError(reason)
-    u = usage()
-    if u["daily_calls"] and u["calls"] >= u["daily_calls"]:
-        raise LLMError(
-            f"today's AI budget of {u['daily_calls']} model calls is used up; "
-            "raise it in Settings or wait until tomorrow"
-        )
+    u = _allowed(cfg)
     t0 = _t.perf_counter()
     text_out, raw, truncated = _generate(cfg, system, messages, max_tokens, timeout, schema)
-    tin, tout = _tokens(cfg.provider, raw)
-    day = _record(tin, tout)
-    logging.getLogger("codewright").info(
-        "%-18s Model call%s: %s, %s in / %s out tokens, %.1fs (today: %s of %s calls)%s",
-        "ai",
-        f" ({purpose})" if purpose else "",
-        cfg.model,
-        tin or "?",
-        tout or "?",
-        _t.perf_counter() - t0,
-        day["calls"],
-        u["daily_calls"] or "unlimited",
-        " [cut off at the token limit]" if truncated else "",
-    )
-    from . import activity
-
-    activity.note(
-        "ai",
-        f"Model call{f' ({purpose})' if purpose else ''}: {cfg.model}, {tin or '?'} in / {tout or '?'} out tokens"
-        f" · today {day['calls']}/{u['daily_calls'] or '∞'} calls",
-    )
+    _metered(cfg, raw, purpose, _t.perf_counter() - t0, u, truncated)
     if truncated and schema is not None:
         raise LLMTruncated(f"the answer was cut off at the limit of {max_tokens} tokens")
     return text_out
@@ -756,6 +768,241 @@ def complete_json(
         ]
     _LAST_ERROR[0] = f"the model's answer could not be used: {err}" if err else _LAST_ERROR[0]
     return None
+
+
+# --------------------------------------------------------------------------- tool use (agents)
+#
+# A conversation with tools, in one neutral form for every provider:
+#   {"role": "user", "content": str}
+#   {"role": "assistant", "text": str, "calls": [{"id", "name", "args"}], "raw": <the provider's own message>}
+#   {"role": "tool", "results": [{"id", "name", "content": str}]}
+# Tools are {"name", "description", "parameters": <JSON Schema of an object>}. The provider's own assistant
+# message is kept in "raw" and sent back as it came (Claude's blocks, Gemini's parts with their signatures).
+
+
+def _anthropic_turns(turns: list[dict]) -> list[dict]:
+    out = []
+    for t in turns:
+        if t["role"] == "user":
+            out.append({"role": "user", "content": t["content"]})
+        elif t["role"] == "assistant":
+            blocks = t.get("raw") or (
+                ([{"type": "text", "text": t["text"]}] if t.get("text") else [])
+                + [{"type": "tool_use", "id": c["id"], "name": c["name"], "input": c["args"]} for c in t["calls"]]
+            )
+            out.append({"role": "assistant", "content": blocks})
+        else:
+            out.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": r["id"], "content": r["content"]} for r in t["results"]
+                    ],
+                }
+            )
+    return out
+
+
+def _openai_turns(system: str, turns: list[dict]) -> list[dict]:
+    out: list[dict] = [{"role": "system", "content": system}]
+    for t in turns:
+        if t["role"] == "user":
+            out.append({"role": "user", "content": t["content"]})
+        elif t["role"] == "assistant":
+            msg: dict = {"role": "assistant", "content": t.get("text") or None}
+            if t["calls"]:
+                msg["tool_calls"] = [
+                    {
+                        "id": c["id"],
+                        "type": "function",
+                        "function": {"name": c["name"], "arguments": json.dumps(c["args"])},
+                    }
+                    for c in t["calls"]
+                ]
+            out.append(msg)
+        else:
+            out += [{"role": "tool", "tool_call_id": r["id"], "content": r["content"]} for r in t["results"]]
+    return out
+
+
+def _gemini_turns(turns: list[dict]) -> list[dict]:
+    out = []
+    for t in turns:
+        if t["role"] == "user":
+            out.append({"role": "user", "parts": [{"text": t["content"]}]})
+        elif t["role"] == "assistant":
+            parts = t.get("raw") or (
+                ([{"text": t["text"]}] if t.get("text") else [])
+                + [{"functionCall": {"name": c["name"], "args": c["args"]}} for c in t["calls"]]
+            )
+            out.append({"role": "model", "parts": parts})
+        else:
+            out.append(
+                {
+                    "role": "user",
+                    "parts": [
+                        {"functionResponse": {"name": r["name"], "response": {"content": r["content"]}}}
+                        for r in t["results"]
+                    ],
+                }
+            )
+    return out
+
+
+def _args(raw) -> dict:
+    """Tool-call arguments, which OpenAI-style servers send as a JSON string."""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        v = json.loads(raw or "{}")
+    except ValueError:
+        return {"_invalid_json": str(raw)[:2000]}
+    return v if isinstance(v, dict) else {"_invalid_json": str(raw)[:2000]}
+
+
+def _tool_step(
+    cfg: LLMConfig, system: str, turns: list[dict], tools: list[dict], max_tokens: int, timeout: int
+) -> tuple[dict, object]:
+    pid = cfg.provider
+    if pid == "litellm":
+        import litellm
+
+        try:
+            resp = litellm.completion(
+                model=cfg.model,
+                messages=_openai_turns(system, turns),
+                tools=[{"type": "function", "function": t} for t in tools],
+                max_tokens=max_tokens,
+                temperature=0.2,
+                timeout=timeout,
+                **({"api_key": cfg.api_key} if cfg.api_key else {}),
+            )
+        except Exception as e:  # LiteLLM raises a different class per provider
+            raise LLMError(str(e)[:400]) from None
+        choice = resp.choices[0]
+        calls = [
+            {"id": c.id, "name": c.function.name, "args": _args(c.function.arguments)}
+            for c in (getattr(choice.message, "tool_calls", None) or [])
+        ]
+        text = (choice.message.content or "").strip()
+        return {"text": text, "calls": calls, "raw": None, "truncated": choice.finish_reason == "length"}, resp
+    base = (cfg.base_url if pid == "openai" and cfg.base_url else PROVIDERS[pid].base_url).rstrip("/")
+    if pid == "anthropic":
+        r = _post(
+            f"{base}/v1/messages",
+            {
+                "model": cfg.model,
+                "max_tokens": max_tokens,
+                "system": system,
+                "messages": _anthropic_turns(turns),
+                "tools": [
+                    {"name": t["name"], "description": t["description"], "input_schema": t["parameters"]} for t in tools
+                ],
+            },
+            {"x-api-key": cfg.api_key, "anthropic-version": "2023-06-01"},
+            "Claude",
+            timeout,
+        )
+        if r.get("stop_reason") == "refusal":
+            raise LLMError("the model declined to answer")
+        blocks = r.get("content", [])
+        return {
+            "text": "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip(),
+            "calls": [
+                {"id": b["id"], "name": b["name"], "args": b.get("input") or {}}
+                for b in blocks
+                if b.get("type") == "tool_use"
+            ],
+            "raw": blocks,
+            "truncated": r.get("stop_reason") == "max_tokens",
+        }, r
+    if pid == "gemini":
+        r = _post(
+            f"{base}/models/{cfg.model}:generateContent",
+            {
+                "systemInstruction": {"parts": [{"text": system}]},
+                "contents": _gemini_turns(turns),
+                "tools": [
+                    {
+                        "functionDeclarations": [
+                            {
+                                "name": t["name"],
+                                "description": t["description"],
+                                "parameters": _gemini_schema(t["parameters"]),
+                            }
+                            for t in tools
+                        ]
+                    }
+                ],
+                "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.2},
+            },
+            {"x-goog-api-key": cfg.api_key},
+            "Gemini",
+            timeout,
+        )
+        cand = (r.get("candidates") or [{}])[0]
+        parts = (cand.get("content") or {}).get("parts") or []
+        calls = [
+            {"id": f"call_{i}", "name": p["functionCall"]["name"], "args": p["functionCall"].get("args") or {}}
+            for i, p in enumerate(parts)
+            if "functionCall" in p
+        ]
+        text = "".join(p.get("text", "") for p in parts if "text" in p and not p.get("thought")).strip()
+        return {"text": text, "calls": calls, "raw": parts, "truncated": cand.get("finishReason") == "MAX_TOKENS"}, r
+    caps = _caps(cfg)
+    headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
+    for _ in range(2):
+        body = {
+            "model": cfg.model,
+            "messages": _openai_turns(system, turns),
+            "tools": [{"type": "function", "function": t} for t in tools],
+            caps["tokens"]: max_tokens,
+        }
+        try:
+            r = _post(f"{base}/chat/completions", body, headers, "the server", timeout)
+        except LLMError as e:
+            if caps["tokens"] == "max_tokens" and "max_completion_tokens" in str(e).lower():
+                caps["tokens"] = "max_completion_tokens"
+                continue
+            raise
+        choice = (r.get("choices") or [{}])[0]
+        msg = choice.get("message") or {}
+        calls = [
+            {
+                "id": c.get("id") or f"call_{i}",
+                "name": c["function"]["name"],
+                "args": _args(c["function"].get("arguments")),
+            }
+            for i, c in enumerate(msg.get("tool_calls") or [])
+        ]
+        return {
+            "text": (msg.get("content") or "").strip(),
+            "calls": calls,
+            "raw": None,
+            "truncated": choice.get("finish_reason") == "length",
+        }, r
+    raise LLMError("the server rejected the request")
+
+
+def tool_step(
+    cfg: LLMConfig,
+    system: str,
+    turns: list[dict],
+    tools: list[dict],
+    *,
+    max_tokens: int = 4000,
+    timeout: int = 180,
+    purpose: str = "",
+) -> dict:
+    """One model turn in a conversation with tools: {"role": "assistant", "text", "calls", "raw", "truncated"},
+    ready to append to `turns`. Counted in the usage and the daily budget like any call; raises LLMError."""
+    import time as _t
+
+    u = _allowed(cfg)
+    t0 = _t.perf_counter()
+    turn, raw = _tool_step(cfg, system, turns, tools, max_tokens, timeout)
+    _metered(cfg, raw, purpose, _t.perf_counter() - t0, u, turn["truncated"])
+    return {"role": "assistant", **turn}
 
 
 def test(cfg: LLMConfig) -> dict:
