@@ -86,7 +86,7 @@ def review(
     matches += teamrules.detect(g, all_cards)  # conventions the team taught as checkable rules
     if dcache is not None:
         detectcache.save(root, dcache)
-    findings = make_findings(matches, st, g, all_cards)
+    findings = make_findings(matches, st, g, all_cards, progress=lambda done, total: tell("detect", done, total))
 
     arch = rules.summary(g, root)
     if base:

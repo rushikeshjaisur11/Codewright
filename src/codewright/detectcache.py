@@ -80,12 +80,26 @@ def load(root: str | Path) -> dict[str, dict]:
         data = json.loads(_path(root).read_text())
         if data.get("sig") != signature():
             return {}
-        return {p: {"h": e["h"], "m": [_match_from(m) for m in e["m"]]} for p, e in data["files"].items()}
+        cache = {p: {"h": e["h"], "m": [_match_from(m) for m in e["m"]]} for p, e in data["files"].items()}
+        _LOADED[str(Path(root).resolve())] = _fingerprint(cache)
+        return cache
     except (OSError, ValueError, KeyError, TypeError):
         return {}
 
 
+_LOADED: dict[str, str] = {}  # root -> fingerprint of the cache as last read or written
+
+
+def _fingerprint(cache: dict[str, dict]) -> str:
+    """Which files the cache holds at which hash: when that is unchanged, so are its matches."""
+    return hashlib.sha1("".join(f"{p}:{e['h']};" for p, e in sorted(cache.items())).encode()).hexdigest()
+
+
 def save(root: str | Path, cache: dict[str, dict]) -> None:
+    key, fp = str(Path(root).resolve()), _fingerprint(cache)
+    if _LOADED.get(key) == fp and _path(root).exists():
+        return  # nothing changed since it was read: rewriting tens of MB would only cost time
+    _LOADED[key] = fp
     files = {}
     for path, e in cache.items():
         try:

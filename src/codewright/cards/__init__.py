@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from dataclasses import fields
 from pathlib import Path
 
@@ -57,6 +58,7 @@ def for_repo(root: str | Path | None, extra_dirs: list[Path] | None = None) -> l
     return cards
 
 
+@functools.lru_cache(maxsize=4096)
 def version_matches(version: str | None, spec: str) -> bool:
     if spec in ("*", ""):
         return True
@@ -142,13 +144,27 @@ def _specifier_overlaps(declared: str | None, card_spec: str) -> bool:
         return False
 
 
+_INDEX: tuple[list, dict] | None = None
+
+
+def _by_intent(cards: list[Card]) -> dict[str, list[Card]]:
+    """The cards grouped by intent: a review asks this once per match, for tens of thousands of matches."""
+    global _INDEX
+    if _INDEX is None or _INDEX[0] is not cards or len(_INDEX[1]["\0n"]) != len(cards):
+        index: dict = {"\0n": list(cards)}
+        for card in cards:
+            index.setdefault(card.intent, []).append(card)
+        _INDEX = (cards, index)
+    return _INDEX[1]
+
+
 PREFERENCE = {"installed": 0, "stdlib": 1, "practice": 1, "platform": 2, "wellknown": 3}
 
 
 def best_cards(match: IntentMatch, stack: Stack, cards: list[Card]) -> list[tuple[Card, str, str]]:
     """Applicable cards ordered by preference: installed, stdlib, platform, then well-known."""
     hits = []
-    for card in cards:
+    for card in _by_intent(cards).get(match.intent, ()):
         ok, kind, label = applicable(card, match, stack)
         if ok:
             hits.append((card, kind, label))

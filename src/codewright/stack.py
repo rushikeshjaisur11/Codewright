@@ -202,14 +202,21 @@ def for_path(stack: Stack, path: str) -> Stack:
     are right here: the project's own files win, the root fills in what they don't say.
     """
     root = Path(stack.root)
-    folder = (root / path).parent
-    while folder != root and root in folder.parents:
-        if not (folder / "__init__.py").exists() and (
-            any((folder / n).exists() for n in PROJECT_FILES) or (folder / "setup.py").exists()
-        ):
-            break
-        folder = folder.parent
-    else:
+    rel_dir = path.rsplit("/", 1)[0] if "/" in path else ""
+    dirs = stack.__dict__.setdefault("_project_of_dir", {})  # a review asks this for every finding
+    if rel_dir not in dirs:
+        folder = (root / path).parent
+        while folder != root and root in folder.parents:
+            if not (folder / "__init__.py").exists() and (
+                any((folder / n).exists() for n in PROJECT_FILES) or (folder / "setup.py").exists()
+            ):
+                break
+            folder = folder.parent
+        else:
+            folder = None
+        dirs[rel_dir] = folder
+    folder = dirs[rel_dir]
+    if folder is None:
         return stack
     cache = stack.__dict__.setdefault("_projects", {})  # not a dataclass field: never serialised
     key = str(folder)
