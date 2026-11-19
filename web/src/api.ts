@@ -223,6 +223,8 @@ export interface Release {
 export interface GitState {
   git: boolean; branch?: string | null; detached?: boolean; head?: string; default?: string; branches: string[];
   changed: { file: string; status: string }[]; suggested_branch?: string; committed?: string;
+  remote_branches?: string[]; remotes?: string[]; upstream?: string | null; ahead?: number; behind?: number;
+  pulled?: number; pushed?: number;
 }
 export interface AiUsage { date: string; calls: number; input_tokens: number; output_tokens: number; daily_calls: number }
 export interface AiBatch { running: boolean; total: number; done: number; verdicts: Record<string, number>; error: string | null }
@@ -385,6 +387,9 @@ export const api = {
   git: (id: string) => req<GitState>("GET", `${w(id)}/git`),
   gitSwitch: (id: string, branch: string) => req<GitState>("POST", `${w(id)}/git/switch`, { branch }),
   gitBranch: (id: string, name: string, start = "") => req<GitState>("POST", `${w(id)}/git/branch`, { name, start }),
+  gitFetch: (id: string) => req<GitState>("POST", `${w(id)}/git/fetch`),
+  gitPull: (id: string) => req<GitState>("POST", `${w(id)}/git/pull`),
+  gitSync: (id: string) => req<GitState>("POST", `${w(id)}/git/sync`),
   gitCommit: (id: string, message: string, files: string[]) => req<GitState>("POST", `${w(id)}/git/commit`, { message, files }),
   aiUsage: () => req<AiUsage>("GET", "/api/settings/ai/usage"),
   setAiBudget: (daily_calls: number) => req<AiUsage>("PUT", "/api/settings/ai/budget", { daily_calls }),

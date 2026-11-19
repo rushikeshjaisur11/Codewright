@@ -485,6 +485,32 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         note(w.name, f"Git: created and switched to {out['branch']}")
         return out
 
+    @app.post("/api/w/{wid}/git/fetch")
+    def git_fetch(wid: str):
+        """Update what the remotes have (nothing local changes), for the ahead/behind counts."""
+        from . import gitops
+
+        _, out, _ = _git_call(wid, gitops.fetch)
+        return out
+
+    @app.post("/api/w/{wid}/git/pull")
+    def git_pull(wid: str):
+        """Fast-forward the current branch to its upstream (refused when they have diverged)."""
+        from . import gitops
+
+        w, out, note = _git_call(wid, gitops.pull)
+        note(w.name, f"Git: pulled {out['pulled']} commit(s) into {out['branch']}")
+        return out
+
+    @app.post("/api/w/{wid}/git/sync")
+    def git_sync(wid: str):
+        """Pull (fast-forward), then push the current branch. Only when the user presses Sync."""
+        from . import gitops
+
+        w, out, note = _git_call(wid, gitops.sync)
+        note(w.name, f"Git: synced {out['branch']}: pulled {out['pulled']}, pushed {out['pushed']} commit(s)")
+        return out
+
     @app.post("/api/w/{wid}/git/commit")
     def git_commit(wid: str, message: Annotated[str, Body(embed=True)], files: Annotated[list[str], Body(embed=True)]):
         """Commit exactly these changed files. Nothing is pushed."""

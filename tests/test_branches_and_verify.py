@@ -160,3 +160,96 @@ def test_no_card_targets_python_older_than_3_11():
                 s.operator in (">=", ">") and Version(s.version) < Version("3.11") for s in SpecifierSet(c.versions)
             ), c.id
         assert "Python 3.8" not in c.risk + c.suggestion, c.id
+
+
+# ---------------------------------------------------------------- new branch from, fetch, pull, sync
+
+
+@pytest.fixture
+def clones(tmp_path):
+    """A bare 'origin' and two clones of it: `mine` (the repo Codewright opens) and `theirs` (a teammate)."""
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    seed = tmp_path / "seed"
+    _git(tmp_path, "clone", "-q", str(origin), str(seed))
+    for c in (seed,):
+        _git(c, "config", "user.email", "t@example.com")
+        _git(c, "config", "user.name", "t")
+    (seed / "a.py").write_text("x = 1\n")
+    _git(seed, "add", "-A")
+    _git(seed, "commit", "-qm", "seed")
+    _git(seed, "push", "-q", "origin", "main")
+    out = {}
+    for name in ("mine", "theirs"):
+        p = tmp_path / name
+        _git(tmp_path, "clone", "-q", str(origin), str(p))
+        _git(p, "config", "user.email", f"{name}@example.com")
+        _git(p, "config", "user.name", name)
+        out[name] = p
+    return out
+
+
+def _commit(repo, name, body="y = 2\n"):
+    (repo / name).write_text(body)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", f"add {name}")
+
+
+def test_fetch_then_pull_fast_forwards(clones):
+    mine, theirs = clones["mine"], clones["theirs"]
+    _commit(theirs, "b.py")
+    _git(theirs, "push", "-q", "origin", "main")
+    s = gitops.status(mine)
+    assert s["upstream"] == "origin/main" and s["behind"] == 0  # not fetched yet
+    s = gitops.fetch(mine)
+    assert (s["ahead"], s["behind"]) == (0, 1)
+    s = gitops.pull(mine)
+    assert s["pulled"] == 1 and s["behind"] == 0 and (mine / "b.py").exists()
+
+
+def test_pull_refuses_diverged_branches(clones):
+    mine, theirs = clones["mine"], clones["theirs"]
+    _commit(theirs, "b.py")
+    _git(theirs, "push", "-q", "origin", "main")
+    _commit(mine, "c.py")
+    with pytest.raises(gitops.GitError, match="diverged"):
+        gitops.pull(mine)
+    assert not (mine / "b.py").exists()  # nothing merged
+
+
+def test_sync_pulls_then_pushes(clones):
+    mine, theirs = clones["mine"], clones["theirs"]
+    _commit(theirs, "b.py")
+    _git(theirs, "push", "-q", "origin", "main")
+    s = gitops.pull(mine)
+    _commit(mine, "c.py")
+    s = gitops.sync(mine)
+    assert s["pushed"] == 1 and s["ahead"] == 0 and s["behind"] == 0
+    _git(theirs, "pull", "-q", "--ff-only")
+    assert (theirs / "c.py").exists()
+
+
+def test_new_branch_from_a_remote_branch_does_not_track_it_and_sync_publishes_it(clones):
+    mine, theirs = clones["mine"], clones["theirs"]
+    _commit(theirs, "b.py")
+    _git(theirs, "push", "-q", "origin", "main")
+    gitops.fetch(mine)
+    s = gitops.create(mine, "codewright/fix", "origin/main")
+    assert s["branch"] == "codewright/fix" and s["upstream"] is None and (mine / "b.py").exists()
+    assert "origin/main" in s["remote_branches"]
+    with pytest.raises(gitops.GitError, match="no upstream"):
+        gitops.pull(mine)
+    _commit(mine, "fix.py")
+    s = gitops.sync(mine)  # first push: sets the upstream to origin/codewright/fix, never main
+    assert s["upstream"] == "origin/codewright/fix" and s["ahead"] == 0
+    _git(theirs, "fetch", "-q")
+    assert (
+        "fix.py"
+        not in subprocess.run(
+            ["git", "ls-tree", "--name-only", "origin/main"], cwd=theirs, capture_output=True, text=True
+        ).stdout
+    )
+    with pytest.raises(gitops.GitError, match="already exists"):
+        gitops.create(mine, "codewright/fix")
+    with pytest.raises(gitops.GitError, match="no branch or commit"):
+        gitops.create(mine, "other", "origin/nope")

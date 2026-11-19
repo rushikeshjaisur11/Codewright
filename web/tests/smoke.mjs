@@ -83,7 +83,10 @@ try {
     await page.getByRole("button", { name: "How to verify" }).first().click();
     await text("Or ask the AI").waitFor();
     await page.getByRole("button", { name: "Let AI write a test and run it" }).first().waitFor();
-    await page.getByRole("button", { name: "New fix branch" }).waitFor();
+    await page.getByRole("button", { name: "New branch", exact: true }).waitFor();
+    await page.getByRole("button", { name: "New branch from…" }).click();
+    await page.getByLabel("Start from").waitFor();
+    await page.getByRole("button", { name: "Cancel" }).click();
   });
 
   await check("Knowledge: teach a card that becomes a check", async () => {
