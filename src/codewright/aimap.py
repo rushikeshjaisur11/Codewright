@@ -540,6 +540,9 @@ class AiMap:
         self._name_graphs()
         for a in self.agents.values():  # `create_react_agent(llm, ...)`: show the model `llm` is
             a.model = self._model_label(graph.files[a.file], a.model) if a.model else a.model
+        for c in self.calls:  # direct calls: `generate_content(model=VERTEX_MODEL)` too
+            if c.model:
+                c.model = self._model_label(graph.files[c.file], c.model)
         for path in scan:
             if graph.files[path].has_tree:
                 graph.files[path].tree_cache.pop("ai_nodes", None)
@@ -686,7 +689,60 @@ class AiMap:
         ref = self._imported_var(pf, name)
         if ref in self._model_vars:
             return self._model_vars[ref]
+        # `Vertex(model=VERTEX_MODEL)`: a wrapper around a name; show what the name is
+        m = re.fullmatch(r"([\w.]+)\(\s*(?:model|model_name|model_id)\s*=\s*([\w.]+)\s*\)", name)
+        if m:
+            inner = self._constant_label(pf, m.group(2))
+            if inner:
+                return inner  # the model the wrapper runs: one box, whether wrapped or named directly
+        if re.fullmatch(r"[A-Za-z_][\w.]*", name):
+            return self._constant_label(pf, name) or written
         return written
+
+    _CONST = r"(?m)^[ \t]*{name}[ \t]*(?::[^=\n]+)?=[ \t]*(.+)$"
+
+    def _constant_label(self, pf: ParsedFile, written: str) -> str | None:
+        """What a model name held in a constant, a settings field or an environment variable is:
+        `gemini-2.5-flash (VERTEX_MODEL)`, `$VERTEX_MODEL (default gemini-2.5-flash)`,
+        `$VERTEX_MODEL (set at run time)`."""
+        name = written.rsplit(".", 1)[-1]
+        if not re.fullmatch(r"[A-Za-z_]\w*", name) or name in ("self", "cls", "model", "llm"):
+            return None
+        files = [pf]
+        ref = self._imported_var(pf, written.split(".", 1)[0])
+        if ref is not None and ref[0] in self.g.files:
+            files.append(self.g.files[ref[0]])
+        pat = re.compile(self._CONST.format(name=re.escape(name)))
+        value = None
+        for f in files:
+            if (m := pat.search(f.source.decode("utf-8", "replace"))) is not None:
+                value = m.group(1).strip()
+                break
+        if value is None:  # a settings class or constants module elsewhere in the repo
+            needle = name.encode()
+            for f in self.g.files.values():
+                if needle in f.source and (m := pat.search(f.source.decode("utf-8", "replace"))) is not None:
+                    value = m.group(1).strip()
+                    break
+        if value is None:
+            return None
+        lit = re.fullmatch(r"""[rbuf]?(["'])(.*?)\1\s*(?:#.*)?""", value)
+        if lit:
+            return f"{lit.group(2)} ({name})"
+        env = re.search(
+            r"""(?:os\.getenv|os\.environ\.get|getenv|environ\.get|Field)\(\s*(?:default\s*=\s*)?["']?([\w-]*)["']?"""
+            r"""(?:\s*,\s*(?:default\s*=\s*)?["']([^"']+)["'])?""",
+            value,
+        )
+        if env:
+            var, default = env.group(1) or name, env.group(2)
+            if value.startswith("Field(") and var and not default:  # Field("gemini-2.5-flash", ...)
+                return f"{var} ({name})"
+            return f"${var} (default {default})" if default else f"${var} (set at run time)"
+        if re.match(r"os\.environ\[", value):
+            var = re.search(r"""\[\s*["']([^"']+)""", value)
+            return f"${var.group(1) if var else name} (set at run time)"
+        return None
 
     def _graph_factories(self) -> None:
         """`def build_graph(): g = StateGraph(...); ...; return g.compile()`: calling build_graph() gives that graph."""

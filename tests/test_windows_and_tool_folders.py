@@ -73,3 +73,46 @@ def test_repo_paths_use_forward_slashes(tmp_path):
     (tmp_path / "pkg" / "sub" / "m.py").write_text("def f():\n    return 1\n")
     g = graph.build(tmp_path)
     assert list(g.files) == ["pkg/sub/m.py"] and "\\\\" not in next(iter(g.files))
+
+
+def test_models_named_by_constants_env_vars_and_settings(tmp_path):
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "config.py").write_text(
+        textwrap.dedent("""
+        import os
+        from pydantic_settings import BaseSettings
+
+        VERTEX_MODEL = os.getenv("VERTEX_MODEL", "gemini-2.5-flash")
+        PRO_MODEL = "gemini-2.5-pro"
+        RUNTIME_MODEL = os.environ["AGENT_MODEL"]
+
+
+        class Settings(BaseSettings):
+            router_model: str = "gemini-2.0-flash"
+    """)
+    )
+    (tmp_path / "app" / "agent.py").write_text(
+        textwrap.dedent("""
+        from google.adk.agents import LlmAgent
+        from google.adk.models import Vertex
+
+        from app.config import PRO_MODEL, RUNTIME_MODEL, VERTEX_MODEL, Settings
+
+        settings = Settings()
+        a = LlmAgent(name="a", model=Vertex(model=VERTEX_MODEL))
+        b = LlmAgent(name="b", model=PRO_MODEL)
+        c = LlmAgent(name="c", model=RUNTIME_MODEL)
+        d = LlmAgent(name="d", model=settings.router_model)
+        e = LlmAgent(name="e", model=VERTEX_MODEL)
+    """)
+    )
+    out = aimap.build(graph.build(tmp_path))
+    models = {a["name"]: a["model"] for a in out["agents"]}
+    assert models == {
+        "a": "$VERTEX_MODEL (default gemini-2.5-flash)",  # the wrapper's model, one box with `e`
+        "b": "gemini-2.5-pro (PRO_MODEL)",
+        "c": "$AGENT_MODEL (set at run time)",
+        "d": "gemini-2.0-flash (router_model)",
+        "e": "$VERTEX_MODEL (default gemini-2.5-flash)",
+    }
+    assert len(out["summary"]["models"]) == 4
