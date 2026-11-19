@@ -21,7 +21,6 @@ from pathlib import Path
 
 from .graph import CodeGraph, is_test_file
 from .models import Finding
-from .stack import SKIP_DIRS
 
 # import prefix -> (external system label, kind)
 EXTERNAL = [
@@ -308,19 +307,28 @@ class ArchMap:
         for name in LAUNCH_FILES:
             with contextlib.suppress(OSError):
                 out.append((root / name).read_text(errors="replace"))
+        cached = self.g.__dict__.get("_launch_text")
+        if cached is not None:
+            return cached
+        from .scanscope import walk_files
+
+        def wanted(name: str) -> bool:
+            if name in ("package-lock.json", "uv.lock", "poetry.lock", "yarn.lock", "pnpm-lock.yaml"):
+                return False
+            return name.endswith((".yml", ".yaml", ".json", ".toml", ".cfg", ".ini", ".sh")) or name.startswith(
+                ("Procfile", "Dockerfile")
+            )
+
         seen = 0
-        for pattern in ("*.yml", "*.yaml", "*.json", "*.toml", "*.cfg", "*.ini", "*.sh", "Procfile*", "Dockerfile*"):
-            for f in root.rglob(pattern):
-                rel = f.relative_to(root).parts
-                if any(x in SKIP_DIRS or (x.startswith(".") and x != ".github") for x in rel[:-1]):
-                    continue
-                if f.name in ("package-lock.json", "uv.lock") or seen >= 300:
-                    continue
-                with contextlib.suppress(OSError):
-                    if f.stat().st_size < 200_000:
-                        out.append(f.read_text(errors="replace"))
-                        seen += 1
-        return "\n".join(out)
+        for f in walk_files(root, wanted, keep_dirs=(".github",)):  # one pass, never into .venv or node_modules
+            if seen >= 300:
+                break
+            with contextlib.suppress(OSError):
+                if f.stat().st_size < 200_000:
+                    out.append(f.read_text(errors="replace"))
+                    seen += 1
+        self.g.__dict__["_launch_text"] = text = "\n".join(out)
+        return text
 
     def _launched_outside(self, path: str) -> bool:
         """A module the repo never calls but something outside it likely starts: an ADK `root_agent`,

@@ -88,13 +88,29 @@ def included(rel: str, scope: dict) -> bool:
     return not any(_matches(rel, p) for p in scope["exclude"])
 
 
+def walk_files(root: Path, wanted, keep_dirs: tuple[str, ...] = ()):
+    """Files under `root` whose name `wanted(name)` accepts, never descending into tool folders (.git, virtual
+    environments, node_modules, build output, hidden folders except `keep_dirs`). Walking into them and filtering
+    afterwards (rglob) costs tens of seconds on a repo with a large .venv, especially on Windows."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            d
+            for d in dirnames
+            if d not in SKIP_DIRS and (not d.startswith(".") or d in keep_dirs) and not _is_venv(Path(dirpath) / d)
+        )
+        for name in sorted(filenames):
+            if wanted(name):
+                yield Path(dirpath) / name
+
+
+def _is_venv(path: Path) -> bool:
+    """A virtual environment under any name (env/, .env-py311/, venv311/): it has a pyvenv.cfg."""
+    return (path / "pyvenv.cfg").is_file()
+
+
 def all_python_files(root: Path):
     """Every Python file outside tool folders (.git, venvs, node_modules...), before the scope applies."""
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
-        for name in sorted(filenames):
-            if name.endswith(".py"):
-                yield Path(dirpath) / name
+    yield from walk_files(root, lambda name: name.endswith(".py"))
 
 
 def summary(root: str | Path, depth: int = 2) -> dict:

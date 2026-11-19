@@ -124,6 +124,8 @@ try {
     await btn.click();
     await text("1. The requirement").waitFor();
     await text("3. Code changes the new version calls for").waitFor();
+    await text("5. Make sure nothing breaks").waitFor();
+    await page.getByRole("button", { name: "1. Check every use" }).waitFor();
     await page.getByRole("button", { name: "Cancel" }).click();
   });
 

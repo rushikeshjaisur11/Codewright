@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -105,6 +106,7 @@ class Workspace:
     saved_revision: int = -1  # revision of `result` last written to .codewright/last-review.json
     _saved: dict | None = None
     early: Snapshot | None = None  # the graph of the review in progress, before findings exist
+    _upgrade_job: dict | None = None  # the running (or last) upgrade safety step and its results
     _ai_batch: dict | None = None  # progress of the running (or last) batch of AI checks
     _releases: dict | None = None  # progress and rows of the running (or last) release check
     _cache_lock: threading.RLock = field(default_factory=threading.RLock)
@@ -461,6 +463,81 @@ class Workspace:
         s = self._ai_batch or {"running": False, "total": 0, "done": 0, "verdicts": {}, "error": None}
         return {k: s[k] for k in ("running", "total", "done", "verdicts", "error")}
 
+    # --------------------------------------------------------------- upgrade safety
+    def upgrade_safety(self, step: str, name: str, version: str, patches: list[str] | None = None) -> dict:
+        """Run one safety step in the background: "check" (every use against the version), "rewrite" (the code
+        changes for the problems found), "trial" (tests before and after, with the chosen patches)."""
+        from . import knowledgefresh, upgradesafety
+
+        cur = self._upgrade_job
+        if cur and cur["running"]:
+            return self.upgrade_progress()
+        key = f"{name}=={version}"
+        if not cur or cur.get("key") != key:
+            cur = {"key": key, "check": None, "rewrite": None, "trial": None, "probes": None}
+        state = {**cur, "running": True, "step": step, "log": [], "error": None}
+        self._upgrade_job = state
+
+        def tell(msg: str) -> None:
+            state["log"].append(msg)
+            note(self.name, f"Upgrade {key}: {msg}")
+
+        def run() -> None:
+            r = self.ensure()
+            try:
+                if step == "check":
+                    tell(f"Installing {key} on its own and checking every use against it")
+                    state["check"] = upgradesafety.check_uses(self.root, r.graph, r.stack, name, version)
+                    tell(state["check"]["summary"])
+                elif step == "rewrite":
+                    problems = [p for p in (state.get("check") or {}).get("problems") or [] if p["issue"] != "changed"]
+                    problems += upgradesafety.behaviour_problems(
+                        r.graph, name, version, state.get("trial"), (state.get("probes") or {}).get("probes")
+                    )
+                    if not problems:
+                        raise RuntimeError(
+                            "nothing to rewrite yet: check every use, or run before and after, to find what changes"
+                        )
+                    installed = r.stack.version_of(name)
+                    tell("Reading the release notes")
+                    notes = knowledgefresh.release_notes(name, installed, version)
+                    tell(f"Writing the code changes for {len(problems)} use(s)")
+                    state["rewrite"] = upgradesafety.rewrite(
+                        self.root, r.graph, name, installed, version, problems, notes
+                    )
+                    tell(
+                        f"{len(state['rewrite']['patches'])} change(s) written, "
+                        f"{len(state['rewrite']['skipped'])} left by hand"
+                    )
+                elif step == "trial":
+                    problems = (state.get("check") or {}).get("problems") or []
+                    targets = upgradesafety.probe_targets(r.graph, name, problems)
+                    probes = None
+                    if targets:
+                        tell(f"Writing calls for {len(targets)} function(s) that use {name} (inputs only)")
+                        written = upgradesafety.write_probes(self.root, r.graph, name, targets)
+                        state["probes"] = written
+                        probes = written["probes"]
+                        if written.get("why"):
+                            tell(written["why"] + "; comparing imports and tests only")
+                    state["trial"] = upgradesafety.trial(
+                        self.root, name, version, patches or [], graph=r.graph, probes=probes, progress=tell
+                    )
+                else:
+                    raise RuntimeError(f"unknown step {step!r}")
+            except Exception as exc:
+                state["error"] = str(exc)
+                tell(f"stopped: {exc}")
+            finally:
+                state["running"] = False
+
+        threading.Thread(target=run, daemon=True, name=f"codewright-upgrade-{self.root.name}").start()
+        return self.upgrade_progress()
+
+    def upgrade_progress(self) -> dict:
+        s = self._upgrade_job or {"running": False, "step": None, "log": [], "error": None}
+        return {k: s.get(k) for k in ("key", "running", "step", "log", "error", "check", "rewrite", "trial", "probes")}
+
     def forget_ai(self) -> None:
         """Rebuild the AI page next time (its corrections file changed); the scan itself is kept."""
         with self._cache_lock:
@@ -673,17 +750,36 @@ class Workspace:
             "findings": [f.to_dict() for f in found],
         }
 
-    def migration_apply(self, name: str, n: int) -> dict:
-        """Apply a step's combined patch to the working tree (nothing is committed), then re-scan."""
+    def migration_ai(self, name: str, n: int) -> dict:
+        """The model writes the step's changes that have no automatic patch."""
+        from . import migrate
+
+        r = self.ensure()
+        _step, found = migrate.step_findings(self.root, name, n, r.graph, r.stack)
+        note(self.name, f"Migration {name} step {n}: AI writing {sum(1 for f in found if not f.patch)} change(s)")
+        return migrate.ai_changes(self.root, name, r.graph, found)
+
+    def migration_apply(self, name: str, n: int, extra_patches: list[str] | None = None) -> dict:
+        """Apply a step's combined patch and the chosen AI-written changes to the working tree (nothing is
+        committed), then re-scan."""
         from .proof import apply_patch
 
         step = self.migration_step(name, n)
-        if not step["patch"]:
-            raise ValueError(f"step {n} has nothing to patch automatically; make its changes by hand")
-        if not apply_patch(self.root, step["patch"]):
+        if not step["patch"] and not extra_patches:
+            raise ValueError(f"step {n} has nothing to patch automatically: write its changes with AI or by hand")
+        if step["patch"] and not apply_patch(self.root, step["patch"]):
             raise RuntimeError("the step's patch did not apply; the files changed since the plan was made")
+        failed = []
+        for patch in extra_patches or []:
+            if not apply_patch(self.root, patch):
+                failed += re.findall(r"^\+\+\+ b/(\S+)", patch, re.M)
         self.run_review(proof=False)
-        return {"applied": True, "files": step["step"]["files"], "status": self.migration_status(name)}
+        return {
+            "applied": True,
+            "files": step["step"]["files"],
+            "failed": failed,
+            "status": self.migration_status(name),
+        }
 
     # --------------------------------------------------------------- proposal review
     def critique(self, text: str) -> dict:

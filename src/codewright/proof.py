@@ -186,7 +186,9 @@ def has_tests(root: Path) -> bool:
         return True
     if (root / "pytest.ini").exists() or (root / "conftest.py").exists():
         return True
-    return any(root.rglob("test_*.py"))
+    from .scanscope import walk_files
+
+    return next(walk_files(root, lambda name: name.startswith("test_") and name.endswith(".py")), None) is not None
 
 
 def default_jobs() -> int:
@@ -211,8 +213,11 @@ def run_tests(
     original: Path | None = None,
     selection: list[str] | None = None,
     plugins: list[tuple[Path, str]] | None = None,
+    fail_fast: bool = True,
 ) -> TestRun:
-    cmd = [python, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", *(selection or [])]
+    """`fail_fast=False` runs the whole selection and lists every failure (-rf), to compare two runs."""
+    flags = ["-x"] if fail_fast else ["-rf"]
+    cmd = [python, "-m", "pytest", "-q", *flags, "-p", "no:cacheprovider", *(selection or [])]
     env = dict(os.environ)
     paths = _src_dirs(workdir)
     for folder, name in plugins or []:  # extra pytest plugins: (folder that holds it, module name)
@@ -237,7 +242,8 @@ def run_tests(
     code: int | None = None
     try:
         proc = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True, timeout=timeout, env=env)
-        code, out = proc.returncode, proc.stdout[-4000:] + proc.stderr[-2000:]
+        tail = 4000 if fail_fast else 40000  # a full run's failure list is what the comparison needs
+        code, out = proc.returncode, proc.stdout[-tail:] + proc.stderr[-2000:]
     except subprocess.TimeoutExpired:
         out = f"timed out after {timeout}s"
     except OSError as exc:

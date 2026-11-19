@@ -250,6 +250,31 @@ export interface UpgradePlan {
   patches: UpgradeItem[]; manual: UpgradeItem[]; resolved: UpgradeItem[];
   migrations: { name: string; title: string; findings: number }[]; uses: { file: string; names: string[] }[];
 }
+export interface UpgradeProblem {
+  file: string; line: number; function: string; symbol: string; kind: string; issue: string; detail: string;
+  old_signature: string | null; new_signature: string | null;
+}
+export interface UpgradeCheck {
+  name: string; version: string; sites: number; symbols: number; files: number; problems: UpgradeProblem[];
+  breaking: number; summary: string;
+}
+export interface UpgradeRewrite {
+  patches: { id: string; file: string; function: string; patch: string; explanation: string; fixes: string[] }[];
+  skipped: { file: string; function: string; why: string }[]; model: string;
+}
+export interface UpgradeTrialRun { ok: boolean; passed: number; failed: string[]; counts: Record<string, number>; seconds: number; output: string }
+export interface UpgradeTrial {
+  before: UpgradeTrialRun | null; after: UpgradeTrialRun | null; new_failures?: string[]; fixed?: string[]; safe?: boolean;
+  patches_applied: number; patches_failed: number; lock: { ok: boolean; output: string } | null; error?: string | null;
+  tests_ran: boolean; reasons?: string[]; evidence?: string[];
+  imports: { modules: number; broken: { module: string; error: string }[]; already_failing: string[]; error: string | null } | null;
+  behaviour: { functions?: number; scenarios?: number; changed?: { scenario: string; before: unknown; after: unknown }[]; probe_errors?: string[]; error?: string } | null;
+}
+export interface UpgradeSafety {
+  key: string | null; running: boolean; step: string | null; log: string[]; error: string | null;
+  check: UpgradeCheck | null; rewrite: UpgradeRewrite | null; trial: UpgradeTrial | null;
+  probes: { probes: { file: string; function: string; code: string }[]; skipped: { file: string; function: string; why: string }[]; model: string | null; why?: string } | null;
+}
 export interface GitState {
   git: boolean; branch?: string | null; detached?: boolean; head?: string; default?: string; branches: string[];
   changed: { file: string; status: string }[]; suggested_branch?: string; committed?: string;
@@ -429,8 +454,11 @@ export const api = {
   upgradeBreaking: (id: string, name: string, version: string) =>
     req<{ items: { file: string; change: string; why: string; version: string }[]; model: string; links: { label: string; url: string }[]; versions: string[] }>(
       "POST", `${w(id)}/upgrade/breaking`, { name, version }),
-  upgradeApply: (id: string, body: { name: string; version: string; patch_ids: string[]; branch: string; run_lock: boolean }) =>
-    req<{ branch: string | null; files: string[]; lock: { ok: boolean; command: string; output: string } | null; applied: string[]; skipped: string[] }>(
+  upgradeSafety: (id: string, step: "check" | "rewrite" | "trial", name: string, version: string, patches: string[] = []) =>
+    req<UpgradeSafety>("POST", `${w(id)}/upgrade/safety`, { step, name, version, patches }),
+  upgradeSafetyProgress: (id: string) => req<UpgradeSafety>("GET", `${w(id)}/upgrade/safety`),
+  upgradeApply: (id: string, body: { name: string; version: string; patch_ids: string[]; branch: string; run_lock: boolean; extra_patches: string[] }) =>
+    req<{ branch: string | null; files: string[]; lock: { ok: boolean; command: string; output: string } | null; applied: string[]; skipped: string[]; rewrites_applied?: number; rewrites_failed?: string[] }>(
       "POST", `${w(id)}/upgrade/apply`, body),
   git: (id: string) => req<GitState>("GET", `${w(id)}/git`),
   gitSwitch: (id: string, branch: string) => req<GitState>("POST", `${w(id)}/git/switch`, { branch }),
@@ -467,8 +495,10 @@ export const api = {
     req<MigrationPlan>("POST", `${w(id)}/migrations/${q(name)}/plan`, { batch }),
   migration: (id: string, name: string) => req<MigrationPlan>("GET", `${w(id)}/migrations/${q(name)}`),
   migrationStep: (id: string, name: string, n: number) => req<StepDetail>("GET", `${w(id)}/migrations/${q(name)}/steps/${n}`),
-  applyStep: (id: string, name: string, n: number) =>
-    req<{ applied: boolean; files: string[]; status: MigrationPlan }>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/apply`),
+  applyStep: (id: string, name: string, n: number, extra_patches: string[] = []) =>
+    req<{ applied: boolean; files: string[]; failed: string[]; status: MigrationPlan }>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/apply`, { extra_patches }),
+  stepAi: (id: string, name: string, n: number) =>
+    req<UpgradeRewrite>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/ai`),
   critique: (id: string, text: string) => req<PlanReview>("POST", `${w(id)}/critique`, { text }),
   insights: (id: string) => req<Insight[]>("GET", `${w(id)}/insights`),
   agentFixes: (id: string) => req<AgentFixes>("GET", `${w(id)}/ai/fixes`),

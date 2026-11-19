@@ -517,7 +517,7 @@ def summary(graph: CodeGraph, root: str | Path) -> dict:
         "warnings": sum(1 for v in violations if v.severity == "warn"),
         "ok": not any(v.severity == "error" for v in violations) and error is None,
         "error": error,
-        "file": str(rules_path(root).relative_to(root)) if rules_path(root).exists() else None,
+        "file": rules_path(root).relative_to(root).as_posix() if rules_path(root).exists() else None,
     }
 
 

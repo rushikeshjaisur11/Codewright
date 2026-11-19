@@ -57,7 +57,7 @@ def _add(
 
 
 def _record(stack: Stack, path: Path, root: Path) -> None:
-    stack.sources.append(str(path.relative_to(root)))
+    stack.sources.append(path.relative_to(root).as_posix())
 
 
 def _parse_requirement(line: str, stack: Stack, source: str) -> None:
@@ -159,9 +159,9 @@ _PY_IMAGE_RE = re.compile(r"python:(\d+\.\d+(?:\.\d+)?)")
 
 
 def _from_dockerfiles(root: Path, stack: Stack) -> None:
-    for path in sorted(root.rglob("Dockerfile*")):
-        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
-            continue
+    from .scanscope import walk_files
+
+    for path in walk_files(root, lambda name: name.startswith("Dockerfile")):
         _record(stack, path, root)
         for image in _FROM_RE.findall(path.read_text(errors="ignore")):
             stack.docker_images.append(image)
@@ -202,14 +202,21 @@ def for_path(stack: Stack, path: str) -> Stack:
     are right here: the project's own files win, the root fills in what they don't say.
     """
     root = Path(stack.root)
-    folder = (root / path).parent
-    while folder != root and root in folder.parents:
-        if not (folder / "__init__.py").exists() and (
-            any((folder / n).exists() for n in PROJECT_FILES) or (folder / "setup.py").exists()
-        ):
-            break
-        folder = folder.parent
-    else:
+    rel_dir = path.rsplit("/", 1)[0] if "/" in path else ""
+    dirs = stack.__dict__.setdefault("_project_of_dir", {})  # a review asks this for every finding
+    if rel_dir not in dirs:
+        folder = (root / path).parent
+        while folder != root and root in folder.parents:
+            if not (folder / "__init__.py").exists() and (
+                any((folder / n).exists() for n in PROJECT_FILES) or (folder / "setup.py").exists()
+            ):
+                break
+            folder = folder.parent
+        else:
+            folder = None
+        dirs[rel_dir] = folder
+    folder = dirs[rel_dir]
+    if folder is None:
         return stack
     cache = stack.__dict__.setdefault("_projects", {})  # not a dataclass field: never serialised
     key = str(folder)
@@ -223,7 +230,7 @@ def for_path(stack: Stack, path: str) -> Stack:
                 for k, d in stack.dependencies.items()
             },
             docker_images=own.docker_images or stack.docker_images,
-            sources=[str(Path(folder.relative_to(root), s)) for s in own.sources] + stack.sources,
+            sources=[Path(folder.relative_to(root), s).as_posix() for s in own.sources] + stack.sources,
         )
         for k, d in own.dependencies.items():
             base = merged.dependencies.get(k)

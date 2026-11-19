@@ -16,10 +16,14 @@ from .models import Card, Finding, IntentMatch, Stack, categorize
 from .stack import for_path
 
 
-def make_findings(matches: list[IntentMatch], stack: Stack, graph: CodeGraph, cards: list[Card]) -> list[Finding]:
+def make_findings(
+    matches: list[IntentMatch], stack: Stack, graph: CodeGraph, cards: list[Card], progress=None
+) -> list[Finding]:
     hot = graph.hot_functions()
     findings: list[Finding] = []
-    for m in matches:
+    for n, m in enumerate(matches):
+        if progress and n % 500 == 0:
+            progress(n, len(matches))
         here = for_path(stack, m.function.file)  # a monorepo's projects each have their own versions
         options = best_cards(m, here, cards)
         if not options:
@@ -79,7 +83,42 @@ def make_findings(matches: list[IntentMatch], stack: Stack, graph: CodeGraph, ca
 def unified_diff(path: str, before: list[str], after: list[str]) -> str | None:
     if before == after:
         return None
-    return "".join(difflib.unified_diff(before, after, fromfile=f"a/{path}", tofile=f"b/{path}"))
+    # difflib is quadratic in what it compares: match only the edited middle, then write the hunks from the
+    # whole files, so the context lines are the real ones (same output format as difflib.unified_diff).
+    head, limit = 0, min(len(before), len(after))
+    while head < limit and before[head] == after[head]:
+        head += 1
+    tail = 0
+    while tail < limit - head and before[-1 - tail] == after[-1 - tail]:
+        tail += 1
+    sm = difflib.SequenceMatcher(None, before[head : len(before) - tail], after[head : len(after) - tail])
+    ops = [("equal", 0, head, 0, head)] if head else []
+    ops += [(tag, i1 + head, i2 + head, j1 + head, j2 + head) for tag, i1, i2, j1, j2 in sm.get_opcodes()]
+    if tail:
+        ops.append(("equal", len(before) - tail, len(before), len(after) - tail, len(after)))
+    full = difflib.SequenceMatcher(None, before, after, autojunk=False)
+    full.opcodes = ops  # get_grouped_opcodes reads these instead of matching the whole files again
+    out = [f"--- a/{path}\n", f"+++ b/{path}\n"]
+    for group in full.get_grouped_opcodes(3):
+        first, last = group[0], group[-1]
+        out.append(f"@@ -{_range(first[1], last[2])} +{_range(first[3], last[4])} @@\n")
+        for tag, i1, i2, j1, j2 in group:
+            if tag == "equal":
+                out += [" " + line for line in before[i1:i2]]
+                continue
+            out += ["-" + line for line in before[i1:i2]]
+            out += ["+" + line for line in after[j1:j2]]
+    return "".join(out)
+
+
+def _range(start: int, stop: int) -> str:
+    """A hunk range as difflib writes it."""
+    beginning, length = start + 1, stop - start
+    if length == 1:
+        return f"{beginning}"
+    if not length:
+        beginning -= 1
+    return f"{beginning},{length}"
 
 
 def _identifier_uses(root: Node, name: str) -> list[int]:
