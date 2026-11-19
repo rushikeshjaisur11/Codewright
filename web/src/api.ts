@@ -220,6 +220,28 @@ export interface Release {
   unlocks: { card: string; title: string; topic?: string; reference?: boolean }[];
   preview?: { new: PreviewItem[]; resolved: PreviewItem[] } | null;
 }
+export interface KnowledgeRow {
+  library: string; cards: number; checked: string | null; checked_on: string | null; checked_by: string | null;
+  installed: string | null; latest: string | null; released: string | null; status: "behind" | "current" | "unrecorded";
+  bump: string; uses: boolean;
+}
+export interface ReleaseNotes {
+  library: string; since: string | null; until: string | null; versions: string[];
+  notes: { version: string; date: string; body: string }[]; links: { label: string; url: string }[]; error: string | null;
+}
+export interface KnowledgeDraft {
+  library: string; model: string; notes: ReleaseNotes;
+  new_cards: { title: string; symbol: string; versions: string; suggestion: string; gain: string; risk: string; when_not: string; topic: string; sources: string[]; library: string }[];
+  outdated: { card: string; why: string; change: string }[];
+}
+export interface UpgradeItem { id: string; title: string; file: string; line: number; patch: string | null; suggestion: string; intent: string }
+export interface UpgradePlan {
+  name: string; installed: string | null; version: string;
+  requirements: { file: string; changes: { old: string; new: string }[]; diff: string }[];
+  lock: { tool: string | null; command: string[]; available: boolean; note: string };
+  patches: UpgradeItem[]; manual: UpgradeItem[]; resolved: UpgradeItem[];
+  migrations: { name: string; title: string; findings: number }[]; uses: { file: string; names: string[] }[];
+}
 export interface GitState {
   git: boolean; branch?: string | null; detached?: boolean; head?: string; default?: string; branches: string[];
   changed: { file: string; status: string }[]; suggested_branch?: string; committed?: string;
@@ -384,6 +406,21 @@ export const api = {
   aiTest: (id: string, fid: string) => req<AiTest>("POST", `${w(id)}/findings/${fid}/ai-test`),
   saveAiTest: (id: string, fid: string) => req<{ path: string }>("POST", `${w(id)}/findings/${fid}/ai-test/save`),
   aiCheck: (id: string, fid: string) => req<AiCheck>("POST", `${w(id)}/findings/${fid}/ai-check`),
+  knowledgeFreshness: (id: string) => req<KnowledgeRow[]>("GET", `${w(id)}/knowledge/freshness`),
+  knowledgeNotes: (id: string, library: string, since: string, until: string) =>
+    req<ReleaseNotes>("GET", `${w(id)}/knowledge/notes?library=${q(library)}&since=${q(since)}&until=${q(until)}`),
+  knowledgeDraft: (id: string, body: { library: string; since: string; until: string; pasted: string }) =>
+    req<KnowledgeDraft>("POST", `${w(id)}/knowledge/draft`, body),
+  knowledgeChecked: (id: string, library: string, version: string) =>
+    req<KnowledgeRow[]>("POST", `${w(id)}/knowledge/checked`, { library, version }),
+  upgradePlan: (id: string, name: string, version: string) =>
+    req<UpgradePlan>("GET", `${w(id)}/upgrade/plan?name=${q(name)}&version=${q(version)}`),
+  upgradeBreaking: (id: string, name: string, version: string) =>
+    req<{ items: { file: string; change: string; why: string; version: string }[]; model: string; links: { label: string; url: string }[]; versions: string[] }>(
+      "POST", `${w(id)}/upgrade/breaking`, { name, version }),
+  upgradeApply: (id: string, body: { name: string; version: string; patch_ids: string[]; branch: string; run_lock: boolean }) =>
+    req<{ branch: string | null; files: string[]; lock: { ok: boolean; command: string; output: string } | null; applied: string[]; skipped: string[] }>(
+      "POST", `${w(id)}/upgrade/apply`, body),
   git: (id: string) => req<GitState>("GET", `${w(id)}/git`),
   gitSwitch: (id: string, branch: string) => req<GitState>("POST", `${w(id)}/git/switch`, { branch }),
   gitBranch: (id: string, name: string, start = "") => req<GitState>("POST", `${w(id)}/git/branch`, { name, start }),

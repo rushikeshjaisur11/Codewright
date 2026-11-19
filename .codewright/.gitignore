@@ -1,0 +1,8 @@
+# Local caches; feedback.json, design.json and config.json are meant to be committed.
+snapshots/
+releases.json
+review-state.json
+last-review.json
+ai-checks.json
+ai-tests.json
+cache/

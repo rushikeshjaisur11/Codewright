@@ -101,6 +101,21 @@ try {
     await text("the next scan flags requests.get").waitFor();
   });
 
+  await check("Knowledge: keeping it current", async () => {
+    await page.goto(`${base}/#/knowledge`);
+    await text("Keeping it current").waitFor({ timeout: 60000 });
+  });
+
+  await check("Dependencies: upgrade with code changes", async () => {
+    await page.goto(`${base}/#/releases`);
+    const btn = page.getByRole("button", { name: "Upgrade…" }).first();
+    try { await btn.waitFor({ timeout: 45000 }); } catch { console.log("     (no newer release reachable: skipped)"); return; }
+    await btn.click();
+    await text("1. The requirement").waitFor();
+    await text("3. Code changes the new version calls for").waitFor();
+    await page.getByRole("button", { name: "Cancel" }).click();
+  });
+
   await check("Settings: scan scope and AI usage", async () => {
     await page.goto(`${base}/#/settings`);
     await text("What gets reviewed").waitFor();

@@ -1,0 +1,10 @@
+{
+  "google-adk": {"version": "2.14.1", "date": "2026-11-01"},
+  "pydantic": {"version": "2.14.3", "date": "2026-11-01"},
+  "pydantic-settings": {"version": "2.16.3", "date": "2026-11-01"},
+  "fastapi": {"version": "0.163.1", "date": "2026-11-01"},
+  "sqlalchemy": {"version": "2.1.8", "date": "2026-11-01"},
+  "celery": {"version": "5.7.0", "date": "2026-11-01"},
+  "requests": {"version": "2.34.2", "date": "2026-11-01"},
+  "httpx": {"version": "0.28.1", "date": "2026-11-01"}
+}

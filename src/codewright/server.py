@@ -544,6 +544,119 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         note(w.name, f"Scan scope saved: {out['kept']} of {out['total']} Python files are reviewed")
         return out
 
+    # ------------------------------------------------------------------ knowledge: keeping it current
+    @app.get("/api/w/{wid}/knowledge/freshness")
+    def knowledge_freshness(wid: str, online: bool = True):
+        """Each library's cards: the version they were checked against, the newest release, how far behind."""
+        from . import knowledgefresh
+        from . import stack as stack_mod
+
+        w = ws(wid)
+        st = w.result.stack if w.result else stack_mod.discover(w.root)
+        return knowledgefresh.freshness(w.root, st, online=online)
+
+    @app.get("/api/w/{wid}/knowledge/notes")
+    def knowledge_notes(wid: str, library: str, since: str = "", until: str = ""):
+        """What changed in `library` after `since` up to `until`: release notes and changelog links."""
+        from . import knowledgefresh
+        from .activity import Timer
+
+        w = ws(wid)
+        with Timer(w.name, f"Reading the release notes of {library} after {since or 'the start'}"):
+            return knowledgefresh.release_notes(library, since or None, until or None)
+
+    @app.post("/api/w/{wid}/knowledge/draft")
+    def knowledge_draft(
+        wid: str,
+        library: Annotated[str, Body(embed=True)],
+        since: Annotated[str, Body(embed=True)] = "",
+        until: Annotated[str, Body(embed=True)] = "",
+        pasted: Annotated[str, Body(embed=True)] = "",
+    ):
+        """New cards and outdated-card notes drafted by the model from the release notes; nothing is saved."""
+        from . import knowledgefresh
+        from .activity import Timer
+
+        w = ws(wid)
+        notes = knowledgefresh.release_notes(library, since or None, until or None)
+        try:
+            with Timer(w.name, f"Drafting knowledge updates for {library}"):
+                out = knowledgefresh.draft_updates(w.root, library, notes, pasted)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+        return {**out, "notes": notes}
+
+    @app.post("/api/w/{wid}/knowledge/checked")
+    def knowledge_checked(
+        wid: str, library: Annotated[str, Body(embed=True)], version: Annotated[str, Body(embed=True)]
+    ):
+        """Record that the team re-checked this library's cards against `version` (.codewright/knowledge.json)."""
+        from . import knowledgefresh
+        from .activity import note
+
+        w = ws(wid)
+        try:
+            knowledgefresh.mark_checked(w.root, library, version)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        note(w.name, f"Knowledge: {library} cards checked against {version}")
+        return knowledgefresh.freshness(w.root, w.result.stack if w.result else None, online=False)
+
+    # ------------------------------------------------------------------ upgrading a dependency
+    @app.get("/api/w/{wid}/upgrade/plan")
+    def upgrade_plan(wid: str, name: str, version: str):
+        """What upgrading `name` to `version` changes: requirements, lockfile, code patches, manual work."""
+        from . import upgrade
+        from .activity import Timer
+
+        w = ws(wid)
+        r = w.ensure()
+        with Timer(w.name, f"Planning the upgrade of {name} to {version}"):
+            return upgrade.plan(w.root, r.graph, r.stack, name, version)
+
+    @app.post("/api/w/{wid}/upgrade/breaking")
+    def upgrade_breaking(wid: str, name: Annotated[str, Body(embed=True)], version: Annotated[str, Body(embed=True)]):
+        """The model reads the release notes against this repo's uses of the library."""
+        from . import knowledgefresh, upgrade
+
+        w = ws(wid)
+        r = w.ensure()
+        installed = r.stack.version_of(name)
+        notes = knowledgefresh.release_notes(name, installed, version)
+        try:
+            out = upgrade.breaking_changes(w.root, r.graph, name, installed, version, notes)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+        return {**out, "links": notes.get("links", []), "versions": notes.get("versions", [])}
+
+    @app.post("/api/w/{wid}/upgrade/apply")
+    def upgrade_apply(
+        wid: str,
+        name: Annotated[str, Body(embed=True)],
+        version: Annotated[str, Body(embed=True)],
+        patch_ids: Annotated[list[str] | None, Body(embed=True)] = None,
+        branch: Annotated[str, Body(embed=True)] = "",
+        run_lock: Annotated[bool, Body(embed=True)] = True,
+    ):
+        """Do the upgrade (on a new branch when given); nothing is committed. The UI re-scans afterwards."""
+        from . import gitops, upgrade
+        from .activity import note
+
+        w = ws(wid)
+        r = w.ensure()
+        try:
+            out = upgrade.apply(
+                w.root, r.graph, r.stack, name, version, patch_ids=patch_ids, branch=branch, run_lock=run_lock
+            )
+        except gitops.GitError as e:
+            raise HTTPException(409, str(e)) from None
+        note(
+            w.name,
+            f"Upgraded {name} to {version}: {len(out['files'])} file(s) changed, {len(out['applied'])} patch(es)"
+            + (f" on {out['branch']}" if out["branch"] else ""),
+        )
+        return out
+
     # ------------------------------------------------------------------ knowledge: teach
     @app.post("/api/w/{wid}/cards")
     def teach_card(wid: str, card: Annotated[dict, Body(embed=True)]):

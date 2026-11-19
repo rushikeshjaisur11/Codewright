@@ -3,6 +3,7 @@ import { BookOpen, GraduationCap, Layers, Radar, Search, Trash2, Users, Wand2 } 
 import { api, Card, FitStatus } from "../api";
 import { CodeView, Source, Spinner, Tabs, intentLabel, useToast } from "../ui";
 import TeachCard from "../TeachCard";
+import KnowledgeFreshness from "../KnowledgeFreshness";
 
 const FIT: Record<FitStatus, { cls: string; label: string }> = {
   fits: { cls: "green", label: "fits this repo" },
@@ -72,6 +73,7 @@ export default function Knowledge({ wid }: { wid: string | null }) {
       </div>
       {!cards ? <Spinner /> : (
         <div className="col" style={{ gap: 18 }}>
+          {wid && <KnowledgeFreshness wid={wid} onSaved={refresh} />}
           <div className="row" style={{ gap: 12, flexWrap: "wrap", alignItems: "center" }}>
             <div style={{ overflowX: "auto", maxWidth: "100%", whiteSpace: "nowrap" }}>
               <Tabs<string> value={library} onChange={setLibrary} options={[

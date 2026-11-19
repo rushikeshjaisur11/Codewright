@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleCheck, Package, PackageMinus, RefreshCw, Sparkles, TriangleAlert, Wand2 } from "lucide-react";
 import { useApp } from "../App";
 import { api, DepAudit, Release } from "../api";
+import UpgradeModal from "../UpgradeModal";
 import { Empty, Inline, Spinner, Tabs, useToast } from "../ui";
 
 const BUMP: Record<string, string> = { major: "red", minor: "amber", patch: "blue", current: "green", unknown: "outline" };
@@ -154,6 +155,7 @@ function Audit({ tabs }: { tabs: JSX.Element }) {
 function ReleaseList({ tabs }: { tabs: JSX.Element }) {
   const { wid, data, runReview } = useApp();
   const { rows, running: refreshing, progress, start: load } = useReleaseCheck();
+  const [upgrading, setUpgrading] = useState<{ name: string; version: string } | null>(null);
   useEffect(load, [wid, data?.has_result]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fresh = (rows ?? []).filter((r) => r.new_since_last_check);
@@ -175,7 +177,7 @@ function ReleaseList({ tabs }: { tabs: JSX.Element }) {
           <Empty icon={<Package size={22} />} title="No dependencies">Add a lockfile, requirements file or pyproject dependencies to this repo.</Empty>
         ) : (
           <table className="table">
-            <thead><tr><th>Package</th><th>Installed</th><th>Latest</th><th>Released</th><th>Change</th><th>Upgrade preview for this repo</th><th>Upgrade unlocks</th></tr></thead>
+            <thead><tr><th>Package</th><th>Installed</th><th>Latest</th><th>Released</th><th>Change</th><th>Upgrade preview for this repo</th><th>Upgrade unlocks</th><th></th></tr></thead>
             <tbody>
               {rows.map((r) => (
                 <tr key={r.name}>
@@ -215,12 +217,18 @@ function ReleaseList({ tabs }: { tabs: JSX.Element }) {
                       </div>
                     </details>
                   )}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    {r.latest && r.installed && r.bump !== "current" && r.bump !== "unknown" && (
+                      <button className="btn sm" onClick={() => setUpgrading({ name: r.name, version: r.latest! })} title="Bump the requirement, update the lockfile and apply the code changes the new version needs">Upgrade…</button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </div>
+      {upgrading && <UpgradeModal name={upgrading.name} version={upgrading.version} onClose={() => setUpgrading(null)} />}
     </div>
   );
 }
