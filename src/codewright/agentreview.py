@@ -8,7 +8,6 @@ here calls a model; ``deep_review`` is the optional, on-request second opinion f
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import asdict, dataclass, field
 
@@ -311,14 +310,35 @@ DEEP_SYSTEM = (
     "You are reviewing the architecture of a multi-agent application. You get its architecture as a list of "
     "nodes and edges extracted from the code, the source of the key functions, and the issues a rule-based "
     "review already found. Suggest only improvements the code supports: name the file and line, say why it "
-    "matters for this system, and give the concrete change. Do not repeat the existing issues. Reply with JSON "
-    'only: a list of {"title", "why", "fix", "file", "line", "severity"} (severity: high, medium or low).'
+    "matters for this system, and give the concrete change. Do not repeat the existing issues."
 )
+
+DEEP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "insights": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "why": {"type": "string"},
+                    "fix": {"type": "string"},
+                    "file": {"type": "string"},
+                    "line": {"type": "integer"},
+                    "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+                },
+                "required": ["title", "why", "fix", "file", "line", "severity"],
+            },
+        }
+    },
+    "required": ["insights"],
+}
 
 
 def deep_review(m, insights: list[dict], cfg, max_chars: int = 24000) -> dict:
     """Ask the configured model for improvements the rules cannot see. Returns {"insights", "model"} or a reason."""
-    from .llm import complete
+    from .llm import complete_json
     from .llm import status as llm_status
 
     st = llm_status(cfg)
@@ -359,18 +379,19 @@ def deep_review(m, insights: list[dict], cfg, max_chars: int = 24000) -> dict:
         + "\n\nAlready found:\n"
         + known
     )
-    reply = complete(
-        cfg, DEEP_SYSTEM, [{"role": "user", "content": ask}], max_tokens=2500, purpose="architecture review"
+    data = complete_json(
+        cfg,
+        DEEP_SYSTEM,
+        [{"role": "user", "content": ask}],
+        DEEP_SCHEMA,
+        max_tokens=3000,
+        purpose="architecture review",
     )
-    if reply is None:
+    if data is None:
         from .llm import last_error
 
         return {"insights": [], "error": last_error() or "the model did not answer"}
-    m_ = re.search(r"\[.*\]", reply, re.S)
-    try:
-        items = json.loads(m_.group(0)) if m_ else []
-    except json.JSONDecodeError:
-        items = []
+    items = data["insights"]
     out = []
     for i, it in enumerate(x for x in items if isinstance(x, dict)):
         file = str(it.get("file") or "")

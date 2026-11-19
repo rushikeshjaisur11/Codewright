@@ -174,7 +174,7 @@ function MigrationsTab() {
       setPlan(r.status);
       setStep(null);
       setAi(null);
-      toast(`Applied step ${step.step.n} to ${r.files.length} file(s)${r.failed.length ? `; ${r.failed.length} AI change(s) did not apply (${r.failed.join(", ")})` : ""}. Nothing is committed: run its tests, then commit from Review.`);
+      toast(`Applied step ${step.step.n} to ${r.files.length} file(s)${r.failed.length ? `; ${r.failed.length} AI change(s) did not apply (${r.failed.join(", ")}${r.errors?.[0] ? `: ${r.errors[0].why.split("\n")[0].slice(0, 160)}` : ""})` : ""}. Nothing is committed: run its tests, then commit from Review.`);
       reload();
     } catch (e) { toast((e as Error).message, "error"); } finally { setBusy(false); }
   };

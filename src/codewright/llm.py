@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -86,6 +87,10 @@ OLLAMA_URL = "http://localhost:11434/v1"
 
 class LLMError(RuntimeError):
     """A model call that failed, with a message fit to show the user."""
+
+
+class LLMTruncated(LLMError):
+    """The model stopped at the token limit, so its (structured) answer is incomplete."""
 
 
 # --------------------------------------------------------------------------- stored settings
@@ -397,10 +402,21 @@ def _tokens(pid: str, r) -> tuple[int, int]:
 
 
 def generate(
-    cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int = 1200, timeout: int = 90, purpose: str = ""
+    cfg: LLMConfig,
+    system: str,
+    messages: list[dict],
+    max_tokens: int = 1200,
+    timeout: int = 90,
+    purpose: str = "",
+    schema: dict | None = None,
 ) -> str:
     """One chat completion, within the daily call budget and counted in the usage. Raises LLMError with the
-    reason when the model can't be reached, refuses, or the budget is used up."""
+    reason when the model can't be reached, refuses, or the budget is used up.
+
+    With `schema` (a JSON Schema whose top level is an object) the provider's structured output is used: a
+    forced tool call on Claude, `response_format` on OpenAI-compatible servers and LiteLLM, a response schema
+    on Gemini. Servers that don't support it fall back to plain JSON mode, then to text. An answer cut off at
+    the token limit raises LLMTruncated, since half a JSON value is no answer."""
     import logging
     import time as _t
 
@@ -413,11 +429,11 @@ def generate(
             "raise it in Settings or wait until tomorrow"
         )
     t0 = _t.perf_counter()
-    text_out, raw = _generate(cfg, system, messages, max_tokens, timeout)
+    text_out, raw, truncated = _generate(cfg, system, messages, max_tokens, timeout, schema)
     tin, tout = _tokens(cfg.provider, raw)
     day = _record(tin, tout)
     logging.getLogger("codewright").info(
-        "%-18s Model call%s: %s, %s in / %s out tokens, %.1fs (today: %s of %s calls)",
+        "%-18s Model call%s: %s, %s in / %s out tokens, %.1fs (today: %s of %s calls)%s",
         "ai",
         f" ({purpose})" if purpose else "",
         cfg.model,
@@ -426,6 +442,7 @@ def generate(
         _t.perf_counter() - t0,
         day["calls"],
         u["daily_calls"] or "unlimited",
+        " [cut off at the token limit]" if truncated else "",
     )
     from . import activity
 
@@ -434,82 +451,311 @@ def generate(
         f"Model call{f' ({purpose})' if purpose else ''}: {cfg.model}, {tin or '?'} in / {tout or '?'} out tokens"
         f" · today {day['calls']}/{u['daily_calls'] or '∞'} calls",
     )
+    if truncated and schema is not None:
+        raise LLMTruncated(f"the answer was cut off at the limit of {max_tokens} tokens")
     return text_out
 
 
-def _generate(cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int, timeout: int) -> tuple[str, object]:
+# What an OpenAI-compatible server or LiteLLM model accepted, so a server without json_schema support is only
+# asked once: (provider, base_url, model) -> {"json": "schema" | "object" | "none", "tokens": "max_tokens" | ...}
+_CAPS: dict[tuple[str, str, str], dict] = {}
+
+
+def _caps(cfg: LLMConfig) -> dict:
+    return _CAPS.setdefault((cfg.provider, cfg.base_url, cfg.model), {"json": "schema", "tokens": "max_tokens"})
+
+
+def _rejected(err: Exception, *words: str) -> bool:
+    """A 400-style rejection of a request parameter (as opposed to a network, key or budget problem)."""
+    msg = str(err).lower()
+    return any(w in msg for w in words) or any(c in msg for c in ("http 400", "http 422", "badrequest"))
+
+
+def _gemini_schema(schema: dict) -> dict:
+    """Gemini's responseSchema is an OpenAPI subset: no additionalProperties, $schema or titles."""
+    if isinstance(schema, dict):
+        return {
+            k: _gemini_schema(v)
+            for k, v in schema.items()
+            if k not in ("additionalProperties", "$schema", "title", "default")
+        }
+    if isinstance(schema, list):
+        return [_gemini_schema(v) for v in schema]
+    return schema
+
+
+def _generate(
+    cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int, timeout: int, schema: dict | None = None
+) -> tuple[str, object, bool]:
+    """(text, raw response, cut off at the token limit)."""
     pid = cfg.provider
     msgs = [{"role": m["role"], "content": m["content"]} for m in messages if m.get("content")]
     if pid == "litellm":
         import litellm
 
-        try:
-            resp = litellm.completion(
-                model=cfg.model,
-                messages=[{"role": "system", "content": system}, *msgs],
-                max_tokens=max_tokens,
-                temperature=0.2,
-                timeout=timeout,
-                **({"api_key": cfg.api_key} if cfg.api_key else {}),
-            )
-            return (resp.choices[0].message.content or "").strip(), resp
-        except Exception as e:  # LiteLLM raises a different class per provider
-            raise LLMError(str(e)[:400]) from None
+        caps = _caps(cfg)
+        kwargs = dict(
+            model=cfg.model,
+            messages=[{"role": "system", "content": system}, *msgs],
+            max_tokens=max_tokens,
+            temperature=0.2,
+            timeout=timeout,
+            **({"api_key": cfg.api_key} if cfg.api_key else {}),
+        )
+        modes = [m for m in ("schema", "object", "none") if schema is not None] or ["none"]
+        for mode in modes[modes.index(caps["json"]) if caps["json"] in modes else 0 :]:
+            fmt = {
+                "schema": {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema}},
+                "object": {"type": "json_object"},
+            }.get(mode)
+            try:
+                resp = litellm.completion(**kwargs, **({"response_format": fmt} if fmt else {}))
+            except Exception as e:  # LiteLLM raises a different class per provider
+                if fmt and _rejected(e, "response_format", "json_schema", "json_object"):
+                    caps["json"] = {"schema": "object", "object": "none"}[mode]
+                    continue
+                raise LLMError(str(e)[:400]) from None
+            choice = resp.choices[0]
+            return (choice.message.content or "").strip(), resp, getattr(choice, "finish_reason", "") == "length"
+        raise LLMError("the model did not answer")
     base = (cfg.base_url if pid == "openai" and cfg.base_url else PROVIDERS[pid].base_url).rstrip("/")
     if pid == "anthropic":
+        body = {"model": cfg.model, "max_tokens": max_tokens, "system": system, "messages": msgs}
+        if schema is not None:  # a forced tool call: the answer arrives as the tool's (schema-shaped) input
+            body["tools"] = [{"name": "answer", "description": "Give the answer.", "input_schema": schema}]
+            body["tool_choice"] = {"type": "tool", "name": "answer"}
         r = _post(
             f"{base}/v1/messages",
-            {"model": cfg.model, "max_tokens": max_tokens, "system": system, "messages": msgs},
+            body,
             {"x-api-key": cfg.api_key, "anthropic-version": "2023-06-01"},
             "Claude",
             timeout,
         )
         if r.get("stop_reason") == "refusal":
             raise LLMError("the model declined to answer")
-        return "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text").strip(), r
-    if pid == "gemini":
-        r = _post(
-            f"{base}/models/{cfg.model}:generateContent",
-            {
-                "systemInstruction": {"parts": [{"text": system}]},
-                "contents": [
-                    {"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]}
-                    for m in msgs
-                ],
-                "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.2},
-            },
-            {"x-goog-api-key": cfg.api_key},
-            "Gemini",
-            timeout,
+        blocks = r.get("content", [])
+        tool = next((b for b in blocks if b.get("type") == "tool_use"), None)
+        text = (
+            json.dumps(tool.get("input", {}))
+            if tool is not None
+            else "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
         )
-        parts = ((r.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
-        return "".join(p.get("text", "") for p in parts).strip(), r
-    r = _post(
-        f"{base}/chat/completions",
-        {"model": cfg.model, "messages": [{"role": "system", "content": system}, *msgs], "max_tokens": max_tokens},
-        {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {},
-        "the server",
-        timeout,
-    )
-    return (((r.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip(), r
+        return text, r, r.get("stop_reason") == "max_tokens"
+    if pid == "gemini":
+        gen: dict = {"maxOutputTokens": max_tokens, "temperature": 0.2}
+        body = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [
+                {"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]}
+                for m in msgs
+            ],
+            "generationConfig": gen,
+        }
+        if schema is not None:
+            gen["responseMimeType"] = "application/json"
+            gen["responseSchema"] = _gemini_schema(schema)
+        try:
+            r = _post(
+                f"{base}/models/{cfg.model}:generateContent", body, {"x-goog-api-key": cfg.api_key}, "Gemini", timeout
+            )
+        except LLMError as e:
+            if schema is None or not _rejected(e, "schema"):
+                raise
+            gen.pop("responseSchema")  # JSON mode alone; the schema is in the prompt too
+            r = _post(
+                f"{base}/models/{cfg.model}:generateContent", body, {"x-goog-api-key": cfg.api_key}, "Gemini", timeout
+            )
+        cand = (r.get("candidates") or [{}])[0]
+        parts = (cand.get("content") or {}).get("parts") or []
+        return "".join(p.get("text", "") for p in parts).strip(), r, cand.get("finishReason") == "MAX_TOKENS"
+    caps = _caps(cfg)
+    headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
+    for _ in range(4):  # each retry drops one setting the server rejected
+        body = {"model": cfg.model, "messages": [{"role": "system", "content": system}, *msgs]}
+        body[caps["tokens"]] = max_tokens
+        if schema is not None and caps["json"] == "schema":
+            body["response_format"] = {"type": "json_schema", "json_schema": {"name": "answer", "schema": schema}}
+        elif schema is not None and caps["json"] == "object":
+            body["response_format"] = {"type": "json_object"}
+        try:
+            r = _post(f"{base}/chat/completions", body, headers, "the server", timeout)
+        except LLMError as e:
+            msg = str(e).lower()
+            if caps["tokens"] == "max_tokens" and "max_completion_tokens" in msg:
+                caps["tokens"] = "max_completion_tokens"  # newer OpenAI models reject max_tokens
+                continue
+            if "response_format" in body and _rejected(e, "response_format", "json_schema", "json_object"):
+                caps["json"] = {"schema": "object", "object": "none"}[caps["json"]]
+                continue
+            raise
+        choice = (r.get("choices") or [{}])[0]
+        text = ((choice.get("message") or {}).get("content") or "").strip()
+        return text, r, choice.get("finish_reason") == "length"
+    raise LLMError("the server rejected every form of the request")
+
+
+_TRUNCATED: list[bool] = [False]
 
 
 def complete(
-    cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int = 1200, purpose: str = ""
+    cfg: LLMConfig,
+    system: str,
+    messages: list[dict],
+    max_tokens: int = 1200,
+    purpose: str = "",
+    schema: dict | None = None,
 ) -> str | None:
     """One chat completion, or None when no model is available or the call fails (callers fall back;
     `last_error()` says why)."""
+    _TRUNCATED[0] = False
     st = status(cfg)
     if not st["available"]:
         _LAST_ERROR[0] = st["reason"]
         return None
     try:
-        out = generate(cfg, system, messages, max_tokens, purpose=purpose) or None
+        out = generate(cfg, system, messages, max_tokens, purpose=purpose, schema=schema) or None
         _LAST_ERROR[0] = "" if out else "the model sent an empty answer"
         return out
+    except LLMTruncated as e:
+        _TRUNCATED[0] = True
+        _LAST_ERROR[0] = str(e)
+        return None
     except LLMError as e:
         _LAST_ERROR[0] = str(e)
         return None
+
+
+# --------------------------------------------------------------------------- structured answers
+
+
+def _json_candidates(text: str):
+    """JSON values in a reply, best guess first: the whole reply, fenced ```json blocks, then each `{` or `[`."""
+    yield text
+    for m in re.finditer(r"```[ \t]*(?:json|JSON)?[ \t]*\n(.*?)```", text, re.S):
+        yield m.group(1)
+    dec = json.JSONDecoder()
+    for m in re.finditer(r"[{\[]", text):
+        try:
+            yield dec.raw_decode(text, m.start())[0]
+        except ValueError:
+            continue
+
+
+def parse_json(text: str, schema: dict | None = None):
+    """The JSON value in a model's reply (prose and code fences around it are fine), or None. A bare list where
+    the schema wants an object holding one list is wrapped, so `[...]` answers `{"items": [...]}`."""
+    if not text:
+        return None
+    for cand in _json_candidates(text.strip()):
+        if isinstance(cand, str):
+            try:
+                cand = json.loads(cand)
+            except ValueError:
+                continue
+        if not isinstance(cand, (dict, list)):
+            continue
+        if isinstance(cand, list) and schema and schema.get("type") == "object":
+            lists = [k for k, v in (schema.get("properties") or {}).items() if v.get("type") == "array"]
+            if len(lists) != 1:
+                continue
+            cand = {lists[0]: cand}
+        return cand
+    return None
+
+
+_TYPES = {
+    "object": dict,
+    "array": list,
+    "string": str,
+    "integer": int,
+    "number": (int, float),
+    "boolean": bool,
+    "null": type(None),
+}
+
+
+def validate(value, schema: dict, where: str = "the answer", depth: int = 0) -> str | None:
+    """Why `value` doesn't have the shape `schema` asks for, or None when it does: the top level's type and
+    required keys, and its fields' types. Inside lists only each item's own type is checked; an incomplete
+    item is the caller's to drop, not a reason to throw the whole answer away. Enums are left to the caller."""
+    want = schema.get("type")
+    if want:
+        kinds = want if isinstance(want, list) else [want]
+        ok = any(
+            isinstance(value, _TYPES[k]) and not (k in ("integer", "number") and isinstance(value, bool))
+            for k in kinds
+            if k in _TYPES
+        )
+        if not ok:
+            return f"{where} should be {' or '.join(kinds)}, not {type(value).__name__}"
+    if isinstance(value, dict) and depth == 0:
+        missing = [k for k in schema.get("required", []) if k not in value]
+        if missing:
+            return f"{where} is missing {', '.join(repr(k) for k in missing)}"
+        for k, sub in (schema.get("properties") or {}).items():
+            if k in value and value[k] is not None and (err := validate(value[k], sub, f"{where}.{k}", 1)):
+                return err
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        item_type = {"type": schema["items"]["type"]} if schema["items"].get("type") else {}
+        for i, v in enumerate(value):
+            if err := validate(v, item_type, f"{where}[{i}]", depth + 1):
+                return err
+    return None
+
+
+def complete_json(
+    cfg: LLMConfig,
+    system: str,
+    messages: list[dict],
+    schema: dict,
+    *,
+    max_tokens: int = 1200,
+    purpose: str = "",
+    check=None,
+    fallback=None,
+    attempts: int = 2,
+    token_cap: int = 16000,
+):
+    """A structured answer: the provider's schema-constrained output, parsed and validated against `schema`,
+    then `check(value)` (returns why it is unusable, or None). A malformed, invalid or rejected answer is sent
+    back to the model with the reason, and an answer cut off at the token limit is asked again with twice the
+    room, up to `attempts` tries in all. `fallback(text)` turns a reply that isn't JSON (a model that ignored
+    the schema) into a value. Returns the value, or None with `last_error()` saying why."""
+    ask = (
+        system.rstrip()
+        + "\n\nReply with one JSON value that matches this JSON Schema, and nothing else (no prose, no code "
+        + "fences around it):\n"
+        + json.dumps(schema)
+    )
+    msgs = list(messages)
+    err = ""
+    for _ in range(max(1, attempts)):
+        text = complete(cfg, ask, msgs, max_tokens=max_tokens, purpose=purpose, schema=schema)
+        if text is None:
+            if _TRUNCATED[0] and max_tokens < token_cap:
+                max_tokens = min(token_cap, max_tokens * 2)
+                continue
+            return None
+        value = parse_json(text, schema)
+        if value is None and fallback is not None:
+            value = fallback(text)
+        if value is None:
+            err = "it was not JSON"
+        else:
+            err = validate(value, schema) or (check(value) if check is not None else None) or ""
+        if not err:
+            _LAST_ERROR[0] = ""
+            return value
+        msgs = [
+            *messages,
+            {"role": "assistant", "content": text[:30000]},
+            {
+                "role": "user",
+                "content": f"That answer can't be used: {err}. Fix it and reply again with the complete JSON only.",
+            },
+        ]
+    _LAST_ERROR[0] = f"the model's answer could not be used: {err}" if err else _LAST_ERROR[0]
+    return None
 
 
 def test(cfg: LLMConfig) -> dict:

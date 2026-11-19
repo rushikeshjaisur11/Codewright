@@ -28,8 +28,7 @@ AI_TEST_SYSTEM = (
     "can be verified. Test what the function returns, raises or calls for a few representative inputs, using "
     "only the standard library, pytest and what the code already imports; no network, no sleeping, no real "
     "files outside tmp_path; patch external services with unittest.mock. The test must pass on the code as it "
-    "is today and keep passing after the suggested change, which must not change behaviour. Reply with the "
-    "Python code only, in one ```python block."
+    "is today and keep passing after the suggested change, which must not change behaviour."
 )
 
 
@@ -117,11 +116,6 @@ def steps(f: Finding, graph: CodeGraph | None = None) -> list[dict]:
     return out
 
 
-def _code_block(reply: str) -> str:
-    m = re.search(r"```(?:python)?\s*\n(.*?)```", reply, re.S)
-    return (m.group(1) if m else reply).strip() + "\n"
-
-
 def _key(f: Finding) -> str:
     return hashlib.sha1(f"{f.id}\n{f.patch or ''}\n{f.code_today}".encode()).hexdigest()
 
@@ -155,8 +149,9 @@ def ai_test(
 ) -> dict:
     """Have the model write a test for the finding's function, then run it without and with the patch."""
     from . import proof, proof_env
-    from .llm import LLMConfig, complete, last_error
+    from .llm import LLMConfig, complete_json, last_error
     from .llm import status as llm_status
+    from .upgradesafety import CODE_SCHEMA, _unfence, code_from_text, compiles
 
     root = Path(root).resolve()
     cfg = cfg or LLMConfig.load(root)
@@ -176,14 +171,19 @@ def ai_test(
         + (f"\nThe patch:\n```diff\n{f.patch[:6000]}\n```\n" if f.patch else "")
         + (f"\nFollow the style of the repo's tests:{examples}" if examples else "")
     )
-    reply = complete(cfg, AI_TEST_SYSTEM, [{"role": "user", "content": ask}], max_tokens=2000, purpose="write a test")
-    if reply is None:
+    value = complete_json(
+        cfg,
+        AI_TEST_SYSTEM,
+        [{"role": "user", "content": ask}],
+        CODE_SCHEMA,
+        max_tokens=2500,
+        purpose="write a test",
+        check=compiles("ai_test.py"),
+        fallback=code_from_text,
+    )
+    if value is None:
         raise RuntimeError(last_error() or "the model did not answer")
-    code = _code_block(reply)
-    try:
-        compile(code, "ai_test.py", "exec")
-    except SyntaxError as exc:
-        raise RuntimeError(f"the model's test is not valid Python ({exc.msg}, line {exc.lineno}); try again") from None
+    code = _unfence(str(value["code"])).strip() + "\n"
     tests_dir = "tests" if (root / "tests").is_dir() else ""
     name = f"test_codewright_{re.sub(r'[^a-z0-9]+', '_', fn.lower()).strip('_')}_{f.id}.py"
     rel = f"{tests_dir}/{name}" if tests_dir else name

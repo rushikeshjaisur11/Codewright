@@ -64,7 +64,7 @@ export default function UpgradeModal({ name, version, onClose }: { name: string;
     setBusy(true);
     try {
       const r = await api.upgradeApply(wid, { name, version, patch_ids: [...chosen], branch: branch.on ? branch.name : "", run_lock: runLock, extra_patches: chosenRewrites() });
-      toast(`Upgraded ${name} to ${version}${r.branch ? ` on ${r.branch}` : ""}: ${r.files.length} file(s) changed${r.rewrites_failed?.length ? `; ${r.rewrites_failed.length} rewrite(s) did not apply` : ""}${r.lock && !r.lock.ok ? ` (lockfile: ${r.lock.output.slice(0, 120)})` : ""}. Re-scanning; then run the tests and commit from Review.`);
+      toast(`Upgraded ${name} to ${version}${r.branch ? ` on ${r.branch}` : ""}: ${r.files.length} file(s) changed${r.rewrites_failed?.length ? `; ${r.rewrites_failed.length} rewrite(s) did not apply${r.rewrite_errors?.[0] ? ` (${r.rewrite_errors[0].why.split("\n")[0].slice(0, 160)})` : ""}` : ""}${r.lock && !r.lock.ok ? ` (lockfile: ${r.lock.output.slice(0, 120)})` : ""}. Re-scanning; then run the tests and commit from Review.`);
       onClose();
       await runReview(false);
       go("review");

@@ -646,10 +646,13 @@ class Workspace:
 
     # --------------------------------------------------------------- applying patches
     def _apply(self, patch: str) -> None:
-        from .proof import apply_patch
+        from .proof import patch_error
 
-        if not apply_patch(self.root, patch):
-            raise RuntimeError("the patch did not apply; the files changed since the review. Run the review again")
+        if err := patch_error(self.root, patch):
+            raise RuntimeError(
+                f"the patch did not apply ({err.splitlines()[0][:200]}); the files changed since the review. "
+                "Run the review again"
+            )
 
     def apply_findings(
         self, ids: list[str] | None = None, *, verified_only: bool = True, dry_run: bool = False
@@ -773,22 +776,28 @@ class Workspace:
     def migration_apply(self, name: str, n: int, extra_patches: list[str] | None = None) -> dict:
         """Apply a step's combined patch and the chosen AI-written changes to the working tree (nothing is
         committed), then re-scan."""
-        from .proof import apply_patch
+        from .proof import patch_error
 
         step = self.migration_step(name, n)
         if not step["patch"] and not extra_patches:
             raise ValueError(f"step {n} has nothing to patch automatically: write its changes with AI or by hand")
-        if step["patch"] and not apply_patch(self.root, step["patch"]):
-            raise RuntimeError("the step's patch did not apply; the files changed since the plan was made")
-        failed = []
+        if step["patch"] and (err := patch_error(self.root, step["patch"])):
+            raise RuntimeError(
+                f"the step's patch did not apply ({err.splitlines()[0][:200]}); "
+                "the files changed since the plan was made"
+            )
+        failed, errors = [], []
         for patch in extra_patches or []:
-            if not apply_patch(self.root, patch):
-                failed += re.findall(r"^\+\+\+ b/(\S+)", patch, re.M)
+            if err := patch_error(self.root, patch):
+                files = re.findall(r"^\+\+\+ b/(\S+)", patch, re.M)
+                failed += files
+                errors.append({"files": files, "why": err[:400]})
         self.run_review(proof=False)
         return {
             "applied": True,
             "files": step["step"]["files"],
             "failed": failed,
+            "errors": errors,
             "status": self.migration_status(name),
         }
 

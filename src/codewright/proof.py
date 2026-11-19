@@ -269,18 +269,42 @@ def read_trace(out: Path) -> Trace | None:
     return Trace({k: sorted(v) for k, v in reached.items()}, outside)
 
 
-def apply_patch(workdir: Path, patch: str, *, reverse: bool = False) -> bool:
+def patch_error(workdir: Path, patch: str, *, reverse: bool = False, check: bool = False) -> str:
+    """Apply a unified diff in `workdir` (or, with `check`, only see whether it would apply); "" when it does,
+    else what the tools said. Strict first, then forgiving of whitespace drift and of a hunk next to another
+    change (one line of context), then `patch` with fuzz."""
+    if not patch or not patch.strip():
+        return "the patch is empty"
+    rev = ["-R"] if reverse else []
+    dry = ["--check"] if check else []
     tools = (
-        ["git", "apply", "--whitespace=nowarn", *(["-R"] if reverse else []), "-"],
-        ["patch", "-p1", "--quiet", *(["-R"] if reverse else ["--forward"])],
+        ["git", "apply", "--whitespace=nowarn", *rev, *dry, "-"],
+        ["git", "apply", "--whitespace=nowarn", "--ignore-whitespace", "-C1", *rev, *dry, "-"],
+        ["patch", "-p1", "--quiet", "--batch", "-l", "--dry-run", *(rev or ["--forward"])],
     )
+    errors = []
+
+    def run(tool: list[str]) -> str | None:
+        try:
+            proc = subprocess.run(tool, cwd=workdir, input=patch, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return str(exc)
+        return None if proc.returncode == 0 else ((proc.stderr or proc.stdout).strip() or "did not apply")
+
     for tool in tools:
         if shutil.which(tool[0]) is None:
             continue
-        proc = subprocess.run(tool, cwd=workdir, input=patch, capture_output=True, text=True)
-        if proc.returncode == 0:
-            return True
-    return False
+        err = run(tool)
+        if err is None and tool[0] == "patch" and not check:  # `patch` is not atomic: it ran dry; now for real
+            err = run([t for t in tool if t != "--dry-run"])
+        if err is None:
+            return ""
+        errors.append(err)
+    return next((e for e in errors if e), "no patch tool (git or patch) is installed")[:600]
+
+
+def apply_patch(workdir: Path, patch: str, *, reverse: bool = False) -> bool:
+    return patch_error(workdir, patch, reverse=reverse) == ""
 
 
 def _drop_bytecode(workdir: Path, file: str) -> None:

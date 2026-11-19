@@ -458,7 +458,7 @@ export const api = {
     req<UpgradeSafety>("POST", `${w(id)}/upgrade/safety`, { step, name, version, patches }),
   upgradeSafetyProgress: (id: string) => req<UpgradeSafety>("GET", `${w(id)}/upgrade/safety`),
   upgradeApply: (id: string, body: { name: string; version: string; patch_ids: string[]; branch: string; run_lock: boolean; extra_patches: string[] }) =>
-    req<{ branch: string | null; files: string[]; lock: { ok: boolean; command: string; output: string } | null; applied: string[]; skipped: string[]; rewrites_applied?: number; rewrites_failed?: string[] }>(
+    req<{ branch: string | null; files: string[]; lock: { ok: boolean; command: string; output: string } | null; applied: string[]; skipped: string[]; rewrites_applied?: number; rewrites_failed?: string[]; rewrite_errors?: { files: string[]; why: string }[] }>(
       "POST", `${w(id)}/upgrade/apply`, body),
   git: (id: string) => req<GitState>("GET", `${w(id)}/git`),
   gitSwitch: (id: string, branch: string) => req<GitState>("POST", `${w(id)}/git/switch`, { branch }),
@@ -496,7 +496,7 @@ export const api = {
   migration: (id: string, name: string) => req<MigrationPlan>("GET", `${w(id)}/migrations/${q(name)}`),
   migrationStep: (id: string, name: string, n: number) => req<StepDetail>("GET", `${w(id)}/migrations/${q(name)}/steps/${n}`),
   applyStep: (id: string, name: string, n: number, extra_patches: string[] = []) =>
-    req<{ applied: boolean; files: string[]; failed: string[]; status: MigrationPlan }>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/apply`, { extra_patches }),
+    req<{ applied: boolean; files: string[]; failed: string[]; errors?: { files: string[]; why: string }[]; status: MigrationPlan }>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/apply`, { extra_patches }),
   stepAi: (id: string, name: string, n: number) =>
     req<UpgradeRewrite>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/ai`),
   critique: (id: string, text: string) => req<PlanReview>("POST", `${w(id)}/critique`, { text }),
