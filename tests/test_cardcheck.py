@@ -61,10 +61,53 @@ def test_dead_links_fail(tmp_path, monkeypatch):
     body = CARD.format(
         id="l", intent="reference", symbol="functools.lru_cache", sources="https://dead.example/x", snippet=""
     )
-    monkeypatch.setattr(cardcheck, "_check_url", lambda url: "HTTP 404" if "dead" in url else None)
+    monkeypatch.setattr(cardcheck, "_check_url", lambda url: ("dead", "HTTP 404") if "dead" in url else None)
     report = cardcheck.verify(extra_dirs=[write_cards(tmp_path, body)], library="python", links=True)
     assert "test.l: source https://dead.example/x -> HTTP 404" in report.problems
     assert (
         cardcheck._fetchable("https://github.com/o/r/blob/main/a.py")
         == "https://raw.githubusercontent.com/o/r/main/a.py"
     )
+
+
+def test_a_site_outage_is_reported_but_does_not_fail(tmp_path, monkeypatch):
+    """A 5xx or no answer (after one retry) is the site's problem, not a wrong source: a warning, not a failure."""
+    import urllib.error
+
+    calls = {}
+
+    def urlopen(req, timeout=20):
+        url = req.full_url
+        calls[url] = calls.get(url, 0) + 1
+        if "gone" in url:
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+        if "flaky" in url and calls[url] == 1:
+            raise urllib.error.HTTPError(url, 503, "Unavailable", {}, None)
+        if "down" in url:
+            raise urllib.error.HTTPError(url, 500, "Server Error", {}, None)
+        if "slow" in url:
+            raise TimeoutError("timed out")
+
+        class R:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        return R()
+
+    monkeypatch.setattr(cardcheck.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(cardcheck.time, "sleep", lambda s: None)
+    assert cardcheck._check_url("https://gone.example/x") == ("dead", "HTTP 404")
+    assert cardcheck._check_url("https://down.example/x") == ("down", "HTTP 500")
+    assert cardcheck._check_url("https://slow.example/x")[0] == "down"
+    assert cardcheck._check_url("https://flaky.example/x") is None and calls["https://flaky.example/x"] == 2
+
+    body = CARD.format(
+        id="o", intent="reference", symbol="functools.lru_cache", sources="https://down.example/x", snippet=""
+    )
+    report = cardcheck.verify(extra_dirs=[write_cards(tmp_path, body)], library="python", links=True)
+    assert report.ok and any("down.example" in s and "site error" in s for s in report.skipped)
