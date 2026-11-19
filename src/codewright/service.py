@@ -166,10 +166,9 @@ class Workspace:
                     + (f"; {r.reused} proofs kept" if r.reused else "")
                     + (f"; tests ran on {len(r.proved_files)} file(s)" if r.proved_files else ""),
                 )
-                self.index = CodeIndex(self.result.graph)
+                self.index = None  # built on the first question: most reviews are never asked one
                 self.last_run = time.time()
-                with contextlib.suppress(OSError):
-                    archmap.snapshot(self.root, archmap.ArchMap(self.result.graph, self.result.findings).system())
+                threading.Thread(target=self._snapshot, daemon=True, name=f"codewright-snapshot-{self.name}").start()
                 return self.result
             except Exception as exc:
                 self.error = f"{type(exc).__name__}: {exc}"
@@ -179,6 +178,11 @@ class Workspace:
                 self.running, self.progress, self.early = False, None, None
 
     # --------------------------------------------------------------- the last review, kept on disk
+    def _snapshot(self) -> None:
+        """Record today's system view for drift, off the review's path; the Map page reuses the map it builds."""
+        with contextlib.suppress(Exception):
+            archmap.snapshot(self.root, self.amap().system())
+
     def _saved_path(self) -> Path:
         return self.root / ".codewright" / "last-review.json"
 
@@ -558,6 +562,9 @@ class Workspace:
         from . import cards as card_store
 
         llm = cfg if llm_status(cfg)["available"] else None
+        r = self.result
+        if self.index is None or self.index.g is not r.graph:
+            self.index = CodeIndex(r.graph)
         return answer(self.index, question, history, llm, cards=card_store.for_repo(self.root), stack=self.result.stack)
 
     def source(self, path: str) -> dict:

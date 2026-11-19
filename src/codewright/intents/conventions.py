@@ -364,6 +364,8 @@ def detect_repeated_constraints(graph: CodeGraph) -> list[IntentMatch]:
         if b"Field" not in pf.source or is_test_file(pf.path):
             continue
         models = _pydantic_models(pf)
+        if not models:  # no pydantic model here: skip parsing the file's tree (Django's CharField says Field)
+            continue
         for cls in nodes(pf, "class_definition"):
             if cls.type != "class_definition" or text(cls.child_by_field_name("name")) not in models:
                 continue

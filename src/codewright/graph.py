@@ -31,6 +31,13 @@ PY = Language(tree_sitter_python.language())
 _TEST_CLIENT = re.compile(rb"\bTestClient\(|\bCliRunner\(|\.test_client\(|ASGITransport\(|WSGITransport\(")
 _PARSER = Parser(PY)
 
+
+def _uses_test_client(source: bytes) -> bool:
+    # A plain substring test first: the regex alone is slow over thousands of test files.
+    hints = (b"Client(", b".test_client(", b"CliRunner(", b"Transport(")
+    return any(h in source for h in hints) and bool(_TEST_CLIENT.search(source))
+
+
 ROUTE_DECORATOR_SUFFIXES = (
     ".get",
     ".post",
@@ -58,7 +65,8 @@ TREE_FACTOR = 24
 TREE_BUDGET = int(os.environ.get("CODEWRIGHT_TREE_MB", "600")) * 2**20
 _TREES: OrderedDict[int, tuple[weakref.ref, int]] = OrderedDict()
 _TREE_BYTES = [0]
-_TREE_LOCK = threading.Lock()
+# Reentrant: a file's weakref callback (_forget) can run from garbage collection while _remember holds it.
+_TREE_LOCK = threading.RLock()
 
 
 def _forget(key: int) -> None:
@@ -157,6 +165,9 @@ def is_test_file(path: str) -> bool:
     )
 
 
+_QUOTED = re.compile(rb'(?="([^"\n]*)")')  # every "..." on one line, overlapping: `"a"b"` holds "a" and "b"
+
+
 def _quoted_stem(path: str) -> bytes:
     stem = path.rsplit("/", 1)[-1].removesuffix(".py")
     return f'"{stem}"'.encode() if stem != "__init__" else b"\0"
@@ -197,7 +208,12 @@ class CodeGraph:
                 yield pf, fn
 
     def hot_functions(self) -> set[str]:
-        """Every function reachable from an entry point."""
+        """Every function reachable from an entry point. Computed once per graph (it is not changed after build)."""
+        if "memo_hot" not in self.__dict__:
+            self.__dict__["memo_hot"] = self._hot_functions()
+        return set(self.__dict__["memo_hot"])
+
+    def _hot_functions(self) -> set[str]:
         seen: set[str] = set()
         stack = list(self.entry_points) + [c for e in self.app_entries.values() for c in e.calls]
         while stack:
@@ -209,7 +225,12 @@ class CodeGraph:
         return seen
 
     def test_reachable(self) -> set[str]:
-        """Every function some test function reaches through the call graph."""
+        """Every function some test function reaches through the call graph. Computed once per graph."""
+        if "memo_test_reachable" not in self.__dict__:
+            self.__dict__["memo_test_reachable"] = self._test_reachable()
+        return set(self.__dict__["memo_test_reachable"])
+
+    def _test_reachable(self) -> set[str]:
         starts = [self.key(fn) for pf, fn in self.functions() if is_test_file(pf.path)]
         starts += self._routes_reached_by_test_clients()
         seen: set[str] = set()
@@ -231,12 +252,19 @@ class CodeGraph:
         if self.resolver is None:
             return []
         reached: set[str] = set()
+        by_stem: dict[bytes, list[str]] | None = None
         for path, pf in self.files.items():
-            if not is_test_file(path) or not _TEST_CLIENT.search(pf.source):
+            if not is_test_file(path) or not _uses_test_client(pf.source):
                 continue
             todo = list(self.resolver.imported_files(pf))
             # Tests that load the app by file path (importlib's spec_from_file_location) name its stem.
-            todo += [f for f in self.files if _quoted_stem(f) in pf.source and not is_test_file(f)]
+            if by_stem is None:
+                by_stem = defaultdict(list)
+                for f in self.files:
+                    if not is_test_file(f):
+                        by_stem[_quoted_stem(f)].append(f)
+            quoted = {b'"' + q + b'"' for q in _QUOTED.findall(pf.source)}
+            todo += [f for stem, fs in by_stem.items() if stem in quoted for f in fs]
             while todo:
                 f = todo.pop()
                 if f in reached or f not in self.files:
@@ -266,10 +294,12 @@ def iter_python_files(root: Path):
 # Everything cached on a ParsedFile is derived from its own source, so reuse is safe.
 _PARSED: OrderedDict[str, ParsedFile] = OrderedDict()
 PARSE_CACHE_SIZE = 50_000
+DISK_CACHE_MIN = 100  # files to parse before the on-disk cache is worth loading
+_SAVED: dict[str, frozenset[str]] = {}  # root -> the files in the on-disk cache this process last wrote
 
 
-def parse_cached(path: Path, root: Path) -> ParsedFile:
-    source = path.read_bytes()
+def parse_cached(path: Path, root: Path, source: bytes | None = None) -> ParsedFile:
+    source = path.read_bytes() if source is None else source
     key = str(path.resolve())
     hit = _PARSED.get(key)
     rel = path.relative_to(root).as_posix()
@@ -559,9 +589,10 @@ def build(
     paths = list(iter_python_files(root))
     # Files unchanged since this process last parsed them are reused; the rest are parsed, in parallel when many.
     fresh: list[tuple[Path, bytes]] = []
+    sources: dict[Path, bytes] = {}
     for path in paths:
         try:
-            source = path.read_bytes()
+            source = sources[path] = path.read_bytes()
         except OSError:
             continue
         hit = _PARSED.get(str(path.resolve()))
@@ -569,7 +600,8 @@ def build(
             fresh.append((path, source))
     parsed: dict[str, ParsedFile] = {}
     # Files unchanged since the last run (in any process) come back from the on-disk cache without parsing.
-    disk = graphcache.load(root) if fresh else {}
+    # Loading it costs about as much as parsing a hundred files, so a rescan after a few edits just parses them.
+    disk = graphcache.load(root) if len(fresh) > DISK_CACHE_MIN else {}
     if disk:
         still = []
         for path, source in fresh:
@@ -583,7 +615,10 @@ def build(
             else:
                 still.append((path, source))
         fresh = still
-    changed = bool(fresh) or set(disk) != {p.relative_to(root).as_posix() for p in paths}
+    rels = frozenset(p.relative_to(root).as_posix() for p in paths)
+    if disk:
+        _SAVED[str(root)] = frozenset(disk)
+    changed = bool(fresh) or rels != (frozenset(disk) if disk else _SAVED.get(str(root)))
     if len(fresh) >= PARALLEL_MIN and _workers() > 1:
         try:
             parsed.update(_parse_in_workers(root, fresh, detect_cache, progress, len(paths) - len(fresh), len(paths)))
@@ -600,7 +635,7 @@ def build(
             _PARSED[str(path.resolve())] = pf
         else:
             try:
-                pf = parse_cached(path, root)
+                pf = parse_cached(path, root, sources.get(path))
             except (OSError, ValueError):
                 continue
         graph.files[pf.path] = pf
@@ -609,6 +644,7 @@ def build(
     while len(_PARSED) > PARSE_CACHE_SIZE:
         _PARSED.popitem(last=False)
     if changed and len(graph.files) >= PARALLEL_MIN:  # small repos parse in well under a second: not worth it
+        _SAVED[str(root)] = rels
         graphcache.save(
             root,
             {
@@ -617,18 +653,65 @@ def build(
             },
         )
 
-    resolver = graph.resolver = Resolver(graph)
-    for pf, fn in graph.functions():
-        caller = graph.key(fn)
-        for call in fn.calls:
-            for callee in resolver.callees(pf, fn, call):
-                if callee != caller:
-                    graph.edges[caller].add(callee)
-        if _is_entry_point(fn, pf.module):
-            graph.entry_points.add(caller)
-
+    _resolve_calls(graph)
     entries.detect(graph)
     return graph
+
+
+# The last resolution per repo: (signature of every file's names, resolver, {path: (file, shape, its edges)}).
+# Resolving calls is the slowest part of a rescan, and a call resolves the same way while the calling file is the
+# same and no file's names changed, so a rescan in the same process re-resolves only the files that were edited.
+_RESOLVED: dict[str, tuple[str, Resolver, dict[str, tuple[ParsedFile, bytes, dict[str, set[str]]]]]] = {}
+_RESOLVED_LOCK = threading.Lock()
+
+
+def _shape(pf: ParsedFile) -> bytes:
+    """Everything of a file that the resolver's tables read: its path, imports, classes and their bases, and
+    the names of its functions. A change to a function's body leaves it alone."""
+    h = hashlib.sha1(pf.path.encode())
+    h.update(repr(sorted(pf.module.imports.items())).encode())
+    h.update(repr(sorted((q, tuple(b)) for q, b in pf.classes.items())).encode())
+    h.update(repr(sorted(fn.qualname for fn in pf.module.functions)).encode())
+    return h.digest()
+
+
+def _resolve_calls(graph: CodeGraph) -> None:
+    """Fill `graph.resolver`, `graph.edges` and `graph.entry_points`."""
+    with _RESOLVED_LOCK:
+        prev = _RESOLVED.get(graph.root)
+    before = prev[2] if prev else {}
+    shapes: dict[str, bytes] = {}
+    for path, pf in graph.files.items():
+        old = before.get(path)
+        shapes[path] = old[1] if old is not None and old[0] is pf else _shape(pf)
+    sig = hashlib.sha1(b"".join(p.encode() + b"\0" + s for p, s in sorted(shapes.items()))).hexdigest()
+    if prev is not None and prev[0] == sig:  # no name, import or class changed anywhere: the tables are the same
+        resolver = prev[1]
+        resolver.g = graph
+    else:
+        resolver, before = Resolver(graph), {}
+    graph.resolver = resolver
+    files: dict[str, tuple[ParsedFile, bytes, dict[str, set[str]]]] = {}
+    for path, pf in graph.files.items():
+        old = before.get(path)
+        if old is not None and old[0] is pf:  # the very same parse: its calls resolve as before
+            out = old[2]
+        else:
+            out = {}
+            for fn in pf.module.functions:
+                caller = graph.key(fn)
+                for call in fn.calls:
+                    for callee in resolver.callees(pf, fn, call):
+                        if callee != caller:
+                            out.setdefault(caller, set()).add(callee)
+        files[path] = (pf, shapes[path], out)
+        for caller, callees in out.items():
+            graph.edges[caller] |= callees
+        for fn in pf.module.functions:
+            if _is_entry_point(fn, pf.module):
+                graph.entry_points.add(graph.key(fn))
+    with _RESOLVED_LOCK:
+        _RESOLVED[graph.root] = (sig, resolver, files)
 
 
 # --------------------------------------------------------------------------- call resolution
