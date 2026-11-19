@@ -49,8 +49,11 @@ def normalise(data: dict) -> dict:
     library = str(data.get("library") or "").strip() or None
     from . import intents
 
+    rule = _rule(data.get("rule"))
     intent = str(data.get("intent") or card_store.REFERENCE).strip()
-    if intent != card_store.REFERENCE and intent not in intents.detectors.all_intents():
+    if rule:
+        intent = "team"  # set to team:<id> below, once the id is known
+    elif intent != card_store.REFERENCE and intent not in intents.detectors.all_intents():
         raise ValueError(f"unknown intent {intent!r}: leave it empty for a knowledge card")
     sources = data.get("sources") or []
     if isinstance(sources, str):
@@ -73,12 +76,50 @@ def normalise(data: dict) -> dict:
         "threshold": str(data.get("threshold") or "").strip(),
         "sources": [str(s) for s in sources][:10],
     }
+    if rule:  # a check: its findings need what every finding shows, so fill what the team left out
+        from .teamrules import intent_of
+
+        out["intent"] = intent_of(out["id"])
+        out["kind"] = "practice"
+        out["rule"] = rule
+        out["symbol"] = out["symbol"] or ", ".join(rule["calls"])
+        out["gain"] = out["gain"] or "Follows a convention this team agreed on."
+        out["risk"] = out["risk"] or "Low: the team rule says how to write it instead."
+        out["when_not"] = out["when_not"] or "Where the team has agreed an exception; mute the rule for that path."
+        out["threshold"] = out["threshold"] or "Always, by team agreement."
+        out["sources"] = out["sources"] or [f"Team convention: .codewright/cards/{out['id']}.yaml"]
     if str(data.get("snippet") or "").strip():
         out["snippet"] = str(data["snippet"]).rstrip() + "\n"
         out["snippet_lang"] = str(data.get("snippet_lang") or "python")
     if not re.fullmatch(r"[\w.\-]+", out["id"]):
         raise ValueError("a card id may use letters, digits, '.', '-' and '_' only")
     Card(**out)  # every field the loader expects
+    return out
+
+
+def _rule(raw) -> dict:
+    """A clean rule from the form or YAML ({} when there is none)."""
+    if not isinstance(raw, dict):
+        return {}
+    calls = raw.get("calls") or []
+    if isinstance(calls, str):
+        calls = re.split(r"[\s,]+", calls)
+    calls = [c.strip() for c in calls if c and re.fullmatch(r"[A-Za-z_][\w.]*", c.strip())]
+    if not calls:
+        return {}
+    out: dict = {"calls": calls[:20]}
+    if str(raw.get("missing_kwarg") or "").strip():
+        kw = str(raw["missing_kwarg"]).strip()
+        if not re.fullmatch(r"[A-Za-z_]\w*", kw):
+            raise ValueError("the keyword argument must be a Python name")
+        out["missing_kwarg"] = kw
+    if raw.get("in_async"):
+        out["in_async"] = True
+    paths = raw.get("paths") or []
+    if isinstance(paths, str):
+        paths = [p for p in re.split(r"[\n,]+", paths) if p.strip()]
+    if paths:
+        out["paths"] = [p.strip() for p in paths][:20]
     return out
 
 
@@ -143,9 +184,13 @@ def draft(
         )
     if notes.strip():
         parts.append("Notes and documentation excerpts:\n" + notes.strip()[:16000])
-    reply = complete(cfg, DRAFT_SYSTEM, [{"role": "user", "content": "\n\n".join(parts)}], max_tokens=1400)
+    reply = complete(
+        cfg, DRAFT_SYSTEM, [{"role": "user", "content": "\n\n".join(parts)}], max_tokens=1400, purpose="draft a card"
+    )
     if reply is None:
-        raise RuntimeError("the model did not answer; check the model in Settings")
+        from .llm import last_error
+
+        raise RuntimeError(last_error() or "the model did not answer; check the model in Settings")
     m = re.search(r"\{.*\}", reply, re.S)
     try:
         data = json.loads(m.group(0)) if m else {}

@@ -6,7 +6,7 @@ export interface AiCheck {
   verdict: "confirmed" | "needs-changes" | "wrong"; confidence: number; reason: string; risks: string[]; test: string;
   model: string; at: number;
 }
-export interface Insight {
+export interface ArchInsight {
   id: string; severity: "high" | "medium" | "low"; title: string; why: string; fix: string; file: string; line: number;
   evidence: string; nodes: string[]; source: "rule" | "ai";
 }
@@ -170,7 +170,7 @@ export interface MapNode {
   findings: number; hotspot: number; untested: number; detail: string; arch?: number;
   instruction?: string; model?: string;
 }
-export interface MapEdge { source: string; target: string; label: string; weight: number }
+export interface MapEdge { source: string; target: string; label: string; weight: number; manual?: boolean }
 export interface MapView { level: string; title: string; nodes: MapNode[]; edges: MapEdge[]; mermaid: string }
 export interface EntryPoint {
   id: string; name: string; file: string; line: number; trigger: string;
@@ -213,6 +213,17 @@ export interface Release {
   unlocks: { card: string; title: string; topic?: string; reference?: boolean }[];
   preview?: { new: PreviewItem[]; resolved: PreviewItem[] } | null;
 }
+export interface AiUsage { date: string; calls: number; input_tokens: number; output_tokens: number; daily_calls: number }
+export interface AiBatch { running: boolean; total: number; done: number; verdicts: Record<string, number>; error: string | null }
+export interface AgentFixes {
+  agents: { name: string; model?: string; file?: string; line?: number; kind?: string }[];
+  links: { from: string; to: string; label: string }[];
+  hide: string[]; labels: string[];
+}
+export interface ScanScope {
+  include: string[]; exclude: string[]; total: number; kept: number;
+  folders: { path: string; files: number; kept: number; depth: number }[];
+}
 export interface ReleaseProgress { running: boolean; total: number; done: number; rows: Release[]; error: string | null }
 export interface PreviewItem { card: string; title: string; file: string; line: number; autofix: boolean }
 
@@ -222,6 +233,7 @@ export interface Card {
   versions: string; suggestion: string; gain: string; effort: number; impact: number; risk: string;
   when_not: string; threshold: string; sources: string[]; snippet: string; snippet_lang: string; autofix: boolean;
   topic: string; reference: boolean; extra: string; fit: { status: FitStatus; detail: string }; origin?: "built-in" | "repo";
+  rule?: { calls?: string[]; missing_kwarg?: string; in_async?: boolean; paths?: string[] };
 }
 
 export type ProviderId = "anthropic" | "openai" | "gemini" | "litellm";
@@ -271,7 +283,8 @@ export interface AiReport {
   runs: { file: string; function: string; line: number; agent: string; how: string }[];
   architecture: { nodes: MapNode[]; edges: MapEdge[] }; mermaid: string;
   errors?: { file: string; step: string; error: string; at: string }[];
-  insights?: Insight[];
+  insights?: ArchInsight[];
+  costs?: { entry: string; node: string; file: string; line: number; calls: number; by_model: Record<string, number>; at_least: boolean; notes: string[] }[];
   summary: { files: number; need_model: number; agents: number; workflows: number; tools: number; model_calls: number;
     models: string[]; frameworks: string[] };
 }
@@ -355,7 +368,11 @@ export const api = {
     req<MapView>("GET", `${w(id)}/map/${level}?target=${q(target)}${unused ? "&unused=true" : ""}`),
   ai: (id: string) => req<AiReport>("GET", `${w(id)}/ai`),
   aiCheck: (id: string, fid: string) => req<AiCheck>("POST", `${w(id)}/findings/${fid}/ai-check`),
-  aiReview: (id: string) => req<{ insights: Insight[]; model?: string; error?: string }>("POST", `${w(id)}/ai/review`),
+  aiUsage: () => req<AiUsage>("GET", "/api/settings/ai/usage"),
+  setAiBudget: (daily_calls: number) => req<AiUsage>("PUT", "/api/settings/ai/budget", { daily_calls }),
+  aiCheckBatch: (id: string, limit: number) => req<AiBatch>("POST", `${w(id)}/ai-check/batch`, { limit }),
+  aiCheckBatchProgress: (id: string) => req<AiBatch>("GET", `${w(id)}/ai-check/batch`),
+  aiReview: (id: string) => req<{ insights: ArchInsight[]; model?: string; error?: string }>("POST", `${w(id)}/ai/review`),
   aiNode: (id: string, node: string) => req<NodeDetails>("GET", `${w(id)}/ai/node?id=${q(node)}`),
   mapNode: (id: string, node: string, level: string, target = "", unused = false) =>
     req<NodeDetails>("GET", `${w(id)}/inspect?id=${q(node)}&level=${level}&target=${q(target)}${unused ? "&unused=true" : ""}`),
@@ -383,6 +400,10 @@ export const api = {
     req<{ applied: boolean; files: string[]; status: MigrationPlan }>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/apply`),
   critique: (id: string, text: string) => req<PlanReview>("POST", `${w(id)}/critique`, { text }),
   insights: (id: string) => req<Insight[]>("GET", `${w(id)}/insights`),
+  agentFixes: (id: string) => req<AgentFixes>("GET", `${w(id)}/ai/fixes`),
+  saveAgentFixes: (id: string, fixes: Omit<AgentFixes, "labels">) => req<AgentFixes>("PUT", `${w(id)}/ai/fixes`, { fixes }),
+  scanScope: (id: string) => req<ScanScope>("GET", `${w(id)}/scan`),
+  saveScanScope: (id: string, include: string[], exclude: string[]) => req<ScanScope>("PUT", `${w(id)}/scan`, { include, exclude }),
   teachCard: (id: string, card: Record<string, unknown>) => req<Card>("POST", `${w(id)}/cards`, { card }),
   forgetCard: (id: string, cardId: string) => req<{ deleted: string }>("DELETE", `${w(id)}/cards/${encodeURIComponent(cardId)}`),
   draftCard: (id: string, body: { topic: string; library: string; notes: string; deepen: string }) =>

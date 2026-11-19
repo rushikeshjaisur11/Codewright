@@ -359,9 +359,13 @@ def deep_review(m, insights: list[dict], cfg, max_chars: int = 24000) -> dict:
         + "\n\nAlready found:\n"
         + known
     )
-    reply = complete(cfg, DEEP_SYSTEM, [{"role": "user", "content": ask}], max_tokens=2500)
+    reply = complete(
+        cfg, DEEP_SYSTEM, [{"role": "user", "content": ask}], max_tokens=2500, purpose="architecture review"
+    )
     if reply is None:
-        return {"insights": [], "error": "the model did not answer"}
+        from .llm import last_error
+
+        return {"insights": [], "error": last_error() or "the model did not answer"}
     m_ = re.search(r"\[.*\]", reply, re.S)
     try:
         items = json.loads(m_.group(0)) if m_ else []

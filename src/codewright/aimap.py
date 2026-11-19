@@ -546,6 +546,17 @@ class AiMap:
         # Syntax nodes held past the build would keep every scanned file's tree alive for as long as the page.
         self._pending, self._factory_calls, self._list_vars, self._registry_nodes = [], [], {}, {}
 
+    def _costs(self, arch: dict) -> list[dict]:
+        from .agentcost import estimate
+
+        try:
+            return estimate(self, arch)
+        except Exception as exc:  # an estimate: never take the page down with it
+            self.errors.append(
+                {"file": "", "step": "estimating model calls", "error": f"{type(exc).__name__}: {exc}", "at": ""}
+            )
+            return []
+
     def _insights(self) -> list[dict]:
         from .agentreview import review
 
@@ -1581,7 +1592,9 @@ class AiMap:
             if target:
                 nid = node(f"lg:{name}", f"langgraph dev · {name}", "entry", path, 1, "listed in langgraph.json")["id"]
                 edge(nid, target, "runs")
-        return {"nodes": list(nodes.values()), "edges": edges}
+        from . import agentfix  # what the team added in .codewright/agents.yaml: run-time wiring the code can't show
+
+        return agentfix.apply({"nodes": list(nodes.values()), "edges": edges}, agentfix.load(self.g.root))
 
     def _app_reach(self, depth: int = 12) -> dict[str, list[str]]:
         """Function key -> the app entry files whose start-up reaches it through the call graph."""
@@ -1646,6 +1659,7 @@ class AiMap:
             "runs": [asdict(r) for r in self.runs],
             "architecture": arch,
             "insights": self._insights(),
+            "costs": self._costs(arch),
             "errors": self.errors,
             "summary": {
                 "files": len(files),

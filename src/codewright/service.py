@@ -105,6 +105,7 @@ class Workspace:
     saved_revision: int = -1  # revision of `result` last written to .codewright/last-review.json
     _saved: dict | None = None
     early: Snapshot | None = None  # the graph of the review in progress, before findings exist
+    _ai_batch: dict | None = None  # progress of the running (or last) batch of AI checks
     _releases: dict | None = None  # progress and rows of the running (or last) release check
     _cache_lock: threading.RLock = field(default_factory=threading.RLock)
     _aimap_graph: tuple | None = None  # (graph, AiMap) of the last scan, reused when only findings changed
@@ -227,36 +228,87 @@ class Workspace:
 
     # --------------------------------------------------------------- live watch
     def start_watch(self, interval: float = 1.0) -> None:
-        """Re-review in the background whenever a Python file is saved, added or removed (proof off)."""
+        """Re-review in the background whenever a Python file in the scan scope is saved, added or removed
+        (proof off). Uses the operating system's file events (watchfiles), so an idle repo costs nothing;
+        without them it polls, less often the longer a scan of the repo takes."""
         if self.watching:
             return
         stop = threading.Event()
         self._watch_stop, self.watching = stop, True
 
-        def loop() -> None:
+        def rereview(changed: list[str]) -> None:
+            before = {f.id: f for f in self.result.findings} if self.result else {}
+            note(
+                self.name,
+                f"Live: {len(changed)} file(s) changed ({', '.join(changed[:3])}{'…' if len(changed) > 3 else ''})",
+            )
+            try:
+                result = self.run_review(proof=False)
+            except Exception:
+                return  # recorded on self.error; keep watching
+            _, new, gone = diff_findings(before, result.findings)
+            self.last_change = {
+                "at": time.time(),
+                "files": changed[:20],
+                "new": [{"id": f.id, "title": f.title, "file": f.file, "line": f.line} for f in new],
+                "resolved": [{"id": f.id, "title": f.title, "file": f.file, "line": f.line} for f in gone],
+            }
+
+        def events() -> None:
+            import watchfiles
+
+            from . import scanscope
+            from .stack import SKIP_DIRS
+
+            def wanted(_change, path: str) -> bool:
+                p = Path(path)
+                if p.suffix != ".py":
+                    return False
+                try:
+                    rel = p.resolve().relative_to(self.root)
+                except ValueError:
+                    return False
+                if any(part in SKIP_DIRS or part.startswith(".") for part in rel.parts[:-1]):
+                    return False
+                return scanscope.included(rel.as_posix(), scanscope.load(self.root))
+
+            note(self.name, "Live: watching for saved files (file system events)")
+            for batch in watchfiles.watch(self.root, watch_filter=wanted, stop_event=stop, debounce=600, step=100):
+                while self.running and not stop.is_set():  # finish the review in flight, then take these
+                    stop.wait(0.2)
+                if stop.is_set():
+                    return
+                changed = sorted({Path(p).resolve().relative_to(self.root).as_posix() for _, p in batch})
+                rereview(changed)
+
+        def poll() -> None:
+            t0 = time.perf_counter()
             snap = snapshot(self.root)
-            while not stop.wait(interval):
-                current = snapshot(self.root)
-                if current == snap or self.running:
+            cost = time.perf_counter() - t0
+            wait = max(interval, min(30.0, cost * 20))  # a scan never takes more than ~5% of the time
+            note(self.name, f"Live: checking for saved files every {wait:.0f}s (no file events available)")
+            while not stop.wait(wait):
+                if self.running:
                     continue
-                before = {f.id: f for f in self.result.findings} if self.result else {}
+                current = snapshot(self.root)
+                if current == snap:
+                    continue
                 changed = sorted(
                     Path(p).relative_to(self.root).as_posix()
                     for p in (current.keys() ^ snap.keys())
                     | {p for p in current if snap.get(p) not in (None, current[p])}
                 )
                 snap = current
-                try:
-                    result = self.run_review(proof=False)
-                except Exception:
-                    continue  # recorded on self.error; keep watching
-                _, new, gone = diff_findings(before, result.findings)
-                self.last_change = {
-                    "at": time.time(),
-                    "files": changed[:20],
-                    "new": [{"id": f.id, "title": f.title, "file": f.file, "line": f.line} for f in new],
-                    "resolved": [{"id": f.id, "title": f.title, "file": f.file, "line": f.line} for f in gone],
-                }
+                rereview(changed)
+
+        def loop() -> None:
+            try:
+                events()
+            except Exception as exc:  # watchfiles missing, or no inotify/FSEvents here: poll instead
+                if stop.is_set():
+                    return
+                note(self.name, f"Live: file events unavailable ({type(exc).__name__}); polling instead", "warn")
+                poll()
 
         threading.Thread(target=loop, daemon=True, name=f"codewright-watch-{self.root.name}").start()
 
@@ -343,6 +395,76 @@ class Workspace:
             return out
 
         return self._cached("ai", build)
+
+    # --------------------------------------------------------------- AI checks
+    def rerank(self) -> None:
+        """Order the findings again with the latest feedback and AI verdicts, without re-reading the code."""
+        from . import aicheck
+        from .rank import rank
+
+        r = self.result
+        if r is None:
+            return
+        fb = Feedback.load(self.root)
+        ai = aicheck.weights(self.root, r.findings)
+        r.findings = rank(r.findings, None, {f.id: fb.weight_for(f) * ai.get(f.id, 1.0) for f in r.findings})
+        self.revision += 1
+
+    def ai_check(self, fid: str) -> dict:
+        from . import aicheck
+
+        f = self.finding(fid)
+        if f is None:
+            raise KeyError(fid)
+        note(self.name, f"Asking the model to check: {f.title} ({f.file}:{f.line})")
+        out = aicheck.check(self.root, f)
+        note(self.name, f"AI check: {out['verdict']} ({round(out['confidence'] * 100)}%) for {f.title}")
+        self.rerank()
+        return out
+
+    def ai_check_batch(self, limit: int = 10) -> dict:
+        """Check the highest-ranked unverified findings that have no current verdict, in the background."""
+        from . import aicheck
+
+        cur = self._ai_batch
+        if cur and cur["running"]:
+            return self.ai_batch_progress()
+        r = self.ensure()
+        store = aicheck.load(self.root)
+        todo = [
+            f
+            for f in r.findings
+            if f.proof.value != "verified" and (store.get(f.id) or {}).get("key") != aicheck.key(f)
+        ][: max(1, min(50, limit))]
+        state = {"running": True, "total": len(todo), "done": 0, "verdicts": {}, "error": None}
+        self._ai_batch = state
+
+        def run() -> None:
+            note(self.name, f"AI check: {len(todo)} unverified finding(s), best first")
+            try:
+                for f in todo:
+                    out = aicheck.check(self.root, f)
+                    state["verdicts"][out["verdict"]] = state["verdicts"].get(out["verdict"], 0) + 1
+                    state["done"] += 1
+                    note(self.name, f"  {state['done']}/{len(todo)} {out['verdict']}: {f.title} ({f.file}:{f.line})")
+            except RuntimeError as exc:  # no model, the budget is spent, or it stopped answering
+                state["error"] = str(exc)
+                note(self.name, f"AI check stopped: {exc}", "warn")
+            finally:
+                state["running"] = False
+                self.rerank()
+
+        threading.Thread(target=run, daemon=True, name=f"codewright-aicheck-{self.root.name}").start()
+        return self.ai_batch_progress()
+
+    def ai_batch_progress(self) -> dict:
+        s = self._ai_batch or {"running": False, "total": 0, "done": 0, "verdicts": {}, "error": None}
+        return {k: s[k] for k in ("running", "total", "done", "verdicts", "error")}
+
+    def forget_ai(self) -> None:
+        """Rebuild the AI page next time (its corrections file changed); the scan itself is kept."""
+        with self._cache_lock:
+            self._cache.pop("ai", None)
 
     # --------------------------------------------------------------- which files to verify
     def plan(self, use_ai: bool = True) -> dict:

@@ -59,6 +59,25 @@ def attach(root: str | Path, findings: list[dict]) -> None:
             f["ai_check"] = hit
 
 
+def factor(check: dict | None) -> float:
+    """How much an AI verdict moves a finding in the ranking: up when confirmed, down when wrong."""
+    if not check:
+        return 1.0
+    c = float(check.get("confidence", 0.5))
+    return {"confirmed": 1 + 0.3 * c, "needs-changes": 1 - 0.15 * c, "wrong": 1 - 0.6 * c}.get(check["verdict"], 1.0)
+
+
+def weights(root: str | Path, findings: list[Finding]) -> dict[str, float]:
+    """finding id -> ranking multiplier, for findings whose code and patch are what was checked."""
+    store = load(root)
+    out = {}
+    for f in findings:
+        hit = store.get(f.id)
+        if hit and hit.get("key") == key(f):
+            out[f.id] = factor(hit)
+    return out
+
+
 def check(root: str | Path, f: Finding, cfg: LLMConfig | None = None) -> dict:
     cfg = cfg or LLMConfig.load(root)
     st = llm_status(cfg)
@@ -80,9 +99,13 @@ def check(root: str | Path, f: Finding, cfg: LLMConfig | None = None) -> dict:
         parts.append("Patch:\n```diff\n" + f.patch[:12000] + "\n```")
     elif f.snippet:
         parts.append(f"Suggested shape:\n```{f.snippet_lang}\n" + f.snippet[:4000] + "\n```")
-    reply = complete(cfg, SYSTEM, [{"role": "user", "content": "\n\n".join(parts)}], max_tokens=900)
+    reply = complete(
+        cfg, SYSTEM, [{"role": "user", "content": "\n\n".join(parts)}], max_tokens=900, purpose="check a finding"
+    )
     if reply is None:
-        raise RuntimeError("the model did not answer; check the model in Settings")
+        from .llm import last_error
+
+        raise RuntimeError(last_error() or "the model did not answer; check the model in Settings")
     m = re.search(r"\{.*\}", reply, re.S)
     try:
         data = json.loads(m.group(0)) if m else {}

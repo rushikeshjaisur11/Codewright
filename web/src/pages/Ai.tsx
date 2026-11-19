@@ -6,6 +6,7 @@ import Graph, { KIND_ICON } from "../Graph";
 import { CopyButton, Empty, KIND_STYLE, Spinner, Stat, Tabs, useToast } from "../ui";
 import Inspector from "../Inspector";
 import ArchitectureReview from "../ArchitectureReview";
+import AgentFixes from "../AgentFixes";
 
 const kindName = (k: string) => (k === "entry" ? "Runs agents" : k === "llm" ? "Model" : KIND_STYLE[k]?.label ?? k);
 
@@ -36,13 +37,14 @@ export default function AiPage() {
   const [root, setRoot] = useState("");
   // The map needs only the parsed code: draw it as soon as that is ready, and refresh when findings arrive.
   const has = !!data?.result || !!data?.graph_ready;
+  const [bump, setBump] = useState(0); // re-read the page after a correction is saved
   const done = !!data?.has_result; // true once this session's review (not the saved one) has landed
 
   useEffect(() => {
     if (!wid || !has) return;
     setLoading(true);
     api.ai(wid).then(setRep).catch((e) => toast(e.message, "error")).finally(() => setLoading(false));
-  }, [wid, has, done, data?.revision, toast]);
+  }, [wid, has, done, data?.revision, toast, bump]);
 
   const byId = useMemo(() => new Map((rep?.architecture.nodes ?? []).map((n) => [n.id, n])), [rep]);
   const node = sel ? byId.get(sel) ?? null : null;
@@ -137,6 +139,24 @@ export default function AiPage() {
         <Stat label="Tools" icon={<Wrench size={14} />} value={s.tools} sub="functions and toolsets agents can call" />
         <Stat label="Direct model calls" icon={<Cpu size={14} />} value={s.model_calls} sub={s.models.length ? `${s.models.length} model${s.models.length > 1 ? "s" : ""}: ${s.models.slice(0, 2).join(", ")}${s.models.length > 2 ? "…" : ""}` : "no literal model names"} />
       </div>
+
+      {!!rep.costs?.length && (
+        <div className="card">
+          <div className="card-head"><h2><Cpu size={16} />Model calls per request</h2>
+            <div className="right faint" style={{ fontSize: 12.5 }}>counted from the architecture: fan-outs run every worker, loops multiply by their round limit</div>
+          </div>
+          <table className="table"><tbody>
+            {rep.costs.map((c) => (
+              <tr key={c.node} className="click" onClick={() => { pick(c.node); document.querySelector(".ai-arch")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>
+                <td className="mono" style={{ whiteSpace: "nowrap" }}>{c.entry}</td>
+                <td style={{ whiteSpace: "nowrap" }}><b>{c.at_least ? "at least " : ""}{c.calls}</b> model call{c.calls === 1 ? "" : "s"}</td>
+                <td>{Object.entries(c.by_model).map(([m, n]) => <span key={m} className="badge outline" style={{ marginRight: 4 }}>{m} × {n}</span>)}</td>
+                <td className="faint" style={{ fontSize: 12.5 }}>{c.notes.join("; ")}</td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+      )}
 
       {!!rep.insights?.length && (
         <ArchitectureReview insights={rep.insights} onFocus={(id) => {
@@ -237,6 +257,7 @@ export default function AiPage() {
               )}
             </aside>
           </div>
+          <AgentFixes nodes={rep.architecture.nodes} onSaved={() => setBump((b) => b + 1)} />
         </div>
       )}
       <div className="card">

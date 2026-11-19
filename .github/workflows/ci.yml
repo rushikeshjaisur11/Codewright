@@ -56,3 +56,22 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  ui:
+    name: UI smoke test (Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          activate-environment: true
+      - run: uv pip install -e .
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright and Chromium
+        working-directory: web
+        run: npm install --no-save playwright@1.63.0 && npx playwright install --with-deps chromium
+      - name: Drive the app in a browser
+        run: node web/tests/smoke.mjs

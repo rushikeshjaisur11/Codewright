@@ -99,3 +99,54 @@ def test_fan_out_from_a_file_without_an_sdk_import(tmp_path):
     m = aimap.AiMap(graph.build(tmp_path))
     runs = {(r.function, m.agents[r.agent].name, r.parallel, r.via) for r in m.runs}
     assert ("ask_all", "a", True, "WORKERS") in runs and ("ask_all", "b", True, "WORKERS") in runs
+
+
+# ---------------------------------------------------------------- what a request costs, corrections
+
+
+def test_model_calls_per_request():
+    d, _ = _arch("complex_agents")
+    (chat,) = d["costs"]
+    # 3 rounds (rounds < 3) x (orchestrator 1 + fan-out to 2 workers + writer 1)
+    assert chat["entry"] == "POST /chat" and chat["calls"] == 12
+    assert chat["by_model"] == {"gpt-4o-mini": 6, "gpt-4o": 6}
+    assert chat["at_least"] and "tool round" in chat["notes"][0]
+    d, _ = _arch("complex_agents_adk")
+    (ask,) = d["costs"]
+    # the custom orchestrator makes no call itself; its specialists run once each, then the summarizer
+    assert ask["calls"] == 4 and ask["by_model"] == {"gemini-2.5-flash": 3, "gemini-2.5-pro": 1}
+
+
+def test_corrections_add_links_agents_and_hide_boxes(tmp_path):
+    import shutil
+
+    from fastapi.testclient import TestClient
+
+    from codewright.server import create_app
+
+    repo = tmp_path / "r"
+    shutil.copytree(FIX / "complex_agents_adk", repo)
+    c = TestClient(create_app([str(repo)]), base_url="http://localhost")
+    wid = c.get("/api/workspaces").json()[0]["id"]
+    c.post(f"/api/w/{wid}/review", json={"proof": False})
+    for _ in range(200):
+        if c.get(f"/api/w/{wid}/review").json()["has_result"]:
+            break
+    before = c.get(f"/api/w/{wid}/ai").json()
+    fixes = {
+        "agents": [{"name": "pricing", "model": "gpt-4o"}],
+        "links": [{"from": "desk", "to": "pricing", "label": "calls over HTTP"}],
+        "hide": ["summarizer"],
+    }
+    saved = c.put(f"/api/w/{wid}/ai/fixes", json={"fixes": fixes}).json()
+    assert saved["links"] == fixes["links"] and "calls over HTTP" in saved["labels"]
+    assert (repo / ".codewright" / "agents.yaml").is_file()
+    after = c.get(f"/api/w/{wid}/ai").json()  # the page is rebuilt with the corrections
+    label = {n["id"]: n["label"] for n in after["architecture"]["nodes"]}
+    added = {
+        (label[e["source"]], e["label"], label[e["target"]]) for e in after["architecture"]["edges"] if e.get("manual")
+    }
+    assert ("desk", "calls over HTTP", "pricing") in added and ("pricing", "model", "gpt-4o") in added
+    assert "summarizer" not in label.values() and "summarizer" in {n["label"] for n in before["architecture"]["nodes"]}
+    # the request now also reaches pricing over HTTP
+    assert after["costs"][0]["by_model"].get("gpt-4o") == 1

@@ -26,7 +26,6 @@ from tree_sitter import Language, Node, Parser, Query, QueryCursor
 
 from . import graphcache
 from .models import Function, Module
-from .stack import SKIP_DIRS
 
 PY = Language(tree_sitter_python.language())
 _TEST_CLIENT = re.compile(rb"\bTestClient\(|\bCliRunner\(|\.test_client\(|ASGITransport\(|WSGITransport\(")
@@ -251,9 +250,13 @@ class CodeGraph:
 
 
 def iter_python_files(root: Path):
-    for path in sorted(root.rglob("*.py")):
-        rel = path.relative_to(root)
-        if any(part in SKIP_DIRS or part.startswith(".") for part in rel.parts[:-1]):
+    """The Python files a review reads: outside tool folders, and inside the repo's scan scope (scanscope)."""
+    from . import scanscope
+
+    root = Path(root)
+    scope = scanscope.load(root)
+    for path in scanscope.all_python_files(root):
+        if (scope["include"] or scope["exclude"]) and not scanscope.included(path.relative_to(root).as_posix(), scope):
             continue
         yield path
 

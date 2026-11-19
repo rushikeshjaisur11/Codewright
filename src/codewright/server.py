@@ -282,21 +282,25 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     @app.post("/api/w/{wid}/findings/{fid}/ai-check")
     def ai_check(wid: str, fid: str):
         """Ask the configured model whether this finding is right for this code (what tests could not prove)."""
-        from . import aicheck
         from .activity import note
 
         w = ws(wid)
-        f = w.finding(fid)
-        if f is None:
-            raise HTTPException(404, "unknown finding")
-        note(w.name, f"Asking the model to check: {f.title} ({f.file}:{f.line})")
         try:
-            out = aicheck.check(w.root, f)
+            return w.ai_check(fid)
+        except KeyError:
+            raise HTTPException(404, "unknown finding") from None
         except RuntimeError as e:
             note(w.name, f"AI check failed: {e}", "error")
             raise HTTPException(409, str(e)) from None
-        note(w.name, f"AI check: {out['verdict']} ({round(out['confidence'] * 100)}%) for {f.title}")
-        return out
+
+    @app.post("/api/w/{wid}/ai-check/batch")
+    def ai_check_batch(wid: str, limit: Annotated[int, Body(embed=True)] = 10):
+        """Have the model check the top `limit` unverified findings (at most 50), in the background."""
+        return ws(wid).ai_check_batch(limit)
+
+    @app.get("/api/w/{wid}/ai-check/batch")
+    def ai_check_batch_progress(wid: str):
+        return ws(wid).ai_batch_progress()
 
     @app.post("/api/w/{wid}/findings/{fid}/apply")
     def apply_patch(wid: str, fid: str):
@@ -389,6 +393,30 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     def chat(wid: str, question: Annotated[str, Body(embed=True)], history: list[dict] = Body([], embed=True)):
         return ws(wid).ask(question, history)
 
+    # ------------------------------------------------------------------ scan scope
+    @app.get("/api/w/{wid}/scan")
+    def scan_scope(wid: str):
+        """Include/exclude patterns, and each folder's Python files with how many the patterns keep."""
+        from . import scanscope
+
+        return scanscope.summary(ws(wid).root)
+
+    @app.put("/api/w/{wid}/scan")
+    def scan_scope_save(
+        wid: str,
+        include: Annotated[list[str] | None, Body(embed=True)] = None,
+        exclude: Annotated[list[str] | None, Body(embed=True)] = None,
+    ):
+        """Save the patterns to .codewright/config.json (commit it to share). The next scan uses them."""
+        from . import scanscope
+        from .activity import note
+
+        w = ws(wid)
+        scanscope.save(w.root, include or [], exclude or [])
+        out = scanscope.summary(w.root)
+        note(w.name, f"Scan scope saved: {out['kept']} of {out['total']} Python files are reviewed")
+        return out
+
     # ------------------------------------------------------------------ knowledge: teach
     @app.post("/api/w/{wid}/cards")
     def teach_card(wid: str, card: Annotated[dict, Body(embed=True)]):
@@ -442,6 +470,24 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     @app.get("/api/w/{wid}/ai")
     def ai(wid: str):
         return ws(wid).ai()
+
+    @app.get("/api/w/{wid}/ai/fixes")
+    def ai_fixes(wid: str):
+        """The team's corrections to the agent architecture (.codewright/agents.yaml)."""
+        from . import agentfix
+
+        return {**agentfix.load(ws(wid).root), "labels": list(agentfix.LABELS)}
+
+    @app.put("/api/w/{wid}/ai/fixes")
+    def ai_fixes_save(wid: str, fixes: Annotated[dict, Body(embed=True)]):
+        from . import agentfix
+        from .activity import note
+
+        w = ws(wid)
+        out = agentfix.save(w.root, fixes)
+        w.forget_ai()
+        note(w.name, f"Agent architecture: {len(out['links'])} added link(s), {len(out['agents'])} added agent(s)")
+        return {**out, "labels": list(agentfix.LABELS)}
 
     @app.post("/api/w/{wid}/ai/review")
     def ai_review(wid: str):
@@ -635,6 +681,16 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         except OSError as exc:
             raise HTTPException(500, f"could not write {llm_mod.settings_path()}: {exc}") from None
         return llm_mod.public(_root_of(workspace))
+
+    @app.get("/api/settings/ai/usage")
+    def ai_usage():
+        """Model calls and tokens used today on this machine, and the daily call budget."""
+        return llm_mod.usage()
+
+    @app.put("/api/settings/ai/budget")
+    def ai_budget(daily_calls: Annotated[int, Body(embed=True)]):
+        """Most model calls a day on this machine (0: no limit)."""
+        return llm_mod.set_budget(daily_calls)
 
     @app.post("/api/settings/ai/test")
     def ai_settings_test(workspace: Annotated[str, Body(embed=True)] = ""):

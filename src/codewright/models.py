@@ -106,6 +106,7 @@ class Card:
     unless_installed: list[str] = field(default_factory=list)
     extra: str = ""  # with unless_installed: the `library[extra]` that would install them
     origin: str = "built-in"  # "repo" for cards a team added in .codewright/cards (set by the loader)
+    rule: dict[str, Any] = field(default_factory=dict)  # team cards: which calls to flag (see teamrules.py)
 
 
 # What kind of advice a finding is, for tags and filters. Order is the display order.

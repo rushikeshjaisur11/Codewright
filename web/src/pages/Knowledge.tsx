@@ -105,6 +105,7 @@ export default function Knowledge({ wid }: { wid: string | null }) {
                                 : <span className="badge outline" title={`Found by the ${intentLabel(c.intent)} detector`}><Radar size={11} />detector</span>}
                               {" "}{c.autofix && <span className="badge blue"><Wand2 size={11} />auto-patch</span>}
                               {" "}{c.origin === "repo" && <span className="badge teal" title="Added by your team in .codewright/cards/"><Users size={11} />your team</span>}
+                              {" "}{c.rule?.calls && <span className="badge blue" title={`Flags ${c.rule.calls.join(", ")}${c.rule.missing_kwarg ? ` without ${c.rule.missing_kwarg}=` : ""}`}><Radar size={11} />team check</span>}
                             </td>
                             <td className="mono muted">{c.versions}</td>
                             <td style={{ whiteSpace: "nowrap" }}>{wid && <span className={`badge ${FIT[c.fit.status].cls}`} title={c.fit.detail}>{FIT[c.fit.status].label}</span>}</td>

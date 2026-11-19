@@ -22,7 +22,7 @@ def model(monkeypatch):
     for mod in (aicheck, teach):
         monkeypatch.setattr(mod, "llm_status", llm.status, raising=False)
 
-    def complete(cfg, system, messages, max_tokens=1200):
+    def complete(cfg, system, messages, max_tokens=1200, **k):
         replies.append(messages[-1]["content"])
         return model.reply
 
@@ -144,3 +144,75 @@ def test_draft_and_deepen_with_the_model(repo, model):
     base = cards.load()[0]
     c.post(f"/api/w/{wid}/cards/draft", json={"deepen": base.id})
     assert "Go deeper than this existing card" in model.asked[-1] and base.title in model.asked[-1]
+
+
+# ---------------------------------------------------------------- verdicts rank, batches, the budget
+
+
+def test_a_wrong_verdict_moves_the_finding_down_and_can_be_batched(repo, model, monkeypatch):
+    c, wid, d = _client(repo)
+    top = d["result"]["findings"][0]
+    model.reply = (
+        '{"verdict": "wrong", "confidence": 1.0, "reason": "the API is not in this version", "risks": [], "test": ""}'
+    )
+    c.post(f"/api/w/{wid}/findings/{top['id']}/ai-check")
+    order = [f["id"] for f in c.get(f"/api/w/{wid}/review").json()["result"]["findings"]]
+    assert order.index(top["id"]) > 0  # ranked again at once, without a re-scan
+
+    model.reply = '{"verdict": "confirmed", "confidence": 0.9, "reason": "fine", "risks": [], "test": ""}'
+    p = c.post(f"/api/w/{wid}/ai-check/batch", json={"limit": 2}).json()
+    for _ in range(100):
+        if not p["running"]:
+            break
+        time.sleep(0.05)
+        p = c.get(f"/api/w/{wid}/ai-check/batch").json()
+    assert p["done"] == 2 and p["verdicts"] == {"confirmed": 2} and p["error"] is None
+    p = c.post(f"/api/w/{wid}/ai-check/batch", json={"limit": 50}).json()  # the checked ones are skipped
+    while p["running"]:
+        time.sleep(0.05)
+        p = c.get(f"/api/w/{wid}/ai-check/batch").json()
+    assert p["total"] == len([f for f in d["result"]["findings"] if f["proof"] != "verified"]) - 3
+
+
+def test_usage_is_counted_and_the_budget_stops_calls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        llm, "_generate", lambda *a: (calls.append(1) or "ok", {"usage": {"prompt_tokens": 50, "completion_tokens": 7}})
+    )
+    cfg = llm.LLMConfig(model="m", provider="openai", api_key="k")
+    llm.set_budget(2)
+    assert llm.complete(cfg, "s", [{"role": "user", "content": "hi"}], purpose="test") == "ok"
+    llm.complete(cfg, "s", [{"role": "user", "content": "hi"}])
+    u = llm.usage()
+    assert (u["calls"], u["input_tokens"], u["output_tokens"], u["daily_calls"]) == (2, 100, 14, 2)
+    assert llm.complete(cfg, "s", [{"role": "user", "content": "hi"}]) is None
+    assert "budget" in llm.last_error() and len(calls) == 2  # the third never reached the model
+    from codewright import activity
+
+    assert any("Model call (test)" in e["message"] for e in activity.since(0)["events"])
+
+
+def test_a_team_rule_card_becomes_findings(tmp_path):
+    from codewright.engine import review
+
+    (tmp_path / "svc.py").write_text(
+        "import requests\n\n\ndef a():\n    return requests.get('https://x')\n\n\n"
+        "def b():\n    return requests.get('https://x', timeout=5)\n\n\n"
+        "async def c():\n    return requests.post('https://y')\n"
+    )
+    card = teach.save(
+        tmp_path,
+        {
+            "title": "Always pass a timeout to requests",
+            "suggestion": "Pass timeout= to every requests call.",
+            "rule": {"calls": "requests.get, requests.post", "missing_kwarg": "timeout", "in_async": False},
+        },
+    )
+    assert card["intent"] == "team:" + card["id"] and card["kind"] == "practice" and card["sources"]
+    found = {f.function for f in review(tmp_path, run_proof=False, top=None).findings if f.intent == card["intent"]}
+    assert found == {"a", "c"}  # b passes a timeout
+    teach.save(tmp_path, {**card, "rule": {"calls": ["requests.post"], "in_async": True}})
+    found = {f.function for f in review(tmp_path, run_proof=False, top=None).findings if f.intent == card["intent"]}
+    assert found == {"c"}
+    with pytest.raises(ValueError):
+        teach.save(tmp_path, {**card, "rule": {"calls": ["x"], "missing_kwarg": "not a name"}})

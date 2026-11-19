@@ -80,9 +80,12 @@ def review(
         on_graph(g, st)
     tell("detect", 0, 0)
     matches = detect(g, cache=dcache, progress=lambda done, total: tell("detect", done, total))
+    all_cards = card_store.for_repo(root, extra_cards)
+    from . import teamrules
+
+    matches += teamrules.detect(g, all_cards)  # conventions the team taught as checkable rules
     if dcache is not None:
         detectcache.save(root, dcache)
-    all_cards = card_store.for_repo(root, extra_cards)
     findings = make_findings(matches, st, g, all_cards)
 
     arch = rules.summary(g, root)
@@ -159,7 +162,10 @@ def review(
                 state.save(kept, g, proved_files=proved_files)
         scope = state.summary(kept)
     tell("rank", 0, 0)
-    weights = {f.id: fb.weight_for(f) for f in kept}
+    from . import aicheck
+
+    ai = aicheck.weights(root, kept) if use_state else {}
+    weights = {f.id: fb.weight_for(f) * ai.get(f.id, 1.0) for f in kept}
     return ReviewResult(
         st,
         g,

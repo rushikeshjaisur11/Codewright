@@ -31,7 +31,7 @@ export interface GNode {
   untested?: number;
   arch?: number;
 }
-export interface GEdge { source: string; target: string; label?: string; weight?: number }
+export interface GEdge { source: string; target: string; label?: string; weight?: number; manual?: boolean }
 export type Overlay = { findings: boolean; hotspots: boolean; untested: boolean; arch?: boolean };
 type Dir = "LR" | "TB";
 type Pt = { x: number; y: number };
@@ -84,7 +84,7 @@ function CWNode({ data }: NodeProps<Node<CWData>>) {
 
 // ---------------------------------------------------------------- edges: ELK's orthogonal route with rounded corners
 
-type CWEdgeData = { points?: Pt[]; showLabel: boolean; active: boolean; dim: boolean; text?: string } & Record<string, unknown>;
+type CWEdgeData = { points?: Pt[]; showLabel: boolean; active: boolean; dim: boolean; text?: string; manual?: boolean } & Record<string, unknown>;
 
 function roundedPath(pts: Pt[], r = 8): string {
   if (pts.length < 2) return "";
@@ -117,6 +117,7 @@ function CWEdge({ sourceX, sourceY, targetX, targetY, data, markerEnd }: EdgePro
     <>
       <BaseEdge path={roundedPath(pts)} markerEnd={markerEnd}
         style={{ stroke: data?.active ? "var(--accent)" : "var(--edge)", strokeWidth: data?.active ? 1.8 : 1.25,
+          strokeDasharray: data?.manual ? "5 4" : undefined,  // added by the team in .codewright/agents.yaml
           opacity: data?.dim ? 0.15 : 1, transition: "opacity 150ms, stroke 150ms" }} />
       {data?.showLabel && data.text && (
         <EdgeLabelRenderer>
@@ -260,7 +261,7 @@ function Inner({ nodes, edges, selected, onSelect, onOpen, overlay = DEFAULT_OVE
     return {
       id: edgeKey(e, i), source: e.source, target: e.target, type: "cw",
       markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: active ? "var(--accent)" : "var(--edge)" },
-      data: { points: layout.routes[edgeKey(e, i)], active, dim: !!lit && !active, showLabel: active || (fewEdges && !lit), text: e.label },
+      data: { points: layout.routes[edgeKey(e, i)], active, dim: !!lit && !active, showLabel: active || (fewEdges && !lit), text: e.manual ? `${e.label} · added` : e.label, manual: !!e.manual },
     };
   }), [layout, edges, lit, fewEdges]);
 

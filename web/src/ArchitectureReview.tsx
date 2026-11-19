@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Bot, ShieldAlert } from "lucide-react";
 import { useApp } from "./App";
-import { api, Insight } from "./api";
+import { api, ArchInsight as Insight } from "./api";
 import { Inline, Spinner, useToast } from "./ui";
 
 const SEV: Record<Insight["severity"], string> = { high: "red", medium: "amber", low: "outline" };

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, FlaskConical, RefreshCw } from "lucide-react";
+import { Bot, FlaskConical, RefreshCw, ThumbsDown } from "lucide-react";
 import { useApp } from "./App";
 import { AiCheck, api, Finding } from "./api";
 import { Inline, Spinner, timeAgo, useToast } from "./ui";
@@ -81,6 +81,16 @@ export default function ProofActions({ f }: { f: Finding }) {
           <div style={{ whiteSpace: "pre-wrap" }}><Inline text={check.reason} /></div>
           {check.risks.length > 0 && <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>{check.risks.map((r, i) => <li key={i}><Inline text={r} /></li>)}</ul>}
           {check.test && <div style={{ marginTop: 6 }}><b>A test that would prove it:</b> <Inline text={check.test} /></div>}
+          {check.verdict !== "confirmed" && f.status !== "rejected" && (
+            <div style={{ marginTop: 8 }}>
+              <button className="btn sm" onClick={async () => {
+                if (!wid) return;
+                await api.feedback(wid, f.id, "rejected", `AI check: ${check.reason}`.slice(0, 300));
+                toast("Rejected with the AI's reason; similar findings now rank lower here");
+                reload();
+              }}><ThumbsDown size={13} />Reject with the AI's reason</button>
+            </div>
+          )}
         </div>
       )}
     </div>

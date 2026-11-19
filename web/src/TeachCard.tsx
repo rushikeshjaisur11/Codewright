@@ -33,6 +33,7 @@ export default function TeachCard({ wid, deepen, onClose, onSaved }: {
   const [notes, setNotes] = useState("");
   const [drafting, setDrafting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [rule, setRule] = useState({ on: false, calls: "", missing_kwarg: "", in_async: false, paths: "" });
 
   async function draft() {
     setDrafting(true);
@@ -48,8 +49,14 @@ export default function TeachCard({ wid, deepen, onClose, onSaved }: {
   async function save() {
     setSaving(true);
     try {
-      const saved = await api.teachCard(wid, { ...card, sources: (card.sources ?? "").split("\n").map((s) => s.trim()).filter(Boolean) });
-      toast(`Saved ${saved.id} to .codewright/cards/ — commit it to share with your team`);
+      const saved = await api.teachCard(wid, {
+        ...card,
+        sources: (card.sources ?? "").split("\n").map((s) => s.trim()).filter(Boolean),
+        ...(rule.on && rule.calls.trim() ? { rule: { calls: rule.calls, missing_kwarg: rule.missing_kwarg, in_async: rule.in_async, paths: rule.paths } } : {}),
+      });
+      toast(saved.rule?.calls
+        ? `Saved ${saved.id}: the next scan flags ${saved.rule.calls.join(", ")} as a finding`
+        : `Saved ${saved.id} to .codewright/cards/ — commit it to share with your team`);
       onSaved();
     } catch (e) { toast((e as Error).message, "error"); }
     setSaving(false);
@@ -67,6 +74,20 @@ export default function TeachCard({ wid, deepen, onClose, onSaved }: {
           <input className="input" placeholder="Topic, e.g. fan out with LangGraph Send" value={topic} onChange={(e) => setTopic(e.target.value)} aria-label="Topic" />
           <textarea className="input" rows={4} placeholder="Paste docs, release notes or your team's notes: the draft is grounded in these" value={notes} onChange={(e) => setNotes(e.target.value)} aria-label="Notes" />
           <div><button className="btn sm" disabled={drafting || (!topic && !deepen)} onClick={draft}>{drafting ? <Spinner size={13} /> : <Bot size={13} />}Draft the card</button></div>
+        </div>
+        <div className="callout col" style={{ gap: 8 }}>
+          <label className="row" style={{ gap: 6, fontWeight: 600, cursor: "pointer" }}>
+            <input type="checkbox" checked={rule.on} onChange={(e) => setRule({ ...rule, on: e.target.checked })} />
+            Turn it into a check: reviews flag code that breaks it
+          </label>
+          {rule.on && (<>
+            <input className="input mono" placeholder="Calls to flag, e.g. requests.get, requests.post" value={rule.calls} onChange={(e) => setRule({ ...rule, calls: e.target.value })} aria-label="Calls to flag" />
+            <div className="row wrap" style={{ gap: 8 }}>
+              <input className="input mono" style={{ width: 220 }} placeholder="…only without this keyword, e.g. timeout" value={rule.missing_kwarg} onChange={(e) => setRule({ ...rule, missing_kwarg: e.target.value })} aria-label="Missing keyword" />
+              <label className="row" style={{ gap: 6 }}><input type="checkbox" checked={rule.in_async} onChange={(e) => setRule({ ...rule, in_async: e.target.checked })} />only inside async def</label>
+            </div>
+            <input className="input mono" placeholder="Only in these paths (optional), e.g. services/**" value={rule.paths} onChange={(e) => setRule({ ...rule, paths: e.target.value })} aria-label="Paths" />
+          </>)}
         </div>
         {FIELDS.map(([k, label, long]) => (
           <label key={k} className="col" style={{ gap: 4 }}>
