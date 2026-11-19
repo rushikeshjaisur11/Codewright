@@ -48,7 +48,15 @@ function useReleaseCheck(onDone?: () => void) {
     };
     tick(true);
   }, [wid, toast]);
-  return { rows, running, progress, start };
+  // Opening the page shows the last check if this session has one; a scan finishing does not ask the index again.
+  const resume = useCallback(() => {
+    if (!wid) return;
+    api.releasesProgress(wid).then((p) => {
+      if (p.running || !p.total) { start(); return; }
+      setRows(p.rows); setProgress({ done: p.done, total: p.total });
+    }).catch(() => start());
+  }, [wid, start]);
+  return { rows, running, progress, start, resume };
 }
 
 export default function Releases() {
@@ -153,10 +161,10 @@ function Audit({ tabs }: { tabs: JSX.Element }) {
 }
 
 function ReleaseList({ tabs }: { tabs: JSX.Element }) {
-  const { wid, data, runReview } = useApp();
-  const { rows, running: refreshing, progress, start: load } = useReleaseCheck();
+  const { wid, runReview } = useApp();
+  const { rows, running: refreshing, progress, start: load, resume } = useReleaseCheck();
   const [upgrading, setUpgrading] = useState<{ name: string; version: string } | null>(null);
-  useEffect(load, [wid, data?.has_result]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(resume, [wid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fresh = (rows ?? []).filter((r) => r.new_since_last_check);
   return (

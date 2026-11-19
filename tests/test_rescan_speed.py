@@ -149,3 +149,46 @@ def test_test_clients_found_by_quoted_stem(tmp_path):
     )
     g = graph.build(tmp_path)
     assert "server.py::serve" in g._routes_reached_by_test_clients()
+
+
+def test_a_page_during_the_first_scan_waits_for_it_instead_of_scanning_again(tmp_path, monkeypatch):
+    import threading
+    import time
+
+    from codewright import service
+
+    root = _repo(tmp_path, n=4)
+    ws = service.Workspace(root=root)
+    runs = []
+    real = service.Workspace.run_review
+
+    def counted(self, **kw):
+        runs.append(kw)
+        time.sleep(0.3)  # a scan that takes a while
+        return real(self, **kw)
+
+    monkeypatch.setattr(service.Workspace, "run_review", counted)
+    ws.running = True  # what the review endpoint sets before its thread starts
+    t = threading.Thread(target=lambda: ws.run_review(proof=False))
+    t.start()
+    got = ws.ensure()  # e.g. the Plans page asking for the review while it runs
+    t.join()
+    assert got is ws.result
+    assert len(runs) == 1
+
+
+def test_ai_page_is_not_rebuilt_when_a_rescan_finds_the_same_code(tmp_path, monkeypatch):
+    from codewright import aimap, service
+
+    root = _repo(tmp_path, n=4)
+    ws = service.Workspace(root=root)
+    ws.run_review(proof=False)
+    first = ws.ai_map()
+    built = []
+    real = aimap.AiMap.__init__
+    monkeypatch.setattr(aimap.AiMap, "__init__", lambda self, *a, **k: built.append(1) or real(self, *a, **k))
+    ws.run_review(proof=False)
+    assert ws.ai_map() is first and built == []
+    (root / "pkg0" / "m0.py").write_text("def changed():\n    return 1\n")
+    ws.run_review(proof=False)
+    assert ws.ai_map() is not first and built == [1]

@@ -324,6 +324,10 @@ class Workspace:
         self.watching, self._watch_stop = False, None
 
     def ensure(self) -> ReviewResult:
+        """The finished review, waiting for the one in progress rather than queueing a second scan behind it."""
+        deadline = time.time() + 3600
+        while self.result is None and self.running and time.time() < deadline:
+            time.sleep(0.1)
         if self.result is None:
             self.run_review(proof=False)
         return self.result
@@ -381,7 +385,7 @@ class Workspace:
             # The scan reads only the code; findings are just counted. When the review that finishes has the
             # same parsed code the page was drawn from, reuse the scan instead of repeating it.
             prev = self._aimap_graph
-            if prev is not None and prev[0] is r.graph:
+            if prev is not None and (prev[0] is r.graph or _same_code(prev[0], r.graph)):
                 prev[1].findings = r.findings
                 return prev[1]
             m = aimap.AiMap(r.graph, r.findings)
@@ -800,6 +804,12 @@ class Workspace:
         r = self.ensure()
         titles = {f.intent: f.title for f in r.findings + r.muted}
         return Feedback.load(self.root).insights(titles)
+
+
+def _same_code(a, b) -> bool:
+    """Two scans read the very same files: unchanged files keep their parse between scans (graph._PARSED), so
+    identity says nothing was edited, added or removed, and whatever was built from `a` holds for `b`."""
+    return a.files.keys() == b.files.keys() and all(b.files[p] is pf for p, pf in a.files.items())
 
 
 def _patched_files(patch: str) -> list[str]:

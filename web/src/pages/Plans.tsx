@@ -214,6 +214,8 @@ function MigrationsTab() {
         {!open ? (
           <Empty icon={<GitBranch size={22} />} title="Pick a migration">
             A plan orders the files leaf modules first and cuts them into steps of a few files, each with its own patch, tests and PR text. Progress follows the code: a step is done when none of its changes remain.
+            Changes with no automatic patch are written by AI: open a step and click <b>Write the changes with AI</b> (set a model up in Settings).
+            To move a library to a new major version, use <b>Releases → Upgrade</b>, which checks what breaks and has AI rewrite it.
           </Empty>
         ) : !plan ? (
           <div className="card-pad col" style={{ gap: 12 }}>
@@ -267,6 +269,11 @@ function MigrationsTab() {
                     </td>
                     <td className="muted" style={{ fontSize: 13 }}>
                       {s.done ? "done" : `${s.remaining || s.items.length} left`}{s.autofix ? ` · ${s.autofix} auto-patch` : ""}
+                      {!s.done && s.items.some((i) => !i.autofix) && (
+                        <div className="row" style={{ gap: 4, color: "var(--accent)" }} title="Open the step and click “Write the changes with AI”">
+                          <Bot size={12} />{s.items.filter((i) => !i.autofix).length} for AI
+                        </div>
+                      )}
                     </td>
                     <td className="muted" style={{ fontSize: 13 }}>{s.tests.length || <span className="faint">none</span>}</td>
                     <td><ArrowRight size={14} className="faint" /></td>
