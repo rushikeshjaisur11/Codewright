@@ -294,6 +294,8 @@ def rewrite(
     problems: list[dict],
     notes: dict | None = None,
     max_groups: int = 30,
+    system: str | None = None,
+    heading: str | None = None,
 ) -> dict:
     """One patch per affected function (or import block), written by the model, each checked to compile."""
     from .llm import LLMConfig, complete, last_error
@@ -324,13 +326,19 @@ def rewrite(
             for p in items
         )
         ask = (
-            f"{name} {installed or '?'} -> {version}. File {file}, "
+            (heading or f"{name} {installed or '?'} -> {version}")
+            + f". File {file}, "
             + ("its import block" if fn in ("<imports>", "<module>") else f"function `{fn}`")
-            + f".\n\nWhat breaks or is deprecated:\n{issues}\n\nCode now:\n```python\n{old}```"
+            + (".\n\nWhat to change:\n" if heading else ".\n\nWhat breaks or is deprecated:\n")
+            + f"{issues}\n\nCode now:\n```python\n{old}```"
             + (f"\n\nRelease notes:\n{notes_text}" if notes_text else "")
         )
         reply = complete(
-            cfg, REWRITE_SYSTEM, [{"role": "user", "content": ask}], max_tokens=3000, purpose=f"upgrade {file}"
+            cfg,
+            system or REWRITE_SYSTEM,
+            [{"role": "user", "content": ask}],
+            max_tokens=3000,
+            purpose=f"upgrade {file}",
         )
         if reply is None:
             skipped.append({"file": file, "function": fn, "why": last_error() or "the model did not answer"})

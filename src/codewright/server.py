@@ -893,11 +893,23 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(404, str(e)) from None
 
+    @app.post("/api/w/{wid}/migrations/{name}/steps/{n}/ai")
+    def migration_ai(wid: str, name: str, n: int):
+        """AI-written changes for the step's items no detector could patch, as diffs to review."""
+        try:
+            return ws(wid).migration_ai(name, n)
+        except KeyError:
+            raise HTTPException(404, f"unknown migration {name!r}") from None
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from None
+
     @app.post("/api/w/{wid}/migrations/{name}/steps/{n}/apply")
-    def migration_apply(wid: str, name: str, n: int):
+    def migration_apply(
+        wid: str, name: str, n: int, extra_patches: Annotated[list[str] | None, Body(embed=True)] = None
+    ):
         """Apply one step's combined patch to the working tree. Only on an explicit click; nothing is committed."""
         try:
-            return ws(wid).migration_apply(name, n)
+            return ws(wid).migration_apply(name, n, extra_patches)
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(404, str(e)) from None
         except RuntimeError as e:

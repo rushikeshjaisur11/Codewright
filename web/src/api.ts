@@ -495,8 +495,10 @@ export const api = {
     req<MigrationPlan>("POST", `${w(id)}/migrations/${q(name)}/plan`, { batch }),
   migration: (id: string, name: string) => req<MigrationPlan>("GET", `${w(id)}/migrations/${q(name)}`),
   migrationStep: (id: string, name: string, n: number) => req<StepDetail>("GET", `${w(id)}/migrations/${q(name)}/steps/${n}`),
-  applyStep: (id: string, name: string, n: number) =>
-    req<{ applied: boolean; files: string[]; status: MigrationPlan }>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/apply`),
+  applyStep: (id: string, name: string, n: number, extra_patches: string[] = []) =>
+    req<{ applied: boolean; files: string[]; failed: string[]; status: MigrationPlan }>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/apply`, { extra_patches }),
+  stepAi: (id: string, name: string, n: number) =>
+    req<UpgradeRewrite>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/ai`),
   critique: (id: string, text: string) => req<PlanReview>("POST", `${w(id)}/critique`, { text }),
   insights: (id: string) => req<Insight[]>("GET", `${w(id)}/insights`),
   agentFixes: (id: string) => req<AgentFixes>("GET", `${w(id)}/ai/fixes`),

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import {
-  ArrowRight, CheckCircle2, CircleDot, ClipboardCheck, FileDiff, GitBranch, Route, TriangleAlert, Wand2, XCircle,
+  ArrowRight, Bot, CheckCircle2, CircleDot, ClipboardCheck, FileDiff, GitBranch, Route, TriangleAlert, Wand2, XCircle,
 } from "lucide-react";
 import { useApp } from "../App";
-import { api, MigrationPlan, MigrationRow, PlanReview, StepDetail } from "../api";
+import { api, MigrationPlan, MigrationRow, PlanReview, StepDetail, UpgradeRewrite } from "../api";
 import { CopyButton, DiffView, Empty, Inline, Modal, Spinner, Tabs, useToast } from "../ui";
 
 type Tab = "review" | "migrations";
@@ -147,7 +147,21 @@ function MigrationsTab() {
       loadRows();
     } catch (e) { toast((e as Error).message, "error"); } finally { setBusy(false); }
   };
+  const [ai, setAi] = useState<UpgradeRewrite | null>(null);
+  const [aiChosen, setAiChosen] = useState<Set<string>>(new Set());
+  const [writing, setWriting] = useState(false);
+  const writeWithAi = async () => {
+    if (!wid || !open || !step) return;
+    setWriting(true);
+    try {
+      const r = await api.stepAi(wid, open, step.step.n);
+      setAi(r);
+      setAiChosen(new Set(r.patches.map((p) => p.id)));
+      if (!r.patches.length) toast("The AI could not write these changes; see why below", "error");
+    } catch (e) { toast((e as Error).message, "error"); } finally { setWriting(false); }
+  };
   const showStep = async (n: number) => {
+    setAi(null);
     if (!wid || !open) return;
     try { setStep(await api.migrationStep(wid, open, n)); } catch (e) { toast((e as Error).message, "error"); }
   };
@@ -155,10 +169,12 @@ function MigrationsTab() {
     if (!wid || !open || !step) return;
     setBusy(true);
     try {
-      const r = await api.applyStep(wid, open, step.step.n);
+      const extra = (ai?.patches ?? []).filter((p) => aiChosen.has(p.id)).map((p) => p.patch);
+      const r = await api.applyStep(wid, open, step.step.n, extra);
       setPlan(r.status);
       setStep(null);
-      toast(`Applied step ${step.step.n} to ${r.files.length} file(s). Nothing is committed.`);
+      setAi(null);
+      toast(`Applied step ${step.step.n} to ${r.files.length} file(s)${r.failed.length ? `; ${r.failed.length} AI change(s) did not apply (${r.failed.join(", ")})` : ""}. Nothing is committed: run its tests, then commit from Review.`);
       reload();
     } catch (e) { toast((e as Error).message, "error"); } finally { setBusy(false); }
   };
@@ -267,7 +283,12 @@ function MigrationsTab() {
           <>
             <CopyButton text={step.pr_body} label="Copy PR text" />
             {step.patch && <CopyButton text={step.patch} label="Copy patch" />}
-            {step.patch && !step.step.done && (
+            {!step.step.done && step.step.items.some((i) => !i.autofix) && (
+              <button className="btn" disabled={writing || busy} onClick={writeWithAi}>
+                {writing ? <Spinner size={14} /> : <Bot size={14} />}{ai ? "Write again with AI" : "Write the changes with AI"}
+              </button>
+            )}
+            {(step.patch || aiChosen.size > 0 && ai) && !step.step.done && (
               <button className="btn primary" disabled={busy} onClick={apply}>
                 {busy ? <Spinner size={14} /> : <Wand2 size={14} />}Apply to working tree
               </button>
@@ -286,7 +307,23 @@ function MigrationsTab() {
             {step.skipped.length > 0 && <div className="callout amber">{step.skipped.length} patch(es) didn't apply on top of the others; make those changes by hand.</div>}
             {step.patch ? (
               <div><div className="section-title"><FileDiff size={14} />Combined patch</div><DiffView patch={step.patch} /></div>
-            ) : <div className="callout">No change in this step can be made mechanically; the PR text lists what to change.</div>}
+            ) : !ai && <div className="callout">No change in this step can be made mechanically. <b>Write the changes with AI</b> rewrites each function for you to review, or make them by hand (the PR text lists them).</div>}
+            {ai && (
+              <div className="col" style={{ gap: 8 }}>
+                <div className="section-title"><Bot size={14} />Written by {ai.model}: tick the ones to apply</div>
+                {ai.patches.map((p) => (
+                  <div key={p.id} className="col" style={{ gap: 4 }}>
+                    <label className="row" style={{ gap: 8, alignItems: "flex-start", fontSize: 13 }}>
+                      <input type="checkbox" checked={aiChosen.has(p.id)} style={{ marginTop: 3 }} aria-label={`Apply the change to ${p.function}`}
+                        onChange={() => { const n = new Set(aiChosen); n.has(p.id) ? n.delete(p.id) : n.add(p.id); setAiChosen(n); }} />
+                      <span><span className="mono">{p.file}</span> <b>{p.function}</b> <span className="muted"><Inline text={p.explanation} /></span></span>
+                    </label>
+                    <DiffView patch={p.patch} />
+                  </div>
+                ))}
+                {ai.skipped.map((k, i) => <div key={i} style={{ fontSize: 13 }}>✋ <span className="mono">{k.file}</span> {k.function}: <span className="muted">{k.why}</span></div>)}
+              </div>
+            )}
             {step.step.tests.length > 0 && <div className="mono" style={{ fontSize: 12.5 }}>pytest -q {step.step.tests.join(" ")}</div>}
           </div>
         </Modal>

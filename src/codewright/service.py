@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -749,17 +750,36 @@ class Workspace:
             "findings": [f.to_dict() for f in found],
         }
 
-    def migration_apply(self, name: str, n: int) -> dict:
-        """Apply a step's combined patch to the working tree (nothing is committed), then re-scan."""
+    def migration_ai(self, name: str, n: int) -> dict:
+        """The model writes the step's changes that have no automatic patch."""
+        from . import migrate
+
+        r = self.ensure()
+        _step, found = migrate.step_findings(self.root, name, n, r.graph, r.stack)
+        note(self.name, f"Migration {name} step {n}: AI writing {sum(1 for f in found if not f.patch)} change(s)")
+        return migrate.ai_changes(self.root, name, r.graph, found)
+
+    def migration_apply(self, name: str, n: int, extra_patches: list[str] | None = None) -> dict:
+        """Apply a step's combined patch and the chosen AI-written changes to the working tree (nothing is
+        committed), then re-scan."""
         from .proof import apply_patch
 
         step = self.migration_step(name, n)
-        if not step["patch"]:
-            raise ValueError(f"step {n} has nothing to patch automatically; make its changes by hand")
-        if not apply_patch(self.root, step["patch"]):
+        if not step["patch"] and not extra_patches:
+            raise ValueError(f"step {n} has nothing to patch automatically: write its changes with AI or by hand")
+        if step["patch"] and not apply_patch(self.root, step["patch"]):
             raise RuntimeError("the step's patch did not apply; the files changed since the plan was made")
+        failed = []
+        for patch in extra_patches or []:
+            if not apply_patch(self.root, patch):
+                failed += re.findall(r"^\+\+\+ b/(\S+)", patch, re.M)
         self.run_review(proof=False)
-        return {"applied": True, "files": step["step"]["files"], "status": self.migration_status(name)}
+        return {
+            "applied": True,
+            "files": step["step"]["files"],
+            "failed": failed,
+            "status": self.migration_status(name),
+        }
 
     # --------------------------------------------------------------- proposal review
     def critique(self, text: str) -> dict:

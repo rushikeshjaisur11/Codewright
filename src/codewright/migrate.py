@@ -365,6 +365,59 @@ def step_findings(root: str | Path, name: str, n: int, graph: CodeGraph, stack: 
     return step, [f for f in found if Item.of(f).key in keys]
 
 
+MIGRATE_SYSTEM = (
+    "You carry out one step of a code migration. You get one function (or a file's import block) and the "
+    "changes the migration needs in it, each with the recommended way to make it. Rewrite it so it follows "
+    "that advice and behaves exactly as before for its callers: keep its name, arguments and return values "
+    "unless the advice says otherwise, keep comments, and change nothing the advice does not ask for. Reply "
+    "with a one-line explanation, then the complete rewritten code in one ```python block."
+)
+
+
+def ai_changes(root: str | Path, name: str, graph: CodeGraph, findings: list[Finding]) -> dict:
+    """The model writes the changes no detector could patch, one rewrite per function, each checked to
+    compile: {patches: [{id, file, function, patch, explanation, fixes}], skipped, model}."""
+    from .upgradesafety import rewrite
+
+    def enclosing(f: Finding) -> str:
+        """The function around the finding (some checks name the line, not the function)."""
+        pf = graph.files.get(f.file)
+        if pf is None:
+            return f.function
+        if any(fn.qualname == f.function for fn in pf.module.functions):
+            return f.function
+        inside = [fn for fn in pf.module.functions if fn.start_line <= f.line <= fn.end_line]
+        return max(inside, key=lambda fn: fn.start_line).qualname if inside else "<module>"
+
+    manual = [f for f in findings if not f.patch]
+    for f in manual:
+        f.function = enclosing(f)
+    problems = [
+        {
+            "file": f.file,
+            "line": f.line,
+            "function": f.function,
+            "symbol": f.symbol or "",
+            "kind": "call",
+            "detail": f"{f.title}: {f.suggestion}" + (f" Watch out: {f.risk}" if f.risk else ""),
+            "old_signature": None,
+            "new_signature": None,
+            "new_doc": "",
+        }
+        for f in manual
+        if f.function != "<module>"
+    ]
+    out = rewrite(
+        root, graph, name, None, "", problems, system=MIGRATE_SYSTEM, heading=f"Migration: {CATALOG[name].title}"
+    )
+    out["skipped"] += [
+        {"file": f.file, "function": f.function, "why": "module-level code: change it by hand"}
+        for f in manual
+        if f.function == "<module>"
+    ]
+    return out
+
+
 def combined_patch(root: str | Path, findings: list[Finding]) -> tuple[str, list[str]]:
     """One diff for every auto-patchable finding of a step. Returns (diff, ids whose patch didn't apply on top
     of the others)."""

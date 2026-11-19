@@ -99,3 +99,38 @@ def test_async_io_uses_the_blocking_rule(tmp_path):
 def test_unknown_migration(repo):
     with pytest.raises(ValueError, match="known:"):
         migrate.plan("nope", repo, *build(repo))
+
+
+def test_a_step_without_patches_can_be_written_with_ai_and_applied(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from codewright import llm
+    from codewright.server import create_app
+
+    write(tmp_path, {"app/a.py": "import subprocess\n\nasync def run():\n    subprocess.run(['ls'])\n"})
+    c = TestClient(create_app([str(tmp_path)]), base_url="http://localhost")
+    wid = c.get("/api/workspaces").json()[0]["id"]
+    c.post(f"/api/w/{wid}/migrations/async-io/plan", json={"batch": 5})
+    step = c.get(f"/api/w/{wid}/migrations/async-io/steps/1").json()
+    assert step["patch"] == "" or step["patch"] is None  # nothing automatic: the case the AI button is for
+    r = c.post(f"/api/w/{wid}/migrations/async-io/steps/1/apply", json={})
+    assert r.status_code == 404 and "write its changes with AI" in r.json()["detail"]
+    assert c.post(f"/api/w/{wid}/migrations/async-io/steps/1/ai").status_code == 409  # no model set up
+
+    monkeypatch.setattr(llm, "status", lambda cfg: {"available": True, "reason": ""})
+    asked = []
+
+    def complete(cfg, system, messages, **k):
+        asked.append((system, messages[0]["content"]))
+        return (
+            "Run it in a thread.\n```python\nasync def run():\n    await asyncio.to_thread(subprocess.run, ['ls'])\n```"
+        )
+
+    monkeypatch.setattr(llm, "complete", complete)
+    ai = c.post(f"/api/w/{wid}/migrations/async-io/steps/1/ai").json()
+    assert "code migration" in asked[0][0] and "Migration:" in asked[0][1] and "subprocess.run" in asked[0][1]
+    [p] = ai["patches"]
+    assert p["function"] == "run" and "+    await asyncio.to_thread" in p["patch"]
+    r = c.post(f"/api/w/{wid}/migrations/async-io/steps/1/apply", json={"extra_patches": [p["patch"]]}).json()
+    assert r["applied"] and r["failed"] == []
+    assert "asyncio.to_thread(subprocess.run" in (tmp_path / "app" / "a.py").read_text()
