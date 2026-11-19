@@ -135,7 +135,7 @@ def test_workspace_builds_the_ai_page_once_per_review(repo):
     assert w.ai() is w.ai()
     first = w.ai_map()
     w.run_review(proof=False)
-    assert w.ai_map() is not first
+    assert w.ai_map() is first  # the same code: the scan is reused (an edit rebuilds it; see test_rescan_speed)
 
 
 def test_map_and_dependencies_are_available_before_the_review_finishes(repo, monkeypatch):

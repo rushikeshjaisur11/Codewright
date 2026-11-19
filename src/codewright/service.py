@@ -166,10 +166,9 @@ class Workspace:
                     + (f"; {r.reused} proofs kept" if r.reused else "")
                     + (f"; tests ran on {len(r.proved_files)} file(s)" if r.proved_files else ""),
                 )
-                self.index = CodeIndex(self.result.graph)
+                self.index = None  # built on the first question: most reviews are never asked one
                 self.last_run = time.time()
-                with contextlib.suppress(OSError):
-                    archmap.snapshot(self.root, archmap.ArchMap(self.result.graph, self.result.findings).system())
+                threading.Thread(target=self._snapshot, daemon=True, name=f"codewright-snapshot-{self.name}").start()
                 return self.result
             except Exception as exc:
                 self.error = f"{type(exc).__name__}: {exc}"
@@ -179,6 +178,11 @@ class Workspace:
                 self.running, self.progress, self.early = False, None, None
 
     # --------------------------------------------------------------- the last review, kept on disk
+    def _snapshot(self) -> None:
+        """Record today's system view for drift, off the review's path; the Map page reuses the map it builds."""
+        with contextlib.suppress(Exception):
+            archmap.snapshot(self.root, self.amap().system())
+
     def _saved_path(self) -> Path:
         return self.root / ".codewright" / "last-review.json"
 
@@ -320,6 +324,10 @@ class Workspace:
         self.watching, self._watch_stop = False, None
 
     def ensure(self) -> ReviewResult:
+        """The finished review, waiting for the one in progress rather than queueing a second scan behind it."""
+        deadline = time.time() + 3600
+        while self.result is None and self.running and time.time() < deadline:
+            time.sleep(0.1)
         if self.result is None:
             self.run_review(proof=False)
         return self.result
@@ -377,7 +385,7 @@ class Workspace:
             # The scan reads only the code; findings are just counted. When the review that finishes has the
             # same parsed code the page was drawn from, reuse the scan instead of repeating it.
             prev = self._aimap_graph
-            if prev is not None and prev[0] is r.graph:
+            if prev is not None and (prev[0] is r.graph or _same_code(prev[0], r.graph)):
                 prev[1].findings = r.findings
                 return prev[1]
             m = aimap.AiMap(r.graph, r.findings)
@@ -558,6 +566,9 @@ class Workspace:
         from . import cards as card_store
 
         llm = cfg if llm_status(cfg)["available"] else None
+        r = self.result
+        if self.index is None or self.index.g is not r.graph:
+            self.index = CodeIndex(r.graph)
         return answer(self.index, question, history, llm, cards=card_store.for_repo(self.root), stack=self.result.stack)
 
     def source(self, path: str) -> dict:
@@ -793,6 +804,12 @@ class Workspace:
         r = self.ensure()
         titles = {f.intent: f.title for f in r.findings + r.muted}
         return Feedback.load(self.root).insights(titles)
+
+
+def _same_code(a, b) -> bool:
+    """Two scans read the very same files: unchanged files keep their parse between scans (graph._PARSED), so
+    identity says nothing was edited, added or removed, and whatever was built from `a` holds for `b`."""
+    return a.files.keys() == b.files.keys() and all(b.files[p] is pf for p, pf in a.files.items())
 
 
 def _patched_files(patch: str) -> list[str]:
