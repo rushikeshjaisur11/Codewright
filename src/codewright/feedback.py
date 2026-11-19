@@ -17,7 +17,7 @@ from .models import Finding
 
 GITIGNORE = (
     "# Local caches; feedback.json, design.json and config.json are meant to be committed.\nsnapshots/\nreleases.json\n"
-    "review-state.json\nlast-review.json\nai-checks.json\ncache/\n"
+    "review-state.json\nlast-review.json\nai-checks.json\nai-tests.json\ncache/\n"
 )
 
 

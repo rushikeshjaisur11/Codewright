@@ -1,6 +1,6 @@
 // UI smoke test: starts `codewright serve` on a copy of a fixture repo and drives the app in Chromium.
 // Run: node web/tests/smoke.mjs   (needs `codewright` on PATH and Playwright with Chromium installed)
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +15,9 @@ cpSync(fixture, repo, { recursive: true });
 // one plain finding so the Review page has something to show
 writeFileSync(join(repo, "requirements.txt"), "requests==2.32.3\nfastapi==0.115.0\n");
 writeFileSync(join(repo, "svc.py"), "import requests\n\n\ndef fetch():\n    return requests.get('https://example.com')\n");
+for (const args of [["init", "-q", "-b", "main"], ["add", "-A"], ["-c", "user.email=ui@example.com", "-c", "user.name=ui", "commit", "-qm", "init"]]) {
+  spawnSync("git", args, { cwd: repo });
+}
 
 const port = 8800 + Math.floor(Math.random() * 500);
 const home = mkdtempSync(join(tmpdir(), "cw-home-"));
@@ -74,6 +77,13 @@ try {
     await page.goto(`${base}/#/review`);
     await page.getByRole("button", { name: /Ask AI to check|Ask AI for a second opinion/ }).first().waitFor();
     await text("There is no automatic patch for this").waitFor(); // why tests can't prove it, and what to do
+  });
+
+  await check("Review: how to verify, and the branch bar", async () => {
+    await page.getByRole("button", { name: "How to verify" }).first().click();
+    await text("Or ask the AI").waitFor();
+    await page.getByRole("button", { name: "Let AI write a test and run it" }).first().waitFor();
+    await page.getByRole("button", { name: "New fix branch" }).waitFor();
   });
 
   await check("Knowledge: teach a card that becomes a check", async () => {

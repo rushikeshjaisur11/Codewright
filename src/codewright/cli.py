@@ -16,6 +16,7 @@ from . import stack as stack_mod
 
 app = typer.Typer(help="Codewright: version-aware, proven 'instead of X, use Y' suggestions.", no_args_is_help=True)
 console = Console()
+err_console = Console(stderr=True)  # warnings stay out of piped output (json, sarif, markdown)
 
 
 class Format(str, Enum):
@@ -94,6 +95,13 @@ def review(
             bench=bench and proof,
             bench_rounds=bench_rounds,
         )
+        from .stack import MIN_PYTHON, unsupported_python
+
+        if (old := unsupported_python(result.stack)) is not None:
+            err_console.print(
+                f"[yellow]This repo targets Python {old}. Codewright reviews code for Python "
+                f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]} and newer: suggestions may use features {old} lacks.[/]"
+            )
     if sarif_output:
         sarif_output.write_text(to_sarif(result))
     if fmt is Format.terminal and output is None:

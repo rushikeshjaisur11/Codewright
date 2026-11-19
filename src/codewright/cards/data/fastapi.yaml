@@ -29,7 +29,6 @@
     isn't Optional (`model: str = Body(None)`) becomes visible to type checkers and linters
     (ruff RUF013); Codewright keeps the type as written, because adding `| None` changes the
     OpenAPI schema. Parameters with a mutable default (`Query([])`) are left as they are.
-    On Python 3.8, import Annotated from typing_extensions.
   when_not: >-
     FastAPI older than 0.95.1 (0.95.0 fails when an Annotated dependency is shared by two
     routes), or FastAPI 0.100 to 0.104 with Pydantic 2.12 or later (fails on Annotated

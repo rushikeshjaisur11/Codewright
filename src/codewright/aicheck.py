@@ -68,13 +68,21 @@ def factor(check: dict | None) -> float:
 
 
 def weights(root: str | Path, findings: list[Finding]) -> dict[str, float]:
-    """finding id -> ranking multiplier, for findings whose code and patch are what was checked."""
-    store = load(root)
+    """finding id -> ranking multiplier from AI verdicts and AI-written tests, for the code and patch they saw."""
+    from . import verify
+
+    store, tests = load(root), verify.load(root)
     out = {}
     for f in findings:
+        w = 1.0
         hit = store.get(f.id)
         if hit and hit.get("key") == key(f):
-            out[f.id] = factor(hit)
+            w *= factor(hit)
+        t = tests.get(f.id)
+        if t and t.get("key") == verify._key(f):
+            w *= {"verified": 1.25, "broke": 0.4}.get(t.get("verdict"), 1.0)
+        if w != 1.0:
+            out[f.id] = w
     return out
 
 

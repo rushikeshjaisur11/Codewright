@@ -3,6 +3,7 @@ import { Bot, FlaskConical, RefreshCw, ThumbsDown } from "lucide-react";
 import { useApp } from "./App";
 import { AiCheck, api, Finding } from "./api";
 import { Inline, Spinner, timeAgo, useToast } from "./ui";
+import VerifySteps from "./VerifySteps";
 
 const VERDICT: Record<AiCheck["verdict"], { cls: string; label: string }> = {
   confirmed: { cls: "green", label: "AI: looks right" },
@@ -72,6 +73,7 @@ export default function ProofActions({ f }: { f: Finding }) {
           {check ? "Ask the AI again" : f.proof === "verified" ? "Ask AI for a second opinion" : "Ask AI to check"}
         </button>
       </div>
+      <VerifySteps f={f} />
       {check && (
         <div className={`callout ${VERDICT[check.verdict].cls}`}>
           <div className="row wrap" style={{ gap: 8, marginBottom: 6 }}>

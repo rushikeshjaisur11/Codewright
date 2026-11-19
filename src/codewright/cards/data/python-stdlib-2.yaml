@@ -5,7 +5,7 @@
   symbol: asyncio.sleep
   kind: stdlib
   library: null
-  versions: ">=3.7"
+  versions: ">=3.11"
   autofix: true
   suggestion: Replace time.sleep() with `await asyncio.sleep()` so the event loop keeps serving other tasks.
   gain: >-
@@ -26,7 +26,7 @@
   symbol: time.perf_counter
   kind: stdlib
   library: null
-  versions: ">=3.3"
+  versions: ">=3.11"
   autofix: true
   suggestion: Use time.perf_counter() for both timestamps; it is monotonic and has the highest available resolution.
   gain: >-
@@ -47,7 +47,7 @@
   symbol: datetime.timezone.utc
   kind: stdlib
   library: null
-  versions: ">=3.2"
+  versions: ">=3.11"
   autofix: true
   suggestion: Use datetime.now(timezone.utc), which returns a timezone-aware UTC datetime.
   gain: >-
@@ -70,7 +70,7 @@
   symbol: collections.Counter
   kind: stdlib
   library: null
-  versions: ">=3.1"
+  versions: ">=3.11"
   suggestion: Use `counts = Counter(items)` or `counts[k] += 1` on a Counter; missing keys start at 0.
   gain: Removes the if/else branch per item and adds most_common(), arithmetic between counters and total().
   effort: 1
@@ -92,7 +92,7 @@
   symbol: collections.defaultdict
   kind: stdlib
   library: null
-  versions: ">=3.0"
+  versions: ">=3.11"
   suggestion: Create the dict as defaultdict(list) (or set/dict) and append directly; missing keys are created on first use.
   gain: Removes the membership check per item and the chance of forgetting it on one code path.
   effort: 1
@@ -115,7 +115,7 @@
   symbol: concurrent.futures.ThreadPoolExecutor
   kind: stdlib
   library: null
-  versions: ">=3.2"
+  versions: ">=3.11"
   suggestion: Submit the work to a ThreadPoolExecutor with a bounded max_workers and collect results with map() or as_completed().
   gain: >-
     Bounded concurrency instead of one thread per item, results and exceptions come
@@ -140,7 +140,7 @@
   kind: stdlib
   library: null
   autofix: true  # only for a literal command without shell syntax whose result is unused
-  versions: ">=3.5"
+  versions: ">=3.11"
   suggestion: >-
     Call subprocess.run([...]) with the command as a list, so no shell parses it. The
     patch uses check=False, which keeps os.system's behaviour (a failing command doesn't
@@ -167,7 +167,7 @@
   symbol: str.join
   kind: stdlib
   library: null
-  versions: ">=3.0"
+  versions: ">=3.11"
   suggestion: Collect the pieces in a list and call "".join(parts) once at the end.
   gain: >-
     Linear time on every Python implementation. CPython often optimises += in place,

@@ -27,6 +27,7 @@ from .llm import LLMConfig
 from .llm import status as llm_status
 from .report import to_json, to_markdown, to_pr_comment
 from .service import Service, Workspace, browse, forget, git_branch, load_recent
+from .stack import unsupported_python
 
 STATIC = Path(__file__).parent / "web"
 
@@ -168,12 +169,16 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
 
         rejected, muted = [f.to_dict() for f in r.rejected], [f.to_dict() for f in r.muted]
         aicheck.attach(w.root, findings + rejected + muted)
+        from . import verify
+
+        verify.attach(w.root, findings + rejected + muted)
         verified = sum(1 for f in r.findings if f.proof.value == "verified")
         return {
             **base,
             "result": {
                 "stack": {
                     "python": r.stack.python,
+                    "python_unsupported": unsupported_python(r.stack),
                     "sources": r.stack.sources,
                     "docker_images": r.stack.docker_images,
                     "dependencies": [
@@ -293,6 +298,50 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
             note(w.name, f"AI check failed: {e}", "error")
             raise HTTPException(409, str(e)) from None
 
+    @app.get("/api/w/{wid}/findings/{fid}/verify")
+    def verify_steps(wid: str, fid: str):
+        """The steps that would prove this finding right or wrong here, with the commands to run."""
+        from . import verify
+
+        w = ws(wid)
+        f = w.finding(fid)
+        if f is None:
+            raise HTTPException(404, "unknown finding")
+        return {"steps": verify.steps(f, w.result.graph if w.result else None)}
+
+    @app.post("/api/w/{wid}/findings/{fid}/ai-test")
+    def ai_write_test(wid: str, fid: str):
+        """The model writes a test for the finding's function; it runs before and after the patch, in a copy."""
+        from . import verify
+        from .activity import Timer, note
+
+        w = ws(wid)
+        f = w.finding(fid)
+        if f is None:
+            raise HTTPException(404, "unknown finding")
+        try:
+            with Timer(w.name, f"AI test for {f.title} ({f.file}:{f.line})"):
+                out = verify.ai_test(w.root, f, w.ensure().graph)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+        note(w.name, f"AI test: {out['verdict']} for {f.title}")
+        w.rerank()
+        return out
+
+    @app.post("/api/w/{wid}/findings/{fid}/ai-test/save")
+    def ai_save_test(wid: str, fid: str):
+        """Add the AI's test to the repo (commit it from the branch bar)."""
+        from . import verify
+        from .activity import note
+
+        w = ws(wid)
+        try:
+            path = verify.save_test(w.root, fid)
+        except FileNotFoundError:
+            raise HTTPException(404, "no AI test for this finding yet") from None
+        note(w.name, f"Added the AI's test as {path}")
+        return {"path": path}
+
     @app.post("/api/w/{wid}/ai-check/batch")
     def ai_check_batch(wid: str, limit: Annotated[int, Body(embed=True)] = 10):
         """Have the model check the top `limit` unverified findings (at most 50), in the background."""
@@ -392,6 +441,58 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     @app.post("/api/w/{wid}/chat")
     def chat(wid: str, question: Annotated[str, Body(embed=True)], history: list[dict] = Body([], embed=True)):
         return ws(wid).ask(question, history)
+
+    # ------------------------------------------------------------------ branches for fixes
+    def _git_call(wid: str, fn, *args):
+        from . import gitops
+        from .activity import note
+
+        w = ws(wid)
+        try:
+            out = fn(w.root, *args)
+        except gitops.GitError as e:
+            raise HTTPException(409, str(e)) from None
+        return w, out, note
+
+    @app.get("/api/w/{wid}/git")
+    def git_status(wid: str):
+        """Current branch, local branches (most recent first), uncommitted changes."""
+        from . import gitops
+
+        w = ws(wid)
+        out = gitops.status(w.root)
+        if out.get("git") and w.result is not None:
+            out["suggested_branch"] = gitops.suggest_name([f.title for f in w.result.findings[:1]])
+        return out
+
+    @app.post("/api/w/{wid}/git/switch")
+    def git_switch(wid: str, branch: Annotated[str, Body(embed=True)]):
+        """Switch branch (refused with uncommitted changes); the UI re-scans afterwards."""
+        from . import gitops
+
+        w, out, note = _git_call(wid, gitops.switch, branch)
+        note(w.name, f"Git: switched to {out['branch']}")
+        return out
+
+    @app.post("/api/w/{wid}/git/branch")
+    def git_branch_create(
+        wid: str, name: Annotated[str, Body(embed=True)], start: Annotated[str, Body(embed=True)] = ""
+    ):
+        """Create a branch for fixes and switch to it; uncommitted changes come along."""
+        from . import gitops
+
+        w, out, note = _git_call(wid, gitops.create, name, start)
+        note(w.name, f"Git: created and switched to {out['branch']}")
+        return out
+
+    @app.post("/api/w/{wid}/git/commit")
+    def git_commit(wid: str, message: Annotated[str, Body(embed=True)], files: Annotated[list[str], Body(embed=True)]):
+        """Commit exactly these changed files. Nothing is pushed."""
+        from . import gitops
+
+        w, out, note = _git_call(wid, gitops.commit, message, files)
+        note(w.name, f"Git: committed {len(files)} file(s) as {out['committed']} on {out['branch']}")
+        return out
 
     # ------------------------------------------------------------------ scan scope
     @app.get("/api/w/{wid}/scan")

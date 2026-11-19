@@ -10,8 +10,15 @@ export interface ArchInsight {
   id: string; severity: "high" | "medium" | "low"; title: string; why: string; fix: string; file: string; line: number;
   evidence: string; nodes: string[]; source: "rule" | "ai";
 }
+export interface AiTest {
+  verdict: "verified" | "broke" | "test-fails-today" | "no-patch"; detail: string; path: string; test: string;
+  before: { ok: boolean; seconds: number; output: string }; after: { ok: boolean; seconds: number; output: string } | null;
+  python: string; model: string; at: number;
+}
+export interface VerifyStep { kind: string; title: string; detail: string; command?: string }
 export interface Finding {
   ai_check?: AiCheck;
+  ai_test?: AiTest;
   id: string;
   intent: string;
   file: string;
@@ -125,7 +132,7 @@ export interface Metrics {
 }
 
 export interface ReviewData {
-  stack: { python: string | null; sources: string[]; docker_images: string[]; dependencies: Dependency[] };
+  stack: { python: string | null; python_unsupported?: string | null; sources: string[]; docker_images: string[]; dependencies: Dependency[] };
   files: number; functions: number; entry_points: number; intent_matches: number; seconds: number;
   base: string | null; findings: Finding[]; rejected: Finding[]; muted: Finding[]; metrics: Metrics;
   rules?: RulesSummary;
@@ -212,6 +219,10 @@ export interface Release {
   bump: "major" | "minor" | "patch" | "current" | "unknown"; new_since_last_check: boolean;
   unlocks: { card: string; title: string; topic?: string; reference?: boolean }[];
   preview?: { new: PreviewItem[]; resolved: PreviewItem[] } | null;
+}
+export interface GitState {
+  git: boolean; branch?: string | null; detached?: boolean; head?: string; default?: string; branches: string[];
+  changed: { file: string; status: string }[]; suggested_branch?: string; committed?: string;
 }
 export interface AiUsage { date: string; calls: number; input_tokens: number; output_tokens: number; daily_calls: number }
 export interface AiBatch { running: boolean; total: number; done: number; verdicts: Record<string, number>; error: string | null }
@@ -367,7 +378,14 @@ export const api = {
   map: (id: string, level: string, target = "", unused = false) =>
     req<MapView>("GET", `${w(id)}/map/${level}?target=${q(target)}${unused ? "&unused=true" : ""}`),
   ai: (id: string) => req<AiReport>("GET", `${w(id)}/ai`),
+  verifySteps: (id: string, fid: string) => req<{ steps: VerifyStep[] }>("GET", `${w(id)}/findings/${fid}/verify`),
+  aiTest: (id: string, fid: string) => req<AiTest>("POST", `${w(id)}/findings/${fid}/ai-test`),
+  saveAiTest: (id: string, fid: string) => req<{ path: string }>("POST", `${w(id)}/findings/${fid}/ai-test/save`),
   aiCheck: (id: string, fid: string) => req<AiCheck>("POST", `${w(id)}/findings/${fid}/ai-check`),
+  git: (id: string) => req<GitState>("GET", `${w(id)}/git`),
+  gitSwitch: (id: string, branch: string) => req<GitState>("POST", `${w(id)}/git/switch`, { branch }),
+  gitBranch: (id: string, name: string, start = "") => req<GitState>("POST", `${w(id)}/git/branch`, { name, start }),
+  gitCommit: (id: string, message: string, files: string[]) => req<GitState>("POST", `${w(id)}/git/commit`, { message, files }),
   aiUsage: () => req<AiUsage>("GET", "/api/settings/ai/usage"),
   setAiBudget: (daily_calls: number) => req<AiUsage>("PUT", "/api/settings/ai/budget", { daily_calls }),
   aiCheckBatch: (id: string, limit: number) => req<AiBatch>("POST", `${w(id)}/ai-check/batch`, { limit }),

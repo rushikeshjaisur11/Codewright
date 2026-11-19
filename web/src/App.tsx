@@ -259,6 +259,13 @@ export default function App() {
           <main className={`content ${flush ? "flush" : ""}`}>
             <Suspense fallback={<div className="page"><Spinner /></div>}>
             {firstRun && <ReviewProgress name={data!.name} progress={data!.progress} />}
+            {data?.result?.stack.python_unsupported && (
+              <div className="callout amber" style={{ margin: "10px 16px 0", fontSize: 13 }}>
+                This repo targets Python {data.result.stack.python_unsupported}. Codewright reviews code for Python 3.11 and newer, so its
+                suggestions may use features {data.result.stack.python_unsupported} doesn't have. Upgrade the project's Python (and
+                <code> requires-python</code>) to get advice that fits.
+              </div>
+            )}
             {data?.from_cache && <div className="callout row" style={{ margin: "10px 16px 0", fontSize: 13 }}>{data.running ? <Spinner size={13} /> : null}Showing the review from {timeAgo(data.saved_at ?? null)}{data.running ? "; re-checking only the files that changed since" : ""}.</div>}
             {finishing && <div className="callout row" style={{ margin: "10px 16px 0", fontSize: 13 }}><Spinner size={13} />Findings are still being worked out{data?.progress ? ` (${data.progress.label.toLowerCase()}, ${data.progress.percent}%)` : ""}. This page is already live and fills in when they land.</div>}
             {!firstRun && <>

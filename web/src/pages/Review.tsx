@@ -5,7 +5,9 @@ import {
 } from "lucide-react";
 import { useApp } from "../App";
 import VerifyPanel from "../VerifyPanel";
+import BranchBar from "../BranchBar";
 import ProofActions, { AiVerdictBadge } from "../ProofActions";
+import { AiTestBadge } from "../VerifySteps";
 import { api, Category, Finding } from "../api";
 import {
   CATEGORY, CATEGORY_ORDER, CategoryBadge, CodeView, CopyButton, DiffView, Empty, Inline, Modal, ProofBadge, Source, Spinner, Tabs,
@@ -133,6 +135,8 @@ export default function Review() {
         </div>
       </div>
 
+      <BranchBar />
+
       {!r.base && <VerifyPanel scope={r.scope} reused={r.reused_proofs ?? 0} />}
 
       {prMode && (
@@ -203,6 +207,7 @@ export default function Review() {
                   <CategoryBadge category={f.category} />
                   {tab === "dropped" ? <span className="badge red">{f.rejected_reason}</span> : <ProofBadge proof={f.proof} />}
                   <AiVerdictBadge check={f.ai_check} />
+                  <AiTestBadge test={f.ai_test} />
                   {f.patch && <span className="badge"><Wand2 size={11} />Patch</span>}
                   {f.hot_path && <span className="badge"><Flame size={11} />Hot</span>}
                   {f.status === "accepted" && <span className="badge green"><Check size={11} />Accepted</span>}
