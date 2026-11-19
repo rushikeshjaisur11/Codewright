@@ -105,6 +105,7 @@ class Workspace:
     saved_revision: int = -1  # revision of `result` last written to .codewright/last-review.json
     _saved: dict | None = None
     early: Snapshot | None = None  # the graph of the review in progress, before findings exist
+    _upgrade_job: dict | None = None  # the running (or last) upgrade safety step and its results
     _ai_batch: dict | None = None  # progress of the running (or last) batch of AI checks
     _releases: dict | None = None  # progress and rows of the running (or last) release check
     _cache_lock: threading.RLock = field(default_factory=threading.RLock)
@@ -460,6 +461,64 @@ class Workspace:
     def ai_batch_progress(self) -> dict:
         s = self._ai_batch or {"running": False, "total": 0, "done": 0, "verdicts": {}, "error": None}
         return {k: s[k] for k in ("running", "total", "done", "verdicts", "error")}
+
+    # --------------------------------------------------------------- upgrade safety
+    def upgrade_safety(self, step: str, name: str, version: str, patches: list[str] | None = None) -> dict:
+        """Run one safety step in the background: "check" (every use against the version), "rewrite" (the code
+        changes for the problems found), "trial" (tests before and after, with the chosen patches)."""
+        from . import knowledgefresh, upgradesafety
+
+        cur = self._upgrade_job
+        if cur and cur["running"]:
+            return self.upgrade_progress()
+        key = f"{name}=={version}"
+        if not cur or cur.get("key") != key:
+            cur = {"key": key, "check": None, "rewrite": None, "trial": None}
+        state = {**cur, "running": True, "step": step, "log": [], "error": None}
+        self._upgrade_job = state
+
+        def tell(msg: str) -> None:
+            state["log"].append(msg)
+            note(self.name, f"Upgrade {key}: {msg}")
+
+        def run() -> None:
+            r = self.ensure()
+            try:
+                if step == "check":
+                    tell(f"Installing {key} on its own and checking every use against it")
+                    state["check"] = upgradesafety.check_uses(self.root, r.graph, r.stack, name, version)
+                    tell(state["check"]["summary"])
+                elif step == "rewrite":
+                    problems = (state.get("check") or {}).get("problems") or []
+                    if not problems:
+                        raise RuntimeError("run the check first: there is nothing to rewrite yet")
+                    installed = r.stack.version_of(name)
+                    tell("Reading the release notes")
+                    notes = knowledgefresh.release_notes(name, installed, version)
+                    tell(f"Writing the code changes for {len(problems)} use(s)")
+                    state["rewrite"] = upgradesafety.rewrite(
+                        self.root, r.graph, name, installed, version, problems, notes
+                    )
+                    tell(
+                        f"{len(state['rewrite']['patches'])} change(s) written, "
+                        f"{len(state['rewrite']['skipped'])} left by hand"
+                    )
+                elif step == "trial":
+                    state["trial"] = upgradesafety.trial(self.root, name, version, patches or [], progress=tell)
+                else:
+                    raise RuntimeError(f"unknown step {step!r}")
+            except Exception as exc:
+                state["error"] = str(exc)
+                tell(f"stopped: {exc}")
+            finally:
+                state["running"] = False
+
+        threading.Thread(target=run, daemon=True, name=f"codewright-upgrade-{self.root.name}").start()
+        return self.upgrade_progress()
+
+    def upgrade_progress(self) -> dict:
+        s = self._upgrade_job or {"running": False, "step": None, "log": [], "error": None}
+        return {k: s.get(k) for k in ("key", "running", "step", "log", "error", "check", "rewrite", "trial")}
 
     def forget_ai(self) -> None:
         """Rebuild the AI page next time (its corrections file changed); the scan itself is kept."""

@@ -344,6 +344,7 @@ def apply(
     patch_ids: list[str] | None = None,
     branch: str = "",
     run_lock: bool = True,
+    extra_patches: list[str] | None = None,
 ) -> dict:
     """Do the upgrade: optionally on a new branch, edit the requirements, update the lockfile, apply the chosen
     patches. Nothing is committed."""
@@ -387,4 +388,12 @@ def apply(
             out["files"] += sorted({f.file for f in ordered if f.id not in skipped})
         else:
             out["skipped"] = [f.id for f in ordered]
+    for patch in extra_patches or []:  # the code changes written for this upgrade (upgradesafety.rewrite)
+        files = re.findall(r"^\+\+\+ b/(\S+)", patch, re.M)
+        if apply_patch(root, patch):
+            out["files"] += [f for f in files if f not in out["files"]]
+            out.setdefault("rewrites_applied", 0)
+            out["rewrites_applied"] += 1
+        else:
+            out.setdefault("rewrites_failed", []).extend(files)
     return out

@@ -664,6 +664,21 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
             raise HTTPException(409, str(e)) from None
         return {**out, "links": notes.get("links", []), "versions": notes.get("versions", [])}
 
+    @app.post("/api/w/{wid}/upgrade/safety")
+    def upgrade_safety(
+        wid: str,
+        step: Annotated[str, Body(embed=True)],
+        name: Annotated[str, Body(embed=True)],
+        version: Annotated[str, Body(embed=True)],
+        patches: Annotated[list[str] | None, Body(embed=True)] = None,
+    ):
+        """Start a safety step in the background: check, rewrite or trial; poll GET for progress and results."""
+        return ws(wid).upgrade_safety(step, name, version, patches)
+
+    @app.get("/api/w/{wid}/upgrade/safety")
+    def upgrade_safety_progress(wid: str):
+        return ws(wid).upgrade_progress()
+
     @app.post("/api/w/{wid}/upgrade/apply")
     def upgrade_apply(
         wid: str,
@@ -672,6 +687,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         patch_ids: Annotated[list[str] | None, Body(embed=True)] = None,
         branch: Annotated[str, Body(embed=True)] = "",
         run_lock: Annotated[bool, Body(embed=True)] = True,
+        extra_patches: Annotated[list[str] | None, Body(embed=True)] = None,
     ):
         """Do the upgrade (on a new branch when given); nothing is committed. The UI re-scans afterwards."""
         from . import gitops, upgrade
@@ -681,7 +697,15 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         r = w.ensure()
         try:
             out = upgrade.apply(
-                w.root, r.graph, r.stack, name, version, patch_ids=patch_ids, branch=branch, run_lock=run_lock
+                w.root,
+                r.graph,
+                r.stack,
+                name,
+                version,
+                patch_ids=patch_ids,
+                branch=branch,
+                run_lock=run_lock,
+                extra_patches=extra_patches,
             )
         except gitops.GitError as e:
             raise HTTPException(409, str(e)) from None

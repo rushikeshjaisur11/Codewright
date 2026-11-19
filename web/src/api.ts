@@ -250,6 +250,27 @@ export interface UpgradePlan {
   patches: UpgradeItem[]; manual: UpgradeItem[]; resolved: UpgradeItem[];
   migrations: { name: string; title: string; findings: number }[]; uses: { file: string; names: string[] }[];
 }
+export interface UpgradeProblem {
+  file: string; line: number; function: string; symbol: string; kind: string; issue: string; detail: string;
+  old_signature: string | null; new_signature: string | null;
+}
+export interface UpgradeCheck {
+  name: string; version: string; sites: number; symbols: number; files: number; problems: UpgradeProblem[];
+  breaking: number; summary: string;
+}
+export interface UpgradeRewrite {
+  patches: { id: string; file: string; function: string; patch: string; explanation: string; fixes: string[] }[];
+  skipped: { file: string; function: string; why: string }[]; model: string;
+}
+export interface UpgradeTrialRun { ok: boolean; passed: number; failed: string[]; counts: Record<string, number>; seconds: number; output: string }
+export interface UpgradeTrial {
+  before: UpgradeTrialRun | null; after: UpgradeTrialRun | null; new_failures?: string[]; fixed?: string[]; safe?: boolean;
+  patches_applied: number; patches_failed: number; lock: { ok: boolean; output: string } | null; error?: string | null;
+}
+export interface UpgradeSafety {
+  key: string | null; running: boolean; step: string | null; log: string[]; error: string | null;
+  check: UpgradeCheck | null; rewrite: UpgradeRewrite | null; trial: UpgradeTrial | null;
+}
 export interface GitState {
   git: boolean; branch?: string | null; detached?: boolean; head?: string; default?: string; branches: string[];
   changed: { file: string; status: string }[]; suggested_branch?: string; committed?: string;
@@ -429,8 +450,11 @@ export const api = {
   upgradeBreaking: (id: string, name: string, version: string) =>
     req<{ items: { file: string; change: string; why: string; version: string }[]; model: string; links: { label: string; url: string }[]; versions: string[] }>(
       "POST", `${w(id)}/upgrade/breaking`, { name, version }),
-  upgradeApply: (id: string, body: { name: string; version: string; patch_ids: string[]; branch: string; run_lock: boolean }) =>
-    req<{ branch: string | null; files: string[]; lock: { ok: boolean; command: string; output: string } | null; applied: string[]; skipped: string[] }>(
+  upgradeSafety: (id: string, step: "check" | "rewrite" | "trial", name: string, version: string, patches: string[] = []) =>
+    req<UpgradeSafety>("POST", `${w(id)}/upgrade/safety`, { step, name, version, patches }),
+  upgradeSafetyProgress: (id: string) => req<UpgradeSafety>("GET", `${w(id)}/upgrade/safety`),
+  upgradeApply: (id: string, body: { name: string; version: string; patch_ids: string[]; branch: string; run_lock: boolean; extra_patches: string[] }) =>
+    req<{ branch: string | null; files: string[]; lock: { ok: boolean; command: string; output: string } | null; applied: string[]; skipped: string[]; rewrites_applied?: number; rewrites_failed?: string[] }>(
       "POST", `${w(id)}/upgrade/apply`, body),
   git: (id: string) => req<GitState>("GET", `${w(id)}/git`),
   gitSwitch: (id: string, branch: string) => req<GitState>("POST", `${w(id)}/git/switch`, { branch }),
