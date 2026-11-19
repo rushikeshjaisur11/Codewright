@@ -27,6 +27,7 @@ from .llm import LLMConfig
 from .llm import status as llm_status
 from .report import to_json, to_markdown, to_pr_comment
 from .service import Service, Workspace, browse, forget, git_branch, load_recent
+from .stack import unsupported_python
 
 STATIC = Path(__file__).parent / "web"
 
@@ -93,6 +94,14 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
             "workspaces": [ws_summary(k, v) for k, v in svc.workspaces.items()],
         }
 
+    @app.get("/api/activity")
+    def activity_feed(since: int = 0, workspace: str = ""):
+        """What the server is doing, newest last: poll with `since` set to the last `last` you got."""
+        from . import activity
+
+        repo = ws(workspace).name if workspace else None
+        return activity.since(since, repo)
+
     @app.get("/api/workspaces")
     def workspaces():
         return [ws_summary(k, v) for k, v in svc.workspaces.items()]
@@ -135,22 +144,41 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         from . import stack as stack_mod
 
         st = stack_mod.discover(ws(workspace).root) if workspace else None
-        return knowledge.search(q, card_store.load(), st, library=library, limit=None)
+        root = ws(workspace).root if workspace else None
+        return knowledge.search(q, card_store.for_repo(root), st, library=library, limit=None)
 
     # ------------------------------------------------------------------ review
     def result_payload(wid: str, w: Workspace) -> dict:
         base = ws_summary(wid, w)
         if w.result is None:
+            saved = w.saved_review()  # the last review, from disk: shown at once while the refresh runs
+            if saved is not None:
+                return {**base, "result": saved["result"], "from_cache": True, "saved_at": saved.get("at")}
             return {**base, "result": None}
+        if w.saved_revision != w.revision:
+            out = _result_payload(base, w)
+            w.save_review(out["result"])
+            return out
+        return _result_payload(base, w)
+
+    def _result_payload(base: dict, w: Workspace) -> dict:
         r = w.result
         fb = Feedback.load(w.root)
         findings = [f.to_dict() for f in r.findings]
+        from . import aicheck
+
+        rejected, muted = [f.to_dict() for f in r.rejected], [f.to_dict() for f in r.muted]
+        aicheck.attach(w.root, findings + rejected + muted)
+        from . import verify
+
+        verify.attach(w.root, findings + rejected + muted)
         verified = sum(1 for f in r.findings if f.proof.value == "verified")
         return {
             **base,
             "result": {
                 "stack": {
                     "python": r.stack.python,
+                    "python_unsupported": unsupported_python(r.stack),
                     "sources": r.stack.sources,
                     "docker_images": r.stack.docker_images,
                     "dependencies": [
@@ -170,8 +198,8 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
                 "base": r.base,
                 "findings": findings,
                 "rules": r.rules,
-                "rejected": [f.to_dict() for f in r.rejected],
-                "muted": [f.to_dict() for f in r.muted],
+                "rejected": rejected,
+                "muted": muted,
                 "metrics": {
                     "shown": len(findings),
                     "verified": verified,
@@ -255,6 +283,73 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         undo: Annotated[bool, Body(embed=True)] = False,
     ):
         return ws(wid).mute(intent, path, reason, undo)
+
+    @app.post("/api/w/{wid}/findings/{fid}/ai-check")
+    def ai_check(wid: str, fid: str):
+        """Ask the configured model whether this finding is right for this code (what tests could not prove)."""
+        from .activity import note
+
+        w = ws(wid)
+        try:
+            return w.ai_check(fid)
+        except KeyError:
+            raise HTTPException(404, "unknown finding") from None
+        except RuntimeError as e:
+            note(w.name, f"AI check failed: {e}", "error")
+            raise HTTPException(409, str(e)) from None
+
+    @app.get("/api/w/{wid}/findings/{fid}/verify")
+    def verify_steps(wid: str, fid: str):
+        """The steps that would prove this finding right or wrong here, with the commands to run."""
+        from . import verify
+
+        w = ws(wid)
+        f = w.finding(fid)
+        if f is None:
+            raise HTTPException(404, "unknown finding")
+        return {"steps": verify.steps(f, w.result.graph if w.result else None)}
+
+    @app.post("/api/w/{wid}/findings/{fid}/ai-test")
+    def ai_write_test(wid: str, fid: str):
+        """The model writes a test for the finding's function; it runs before and after the patch, in a copy."""
+        from . import verify
+        from .activity import Timer, note
+
+        w = ws(wid)
+        f = w.finding(fid)
+        if f is None:
+            raise HTTPException(404, "unknown finding")
+        try:
+            with Timer(w.name, f"AI test for {f.title} ({f.file}:{f.line})"):
+                out = verify.ai_test(w.root, f, w.ensure().graph)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+        note(w.name, f"AI test: {out['verdict']} for {f.title}")
+        w.rerank()
+        return out
+
+    @app.post("/api/w/{wid}/findings/{fid}/ai-test/save")
+    def ai_save_test(wid: str, fid: str):
+        """Add the AI's test to the repo (commit it from the branch bar)."""
+        from . import verify
+        from .activity import note
+
+        w = ws(wid)
+        try:
+            path = verify.save_test(w.root, fid)
+        except FileNotFoundError:
+            raise HTTPException(404, "no AI test for this finding yet") from None
+        note(w.name, f"Added the AI's test as {path}")
+        return {"path": path}
+
+    @app.post("/api/w/{wid}/ai-check/batch")
+    def ai_check_batch(wid: str, limit: Annotated[int, Body(embed=True)] = 10):
+        """Have the model check the top `limit` unverified findings (at most 50), in the background."""
+        return ws(wid).ai_check_batch(limit)
+
+    @app.get("/api/w/{wid}/ai-check/batch")
+    def ai_check_batch_progress(wid: str):
+        return ws(wid).ai_batch_progress()
 
     @app.post("/api/w/{wid}/findings/{fid}/apply")
     def apply_patch(wid: str, fid: str):
@@ -347,9 +442,339 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
     def chat(wid: str, question: Annotated[str, Body(embed=True)], history: list[dict] = Body([], embed=True)):
         return ws(wid).ask(question, history)
 
+    # ------------------------------------------------------------------ branches for fixes
+    def _git_call(wid: str, fn, *args):
+        from . import gitops
+        from .activity import note
+
+        w = ws(wid)
+        try:
+            out = fn(w.root, *args)
+        except gitops.GitError as e:
+            raise HTTPException(409, str(e)) from None
+        return w, out, note
+
+    @app.get("/api/w/{wid}/git")
+    def git_status(wid: str):
+        """Current branch, local branches (most recent first), uncommitted changes."""
+        from . import gitops
+
+        w = ws(wid)
+        out = gitops.status(w.root)
+        if out.get("git") and w.result is not None:
+            out["suggested_branch"] = gitops.suggest_name([f.title for f in w.result.findings[:1]])
+        return out
+
+    @app.post("/api/w/{wid}/git/switch")
+    def git_switch(wid: str, branch: Annotated[str, Body(embed=True)]):
+        """Switch branch (refused with uncommitted changes); the UI re-scans afterwards."""
+        from . import gitops
+
+        w, out, note = _git_call(wid, gitops.switch, branch)
+        note(w.name, f"Git: switched to {out['branch']}")
+        return out
+
+    @app.post("/api/w/{wid}/git/branch")
+    def git_branch_create(
+        wid: str, name: Annotated[str, Body(embed=True)], start: Annotated[str, Body(embed=True)] = ""
+    ):
+        """Create a branch for fixes and switch to it; uncommitted changes come along."""
+        from . import gitops
+
+        w, out, note = _git_call(wid, gitops.create, name, start)
+        note(w.name, f"Git: created and switched to {out['branch']}")
+        return out
+
+    @app.post("/api/w/{wid}/git/fetch")
+    def git_fetch(wid: str):
+        """Update what the remotes have (nothing local changes), for the ahead/behind counts."""
+        from . import gitops
+
+        _, out, _ = _git_call(wid, gitops.fetch)
+        return out
+
+    @app.post("/api/w/{wid}/git/pull")
+    def git_pull(wid: str):
+        """Fast-forward the current branch to its upstream (refused when they have diverged)."""
+        from . import gitops
+
+        w, out, note = _git_call(wid, gitops.pull)
+        note(w.name, f"Git: pulled {out['pulled']} commit(s) into {out['branch']}")
+        return out
+
+    @app.post("/api/w/{wid}/git/sync")
+    def git_sync(wid: str):
+        """Pull (fast-forward), then push the current branch. Only when the user presses Sync."""
+        from . import gitops
+
+        w, out, note = _git_call(wid, gitops.sync)
+        note(w.name, f"Git: synced {out['branch']}: pulled {out['pulled']}, pushed {out['pushed']} commit(s)")
+        return out
+
+    @app.post("/api/w/{wid}/git/commit")
+    def git_commit(wid: str, message: Annotated[str, Body(embed=True)], files: Annotated[list[str], Body(embed=True)]):
+        """Commit exactly these changed files. Nothing is pushed."""
+        from . import gitops
+
+        w, out, note = _git_call(wid, gitops.commit, message, files)
+        note(w.name, f"Git: committed {len(files)} file(s) as {out['committed']} on {out['branch']}")
+        return out
+
+    # ------------------------------------------------------------------ scan scope
+    @app.get("/api/w/{wid}/scan")
+    def scan_scope(wid: str):
+        """Include/exclude patterns, and each folder's Python files with how many the patterns keep."""
+        from . import scanscope
+
+        return scanscope.summary(ws(wid).root)
+
+    @app.put("/api/w/{wid}/scan")
+    def scan_scope_save(
+        wid: str,
+        include: Annotated[list[str] | None, Body(embed=True)] = None,
+        exclude: Annotated[list[str] | None, Body(embed=True)] = None,
+    ):
+        """Save the patterns to .codewright/config.json (commit it to share). The next scan uses them."""
+        from . import scanscope
+        from .activity import note
+
+        w = ws(wid)
+        scanscope.save(w.root, include or [], exclude or [])
+        out = scanscope.summary(w.root)
+        note(w.name, f"Scan scope saved: {out['kept']} of {out['total']} Python files are reviewed")
+        return out
+
+    # ------------------------------------------------------------------ knowledge: keeping it current
+    @app.get("/api/w/{wid}/knowledge/freshness")
+    def knowledge_freshness(wid: str, online: bool = True):
+        """Each library's cards: the version they were checked against, the newest release, how far behind."""
+        from . import knowledgefresh
+        from . import stack as stack_mod
+
+        w = ws(wid)
+        st = w.result.stack if w.result else stack_mod.discover(w.root)
+        return knowledgefresh.freshness(w.root, st, online=online)
+
+    @app.get("/api/w/{wid}/knowledge/notes")
+    def knowledge_notes(wid: str, library: str, since: str = "", until: str = ""):
+        """What changed in `library` after `since` up to `until`: release notes and changelog links."""
+        from . import knowledgefresh
+        from .activity import Timer
+
+        w = ws(wid)
+        with Timer(w.name, f"Reading the release notes of {library} after {since or 'the start'}"):
+            return knowledgefresh.release_notes(library, since or None, until or None)
+
+    @app.post("/api/w/{wid}/knowledge/draft")
+    def knowledge_draft(
+        wid: str,
+        library: Annotated[str, Body(embed=True)],
+        since: Annotated[str, Body(embed=True)] = "",
+        until: Annotated[str, Body(embed=True)] = "",
+        pasted: Annotated[str, Body(embed=True)] = "",
+    ):
+        """New cards and outdated-card notes drafted by the model from the release notes; nothing is saved."""
+        from . import knowledgefresh
+        from .activity import Timer
+
+        w = ws(wid)
+        notes = knowledgefresh.release_notes(library, since or None, until or None)
+        try:
+            with Timer(w.name, f"Drafting knowledge updates for {library}"):
+                out = knowledgefresh.draft_updates(w.root, library, notes, pasted)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+        return {**out, "notes": notes}
+
+    @app.get("/api/w/{wid}/knowledge/library")
+    def knowledge_library_info(wid: str, name: str):
+        """What the package index says about a library (newest version, summary, links), and its cards here."""
+        from . import knowledgefresh
+        from .models import normalise
+
+        w = ws(wid)
+        info = knowledgefresh.library_info(normalise(name))
+        info.pop("readme", None)
+        have = sum(1 for c in card_store.for_repo(w.root) if c.library and normalise(c.library) == normalise(name))
+        used = w.result.stack.version_of(name) if w.result else None
+        return {**info, "cards": have, "installed": used}
+
+    @app.post("/api/w/{wid}/knowledge/library")
+    def knowledge_library_draft(
+        wid: str,
+        name: Annotated[str, Body(embed=True)],
+        focus: Annotated[str, Body(embed=True)] = "",
+        pasted: Annotated[str, Body(embed=True)] = "",
+        use_repo: Annotated[bool, Body(embed=True)] = True,
+        count: Annotated[int, Body(embed=True)] = 8,
+    ):
+        """Cards for a library drafted by the model: a starter set, or deeper ones beside its existing cards,
+        grounded in its README, pasted docs and how this repo uses it. Nothing is saved."""
+        from . import knowledgefresh, upgrade
+        from .activity import Timer
+
+        w = ws(wid)
+        usage = upgrade.uses(w.result.graph, name) if use_repo and w.result is not None else None
+        try:
+            with Timer(w.name, f"Drafting knowledge cards for {name}"):
+                return knowledgefresh.draft_library(w.root, name, focus=focus, pasted=pasted, usage=usage, count=count)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+
+    @app.post("/api/w/{wid}/knowledge/checked")
+    def knowledge_checked(
+        wid: str, library: Annotated[str, Body(embed=True)], version: Annotated[str, Body(embed=True)]
+    ):
+        """Record that the team re-checked this library's cards against `version` (.codewright/knowledge.json)."""
+        from . import knowledgefresh
+        from .activity import note
+
+        w = ws(wid)
+        try:
+            knowledgefresh.mark_checked(w.root, library, version)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        note(w.name, f"Knowledge: {library} cards checked against {version}")
+        return knowledgefresh.freshness(w.root, w.result.stack if w.result else None, online=False)
+
+    # ------------------------------------------------------------------ upgrading a dependency
+    @app.get("/api/w/{wid}/upgrade/plan")
+    def upgrade_plan(wid: str, name: str, version: str):
+        """What upgrading `name` to `version` changes: requirements, lockfile, code patches, manual work."""
+        from . import upgrade
+        from .activity import Timer
+
+        w = ws(wid)
+        r = w.ensure()
+        with Timer(w.name, f"Planning the upgrade of {name} to {version}"):
+            return upgrade.plan(w.root, r.graph, r.stack, name, version)
+
+    @app.post("/api/w/{wid}/upgrade/breaking")
+    def upgrade_breaking(wid: str, name: Annotated[str, Body(embed=True)], version: Annotated[str, Body(embed=True)]):
+        """The model reads the release notes against this repo's uses of the library."""
+        from . import knowledgefresh, upgrade
+
+        w = ws(wid)
+        r = w.ensure()
+        installed = r.stack.version_of(name)
+        notes = knowledgefresh.release_notes(name, installed, version)
+        try:
+            out = upgrade.breaking_changes(w.root, r.graph, name, installed, version, notes)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+        return {**out, "links": notes.get("links", []), "versions": notes.get("versions", [])}
+
+    @app.post("/api/w/{wid}/upgrade/apply")
+    def upgrade_apply(
+        wid: str,
+        name: Annotated[str, Body(embed=True)],
+        version: Annotated[str, Body(embed=True)],
+        patch_ids: Annotated[list[str] | None, Body(embed=True)] = None,
+        branch: Annotated[str, Body(embed=True)] = "",
+        run_lock: Annotated[bool, Body(embed=True)] = True,
+    ):
+        """Do the upgrade (on a new branch when given); nothing is committed. The UI re-scans afterwards."""
+        from . import gitops, upgrade
+        from .activity import note
+
+        w = ws(wid)
+        r = w.ensure()
+        try:
+            out = upgrade.apply(
+                w.root, r.graph, r.stack, name, version, patch_ids=patch_ids, branch=branch, run_lock=run_lock
+            )
+        except gitops.GitError as e:
+            raise HTTPException(409, str(e)) from None
+        note(
+            w.name,
+            f"Upgraded {name} to {version}: {len(out['files'])} file(s) changed, {len(out['applied'])} patch(es)"
+            + (f" on {out['branch']}" if out["branch"] else ""),
+        )
+        return out
+
+    # ------------------------------------------------------------------ knowledge: teach
+    @app.post("/api/w/{wid}/cards")
+    def teach_card(wid: str, card: Annotated[dict, Body(embed=True)]):
+        """Add a card to the repo's knowledge base (.codewright/cards/), from the Knowledge page."""
+        from . import teach
+        from .activity import note
+
+        w = ws(wid)
+        try:
+            saved = teach.save(w.root, card)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        note(w.name, f"Knowledge: added card {saved['id']} ({saved['title']})")
+        return saved
+
+    @app.delete("/api/w/{wid}/cards/{card_id}")
+    def forget_card(wid: str, card_id: str):
+        from . import teach
+
+        try:
+            teach.delete(ws(wid).root, card_id)
+        except FileNotFoundError:
+            raise HTTPException(404, "not one of this repo's cards") from None
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        return {"deleted": card_id}
+
+    @app.post("/api/w/{wid}/cards/draft")
+    def draft_card(
+        wid: str,
+        topic: Annotated[str, Body(embed=True)] = "",
+        library: Annotated[str, Body(embed=True)] = "",
+        notes: Annotated[str, Body(embed=True)] = "",
+        deepen: Annotated[str, Body(embed=True)] = "",
+    ):
+        """A card drafted by the configured model from a topic and pasted notes (or deeper than card `deepen`)."""
+        from . import stack as stack_mod
+        from . import teach
+        from .activity import Timer
+
+        w = ws(wid)
+        base = next((c for c in card_store.for_repo(w.root) if c.id == deepen), None) if deepen else None
+        lib = library or (base.library if base and base.library else "")
+        installed = stack_mod.discover(w.root).version_of(lib) if lib else None
+        try:
+            with Timer(w.name, f"Drafting a knowledge card about {topic or (base.title if base else lib)}"):
+                return teach.draft(w.root, topic=topic, library=lib, notes=notes, base=base, installed=installed)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+
     @app.get("/api/w/{wid}/ai")
     def ai(wid: str):
         return ws(wid).ai()
+
+    @app.get("/api/w/{wid}/ai/fixes")
+    def ai_fixes(wid: str):
+        """The team's corrections to the agent architecture (.codewright/agents.yaml)."""
+        from . import agentfix
+
+        return {**agentfix.load(ws(wid).root), "labels": list(agentfix.LABELS)}
+
+    @app.put("/api/w/{wid}/ai/fixes")
+    def ai_fixes_save(wid: str, fixes: Annotated[dict, Body(embed=True)]):
+        from . import agentfix
+        from .activity import note
+
+        w = ws(wid)
+        out = agentfix.save(w.root, fixes)
+        w.forget_ai()
+        note(w.name, f"Agent architecture: {len(out['links'])} added link(s), {len(out['agents'])} added agent(s)")
+        return {**out, "labels": list(agentfix.LABELS)}
+
+    @app.post("/api/w/{wid}/ai/review")
+    def ai_review(wid: str):
+        """The configured model's review of the agent architecture, on top of the rule-based insights."""
+        from .activity import Timer
+        from .agentreview import deep_review
+        from .llm import LLMConfig
+
+        w = ws(wid)
+        m = w.ai_map()
+        with Timer(w.name, "Asking the model to review the agent architecture"):
+            return deep_review(m, w.ai().get("insights", []), LLMConfig.load(w.root))
 
     @app.get("/api/w/{wid}/ai/node")
     def ai_node(wid: str, id: str):
@@ -531,6 +956,16 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         except OSError as exc:
             raise HTTPException(500, f"could not write {llm_mod.settings_path()}: {exc}") from None
         return llm_mod.public(_root_of(workspace))
+
+    @app.get("/api/settings/ai/usage")
+    def ai_usage():
+        """Model calls and tokens used today on this machine, and the daily call budget."""
+        return llm_mod.usage()
+
+    @app.put("/api/settings/ai/budget")
+    def ai_budget(daily_calls: Annotated[int, Body(embed=True)]):
+        """Most model calls a day on this machine (0: no limit)."""
+        return llm_mod.set_budget(daily_calls)
 
     @app.post("/api/settings/ai/test")
     def ai_settings_test(workspace: Annotated[str, Body(embed=True)] = ""):

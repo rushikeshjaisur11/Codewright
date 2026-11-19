@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import json
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -107,15 +108,27 @@ def _fetchable(url: str) -> str:
     return url
 
 
-def _check_url(url: str) -> str | None:
+def _check_url(url: str, retry_after: float = 3.0) -> tuple[str, str] | None:
+    """None when the page answers. Otherwise ("dead", why) for a page that is gone (404, 410, other 4xx), or
+    ("down", why) when the site failed or did not answer twice: a server error is the site's outage, not
+    evidence the source is wrong, so it is reported without failing the check."""
     req = urllib.request.Request(_fetchable(url), headers={"User-Agent": "codewright-cards-verify"})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return None if resp.status < 400 else f"HTTP {resp.status}"
-    except urllib.error.HTTPError as exc:
-        return f"HTTP {exc.code}"
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return f"unreachable ({getattr(exc, 'reason', exc)})"
+    why = ""
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                if resp.status < 400:
+                    return None
+                why = f"HTTP {resp.status}"
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500 and exc.code != 429:
+                return "dead", f"HTTP {exc.code}"
+            why = f"HTTP {exc.code}"
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            why = f"unreachable ({getattr(exc, 'reason', exc)})"
+        if attempt == 0:
+            time.sleep(retry_after)
+    return "down", why
 
 
 def _links(cards: list[Card], report: Report) -> None:
@@ -124,8 +137,13 @@ def _links(cards: list[Card], report: Report) -> None:
         results = dict(zip(urls, pool.map(_check_url, urls), strict=True))
     for c in cards:
         for u in c.sources:
-            if results[u]:
-                report.problems.append(f"{c.id}: source {u} -> {results[u]}")
+            if results[u] is None:
+                continue
+            kind, why = results[u]
+            if kind == "dead":
+                report.problems.append(f"{c.id}: source {u} -> {why}")
+            else:  # the site is down or slow right now: say so, but don't fail on someone else's outage
+                report.skipped.append(f"{c.id}: source {u} -> {why} (site error; checked again next run)")
 
 
 def verify(

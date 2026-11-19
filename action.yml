@@ -19,7 +19,7 @@ inputs:
     description: "Upload findings to GitHub code scanning. Needs code scanning enabled for the repository (private repositories: GitHub Code Security) and `security-events: write`, plus `actions: read` in private repositories. Set to false otherwise; the review summary is written either way."
     default: "true"
   python-version:
-    description: "Python used to run Codewright."
+    description: "Python used to run Codewright (3.11 or newer)."
     default: "3.13"
 
 outputs:

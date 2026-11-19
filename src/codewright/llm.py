@@ -316,10 +316,128 @@ def _post(url: str, body: dict, headers: dict, who: str, timeout: int) -> dict:
         raise LLMError(f"{who} did not answer with JSON; check the server address") from None
 
 
-def generate(cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int = 1200, timeout: int = 90) -> str:
-    """One chat completion. Raises LLMError with the reason when the model can't be reached or refuses."""
+# --------------------------------------------------------------------------- usage and budget
+
+DEFAULT_DAILY_CALLS = 200
+_USAGE_LOCK = __import__("threading").Lock()
+_LAST_ERROR: list[str] = [""]
+
+
+def _usage_path() -> Path:
+    return settings_path().with_name("usage.json")
+
+
+def usage() -> dict:
+    """Today's model calls and tokens on this machine, and the daily call budget."""
+    import time as _t
+
+    today = _t.strftime("%Y-%m-%d")
+    data = _read(_usage_path())
+    day = data.get(today) if isinstance(data.get(today), dict) else {}
+    budget = _read(settings_path()).get("ai_budget", {})
+    limit = int(budget.get("daily_calls", DEFAULT_DAILY_CALLS)) if isinstance(budget, dict) else DEFAULT_DAILY_CALLS
+    return {
+        "date": today,
+        "calls": int(day.get("calls", 0)),
+        "input_tokens": int(day.get("input_tokens", 0)),
+        "output_tokens": int(day.get("output_tokens", 0)),
+        "daily_calls": limit,
+    }
+
+
+def set_budget(daily_calls: int) -> dict:
+    p = settings_path()
+    data = _read(p)
+    data["ai_budget"] = {"daily_calls": max(0, int(daily_calls))}
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2))
+    return usage()
+
+
+def _record(input_tokens: int, output_tokens: int) -> dict:
+    import time as _t
+
+    with _USAGE_LOCK:
+        p = _usage_path()
+        data = _read(p)
+        today = _t.strftime("%Y-%m-%d")
+        day = data.get(today) if isinstance(data.get(today), dict) else {}
+        day = {
+            "calls": int(day.get("calls", 0)) + 1,
+            "input_tokens": int(day.get("input_tokens", 0)) + input_tokens,
+            "output_tokens": int(day.get("output_tokens", 0)) + output_tokens,
+        }
+        keep = {k: v for k, v in data.items() if k >= _t.strftime("%Y-%m-%d", _t.localtime(_t.time() - 30 * 86400))}
+        keep[today] = day
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(keep, indent=1))
+        return day
+
+
+def last_error() -> str:
+    """Why the last `complete` returned None (empty when it did not)."""
+    return _LAST_ERROR[0]
+
+
+def _tokens(pid: str, r) -> tuple[int, int]:
+    try:
+        if pid == "litellm":
+            u = getattr(r, "usage", None)
+            return int(getattr(u, "prompt_tokens", 0) or 0), int(getattr(u, "completion_tokens", 0) or 0)
+        if pid == "anthropic":
+            u = r.get("usage") or {}
+            return int(u.get("input_tokens", 0)), int(u.get("output_tokens", 0))
+        if pid == "gemini":
+            u = r.get("usageMetadata") or {}
+            return int(u.get("promptTokenCount", 0)), int(u.get("candidatesTokenCount", 0))
+        u = r.get("usage") or {}
+        return int(u.get("prompt_tokens", 0)), int(u.get("completion_tokens", 0))
+    except (TypeError, ValueError, AttributeError):
+        return 0, 0
+
+
+def generate(
+    cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int = 1200, timeout: int = 90, purpose: str = ""
+) -> str:
+    """One chat completion, within the daily call budget and counted in the usage. Raises LLMError with the
+    reason when the model can't be reached, refuses, or the budget is used up."""
+    import logging
+    import time as _t
+
     if reason := _missing(cfg):
         raise LLMError(reason)
+    u = usage()
+    if u["daily_calls"] and u["calls"] >= u["daily_calls"]:
+        raise LLMError(
+            f"today's AI budget of {u['daily_calls']} model calls is used up; "
+            "raise it in Settings or wait until tomorrow"
+        )
+    t0 = _t.perf_counter()
+    text_out, raw = _generate(cfg, system, messages, max_tokens, timeout)
+    tin, tout = _tokens(cfg.provider, raw)
+    day = _record(tin, tout)
+    logging.getLogger("codewright").info(
+        "%-18s Model call%s: %s, %s in / %s out tokens, %.1fs (today: %s of %s calls)",
+        "ai",
+        f" ({purpose})" if purpose else "",
+        cfg.model,
+        tin or "?",
+        tout or "?",
+        _t.perf_counter() - t0,
+        day["calls"],
+        u["daily_calls"] or "unlimited",
+    )
+    from . import activity
+
+    activity.note(
+        "ai",
+        f"Model call{f' ({purpose})' if purpose else ''}: {cfg.model}, {tin or '?'} in / {tout or '?'} out tokens"
+        f" · today {day['calls']}/{u['daily_calls'] or '∞'} calls",
+    )
+    return text_out
+
+
+def _generate(cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int, timeout: int) -> tuple[str, object]:
     pid = cfg.provider
     msgs = [{"role": m["role"], "content": m["content"]} for m in messages if m.get("content")]
     if pid == "litellm":
@@ -334,7 +452,7 @@ def generate(cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int 
                 timeout=timeout,
                 **({"api_key": cfg.api_key} if cfg.api_key else {}),
             )
-            return (resp.choices[0].message.content or "").strip()
+            return (resp.choices[0].message.content or "").strip(), resp
         except Exception as e:  # LiteLLM raises a different class per provider
             raise LLMError(str(e)[:400]) from None
     base = (cfg.base_url if pid == "openai" and cfg.base_url else PROVIDERS[pid].base_url).rstrip("/")
@@ -348,7 +466,7 @@ def generate(cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int 
         )
         if r.get("stop_reason") == "refusal":
             raise LLMError("the model declined to answer")
-        return "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text").strip()
+        return "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text").strip(), r
     if pid == "gemini":
         r = _post(
             f"{base}/models/{cfg.model}:generateContent",
@@ -365,7 +483,7 @@ def generate(cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int 
             timeout,
         )
         parts = ((r.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
-        return "".join(p.get("text", "") for p in parts).strip()
+        return "".join(p.get("text", "") for p in parts).strip(), r
     r = _post(
         f"{base}/chat/completions",
         {"model": cfg.model, "messages": [{"role": "system", "content": system}, *msgs], "max_tokens": max_tokens},
@@ -373,16 +491,24 @@ def generate(cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int 
         "the server",
         timeout,
     )
-    return (((r.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    return (((r.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip(), r
 
 
-def complete(cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int = 1200) -> str | None:
-    """One chat completion, or None when no model is available or the call fails (callers fall back)."""
-    if not status(cfg)["available"]:
+def complete(
+    cfg: LLMConfig, system: str, messages: list[dict], max_tokens: int = 1200, purpose: str = ""
+) -> str | None:
+    """One chat completion, or None when no model is available or the call fails (callers fall back;
+    `last_error()` says why)."""
+    st = status(cfg)
+    if not st["available"]:
+        _LAST_ERROR[0] = st["reason"]
         return None
     try:
-        return generate(cfg, system, messages, max_tokens) or None
-    except LLMError:
+        out = generate(cfg, system, messages, max_tokens, purpose=purpose) or None
+        _LAST_ERROR[0] = "" if out else "the model sent an empty answer"
+        return out
+    except LLMError as e:
+        _LAST_ERROR[0] = str(e)
         return None
 
 

@@ -7,7 +7,7 @@
   symbol: functools.lru_cache
   kind: stdlib
   library: null
-  versions: ">=3.8"
+  versions: ">=3.11"
   suggestion: >-
     Decorate the function with @functools.lru_cache(maxsize=...) and delete the
     manual dict lookups. The cache becomes bounded and exposes hit/miss stats.

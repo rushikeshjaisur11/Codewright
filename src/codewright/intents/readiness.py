@@ -21,7 +21,7 @@ import re
 from ..graph import ParsedFile, text
 from ..models import Function, IntentMatch
 from .architecture import DB_OBJECTS
-from .detectors import calls_in, detector, is_test_file, line, module_detector, walk
+from .detectors import calls_in, detector, graph_filter, is_test_file, line, module_detector, nodes, walk
 
 QUERY_METHODS = {
     "execute",
@@ -113,7 +113,7 @@ def detect_n_plus_one(pf, fn, node, graph):
                     fn,
                     line(call),
                     f"`{obj}.{method}(...)` runs once per `{var}` in the loop on line {line(loop)}",
-                    {"orm": orm, "advice": advice, "hot": graph.key(fn) in _hot(graph)},
+                    {"orm": orm, "advice": advice, "hot": graph is not None and graph.key(fn) in _hot(graph)},
                 )
             ]
     return []
@@ -217,6 +217,17 @@ def detect_cache_on_method(pf, fn, node, graph):
     ]
 
 
+@graph_filter("n-plus-one-query")
+def _n_plus_one_hot(m, graph):
+    m.data = {**m.data, "hot": graph.key(m.function) in _hot(graph)}
+    return m
+
+
+@graph_filter("unbounded-cache")
+def _unbounded_cache_hot(m, graph):
+    return m if graph.key(m.function) in _hot(graph) else None
+
+
 @detector("unbounded-cache")
 def detect_unbounded_cache(pf, fn, node, graph):
     """`@cache` / `@lru_cache(maxsize=None)` on a request path: one entry per distinct argument, forever."""
@@ -227,8 +238,8 @@ def detect_unbounded_cache(pf, fn, node, graph):
         return []
     name, written = found
     unbounded = name == "functools.cache" or re.search(r"maxsize\s*=\s*None", written)
-    if not unbounded or graph.key(fn) not in _hot(graph):
-        return []
+    if not unbounded or (graph is not None and graph.key(fn) not in _hot(graph)):
+        return []  # without the graph (cached per file) the hot-path check is the graph filter below
     return [
         IntentMatch(
             "unbounded-cache",
@@ -294,7 +305,7 @@ def detect_no_pre_ping(pf: ParsedFile) -> list[IntentMatch]:
     from ..graph import resolve
 
     out = []
-    for call in walk(pf.root, into_defs=True):
+    for call in nodes(pf, "call"):
         if call.type != "call":
             continue
         f = call.child_by_field_name("function")

@@ -35,7 +35,7 @@ export default function MapPage() {
   const searchRef = useRef<HTMLInputElement>(null);
   // The map needs only the parsed code: draw it as soon as that is ready, and refresh when findings arrive.
   const has = !!data?.result || !!data?.graph_ready;
-  const done = !!data?.result;
+  const done = !!data?.has_result; // true once this session's review (not the saved one) has landed
 
   useEffect(() => {
     if (!wid || !has) return;

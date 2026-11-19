@@ -11,7 +11,7 @@ from tree_sitter import Node
 
 from ..graph import ParsedFile, resolve, text
 from ..models import Function, IntentMatch
-from .detectors import calls_in, detector, is_celery_task, line, module_detector, walk  # noqa: F401
+from .detectors import calls_in, detector, is_celery_task, line, module_detector, nodes, walk  # noqa: F401
 
 REQUESTS_CALLS = {f"requests.{m}" for m in ("get", "post", "put", "patch", "delete", "head", "options", "request")}
 
@@ -107,7 +107,7 @@ def detect_class_config(pf: ParsedFile) -> list[IntentMatch]:
 
     models = _pydantic_models(pf)
     out = []
-    for cls in walk(pf.root, into_defs=True):
+    for cls in nodes(pf, "class_definition"):
         if cls.type != "class_definition" or text(cls.child_by_field_name("name")) not in models:
             continue
         body = cls.child_by_field_name("body")
@@ -226,7 +226,7 @@ def _model_configs(pf: ParsedFile):
     from .more import _pydantic_models
 
     models = _pydantic_models(pf)
-    for cls in walk(pf.root, into_defs=True):
+    for cls in nodes(pf, "class_definition"):
         if cls.type != "class_definition" or text(cls.child_by_field_name("name")) not in models:
             continue
         body = cls.child_by_field_name("body")

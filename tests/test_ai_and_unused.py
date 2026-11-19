@@ -135,7 +135,9 @@ def test_architecture_graph(tmp_path):
     arch = AiMap(graph.build(agent_repo(tmp_path))).architecture()
     kinds = {n["label"]: n["kind"] for n in arch["nodes"]}
     assert kinds["root"] == "agent" and kinds["pipeline"] == "workflow" and kinds["search_docs"] == "tool"
-    assert kinds["gemini-2.5-flash"] == "llm" and kinds["chat"] == "entry"
+    assert (
+        kinds["gemini-2.5-flash"] == "llm" and kinds["POST /chat"] == "entry"
+    )  # a route is named by its method and path
     edges = {(e["source"].rsplit("::", 1)[-1], e["target"].rsplit("::", 1)[-1], e["label"]) for e in arch["edges"]}
     assert ("chat", "root_agent", "runs") in edges
     assert ("root_agent", "pipeline", "delegates") in edges
@@ -285,7 +287,7 @@ def test_every_box_on_both_maps_has_details(tmp_path):
         assert d["kind"] != "unknown" and d["summary"], n["id"]
     root = client.get(f"/api/w/{wid}/ai/node", params={"id": "app/agent.py::root_agent"}).json()
     facts = {f["label"]: f["value"] for f in root["facts"]}
-    assert facts["Model"] == "gemini-2.5-flash" and facts["Run by"] == "chat"
+    assert facts["Model"] == "gemini-2.5-flash" and facts["Run by"] == "POST /chat"
     assert root["code"]["text"].startswith("root_agent = Agent(")
     writer = client.get(f"/api/w/{wid}/ai/node", params={"id": "app/agent.py::writer"}).json()
     assert {f["label"]: f["value"] for f in writer["facts"]}["Model"].startswith("anthropic/claude-haiku-5-5")
@@ -364,3 +366,21 @@ def test_adk_root_agent_and_langgraph_json_are_entry_points(tmp_path):
     assert ("adk:agent_pkg/agent.py", "agent_pkg/agent.py::root_agent", "runs") in edges
     assert ("lg:main", "graphs/flow.py::g", "runs") in edges
     assert ("graphs/flow.py::g#work", "graphs/flow.py::worker", "runs agent") in edges
+
+
+def test_one_file_the_ai_scanner_trips_on_is_skipped_not_fatal(tmp_path, monkeypatch):
+    from codewright import aimap, graph
+
+    (tmp_path / "a.py").write_text("from google.adk.agents import Agent\nroot_agent = Agent(name='a', model='m')\n")
+    (tmp_path / "b.py").write_text("from google.adk.agents import Agent\nb_agent = Agent(name='b', model='m')\n")
+    real = aimap.AiMap._scan_file
+
+    def flaky(self, pf):
+        if pf.path == "b.py":
+            raise TypeError("sequence item 0: expected str instance, NoneType found")
+        return real(self, pf)
+
+    monkeypatch.setattr(aimap.AiMap, "_scan_file", flaky)
+    out = aimap.build(graph.build(tmp_path))
+    assert [a["name"] for a in out["agents"]] == ["a"]
+    assert out["errors"][0]["file"] == "b.py" and "expected str" in out["errors"][0]["error"]

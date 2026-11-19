@@ -30,6 +30,33 @@ def load(extra_dirs: list[Path] | None = None) -> list[Card]:
     return cards
 
 
+def repo_dir(root: str | Path) -> Path:
+    """Cards a team adds to its own knowledge base: `.codewright/cards/*.yaml`, committed with the repo."""
+    return Path(root) / ".codewright" / "cards"
+
+
+def for_repo(root: str | Path | None, extra_dirs: list[Path] | None = None) -> list[Card]:
+    """The built-in cards, the repo's own and any extra directories. A repo card that does not parse is skipped
+    (and logged) so one bad file cannot stop a review."""
+    cards = load(extra_dirs)
+    if root is None or not repo_dir(root).is_dir():
+        return cards
+    seen = {c.id for c in cards}
+    for path in sorted(repo_dir(root).glob("*.yaml")):
+        try:
+            raws = yaml.safe_load(path.read_text()) or []
+            for raw in raws if isinstance(raws, list) else [raws]:
+                card = Card(**{k: v for k, v in raw.items() if k in _FIELDS and k != "origin"}, origin="repo")
+                if card.id not in seen:
+                    seen.add(card.id)
+                    cards.append(card)
+        except (OSError, yaml.YAMLError, TypeError, AttributeError) as exc:
+            import logging
+
+            logging.getLogger("codewright").warning("skipped knowledge card %s: %s", path.name, exc)
+    return cards
+
+
 def version_matches(version: str | None, spec: str) -> bool:
     if spec in ("*", ""):
         return True

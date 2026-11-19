@@ -270,6 +270,7 @@ def is_tooling(path: str) -> bool:
 
 
 # A quote followed by a dotted name: `"pkg.plugins.csv"` or `'a.b:func'` (importlib, plugin lists, entry points).
+_LAUNCH_TOKEN = re.compile(r"(?:^|(?<=[\s\"'/=\[,]))([^\s\"'/=\[,]+)")
 _STRING_DOTTED = re.compile(rb"[\"']([A-Za-z_][\w]*(?:\.[A-Za-z_]\w*)+)")
 
 
@@ -342,8 +343,25 @@ class ArchMap:
         modules, and everything they import, directly or through other modules. A repo with no
         entry point at all is a library, so every module outside script folders is in use.
         """
+        cached = self.g.__dict__.get("_unused_modules")  # depends only on the graph and the launch files
+        if cached is not None:
+            return [dict(u) for u in cached]
+        out = self._find_unused()
+        self.g.__dict__["_unused_modules"] = [dict(u) for u in out]
+        return out
+
+    def _find_unused(self) -> list[dict]:
         files = list(self.modules.values())
         launch = self._launch_text()
+        # Every file name the launch text mentions after a separator, found in one pass (a regex per module
+        # over all the config text took seconds on big repos).
+        launch_names: set[str] = set()
+        for m in _LAUNCH_TOKEN.finditer(launch):
+            tok = m.group(1)
+            launch_names.add(tok)
+            for i, ch in enumerate(tok):
+                if not (ch.isalnum() or ch == "_"):
+                    launch_names.add(tok[:i])
         roots = set()
         weak = set()  # roots only because of their file name (app.py nobody imports): not proof of an app
         entry_files = {k.partition("::")[0] for k in self.g.entry_points}
@@ -365,7 +383,7 @@ class ArchMap:
                 or self._launched_outside(p)
                 or any(f"{n}:" in launch or f"-m {n}" in launch for n in names if n)
                 or p in launch
-                or (p.count("/") <= 3 and re.search(rf"(^|[\s\"'/=\[,]){re.escape(base)}\b", launch) is not None)
+                or (p.count("/") <= 3 and base in launch_names)
             ):
                 roots.add(p)
         if not roots - weak:  # a library: consumers may import any module

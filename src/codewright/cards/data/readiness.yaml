@@ -42,7 +42,7 @@
   symbol: urllib.request.urlopen
   kind: stdlib
   library: null
-  versions: ">=3.0"
+  versions: ">=3.11"
   suggestion: >-
     Pass `timeout=` (seconds) to `urllib.request.urlopen`, for example `timeout=10`, or
     move to the HTTP client the project already uses.
@@ -99,7 +99,7 @@
   symbol: functools.cached_property
   kind: stdlib
   library: null
-  versions: ">=3.8"
+  versions: ">=3.11"
   suggestion: >-
     A function-level cache keeps `self` as part of every key, so no instance it saw is
     ever garbage-collected. Use `functools.cached_property` for an argument-free method,
@@ -130,7 +130,7 @@
   symbol: functools.lru_cache
   kind: stdlib
   library: null
-  versions: ">=3.8"
+  versions: ">=3.11"
   suggestion: >-
     Give it a size: `@functools.lru_cache(maxsize=1024)` keeps the most recently used
     entries and evicts the rest.

@@ -6,6 +6,7 @@ import {
 import { api, ReviewPayload, WorkspaceInfo } from "./api";
 import { CodeView, ProgressBar, ReviewProgress, Spinner, timeAgo, useToast } from "./ui";
 import RepoSwitcher from "./RepoSwitcher";
+import { ActivityButton, useActivity } from "./Activity";
 // Pages load on demand: the first screen doesn't wait for the map, design or chat code.
 const Overview = lazy(() => import("./pages/Overview"));
 const Review = lazy(() => import("./pages/Review"));
@@ -188,6 +189,8 @@ export default function App() {
     releases: "Dependencies", knowledge: "Knowledge base", settings: "Settings",
   };
 
+  const activity = useActivity(wid, !!data?.running);
+  const latest = activity[activity.length - 1];
   // A repo's first review: pages that need a result show the progress instead of an empty state.
   const needsResult = !["design", "knowledge", "settings"].includes(route.page);
   // These pages need only the parsed code, so they show as soon as it is read, while findings are still computed.
@@ -234,10 +237,11 @@ export default function App() {
             {data && (
               <span className="status">
                 {data.running
-                  ? <span className="row" title={data.progress?.label}><Spinner size={13} /> {data.progress ? `${data.progress.label} · ${data.progress.percent}%` : "Starting review…"}</span>
+                  ? <span className="row truncate" style={{ maxWidth: 420 }} title={latest?.message ?? data.progress?.label}><Spinner size={13} /> {latest?.message ?? (data.progress ? `${data.progress.label} · ${data.progress.percent}%` : "Starting review…")}{data.progress ? ` · ${data.progress.percent}%` : ""}</span>
                   : `Last review ${timeAgo(data.last_run)}`}
               </span>
             )}
+            {wid && <ActivityButton events={activity} running={!!data?.running} />}
             {wid && route.page !== "design" && (
               <button className={`btn ${watching ? "accent" : ""}`} onClick={toggleWatch} aria-pressed={watching}
                 title="Re-review automatically whenever a Python file is saved (tests not run)">
@@ -255,6 +259,14 @@ export default function App() {
           <main className={`content ${flush ? "flush" : ""}`}>
             <Suspense fallback={<div className="page"><Spinner /></div>}>
             {firstRun && <ReviewProgress name={data!.name} progress={data!.progress} />}
+            {data?.result?.stack.python_unsupported && (
+              <div className="callout amber" style={{ margin: "10px 16px 0", fontSize: 13 }}>
+                This repo targets Python {data.result.stack.python_unsupported}. Codewright reviews code for Python 3.11 and newer, so its
+                suggestions may use features {data.result.stack.python_unsupported} doesn't have. Upgrade the project's Python (and
+                <code> requires-python</code>) to get advice that fits.
+              </div>
+            )}
+            {data?.from_cache && <div className="callout row" style={{ margin: "10px 16px 0", fontSize: 13 }}>{data.running ? <Spinner size={13} /> : null}Showing the review from {timeAgo(data.saved_at ?? null)}{data.running ? "; re-checking only the files that changed since" : ""}.</div>}
             {finishing && <div className="callout row" style={{ margin: "10px 16px 0", fontSize: 13 }}><Spinner size={13} />Findings are still being worked out{data?.progress ? ` (${data.progress.label.toLowerCase()}, ${data.progress.percent}%)` : ""}. This page is already live and fills in when they land.</div>}
             {!firstRun && <>
             {route.page === "overview" && <Overview />}

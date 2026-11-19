@@ -99,7 +99,7 @@
     Fan-in in this repo's top tenth (at least five callers), on a path from a route, command
     or task, at least three statements, in a project that already has tests.
   sources:
-    - https://michaelfeathers.silvrback.com/characterization-testing
+    - https://en.wikipedia.org/wiki/Characterization_test
     - https://fastapi.tiangolo.com/tutorial/testing/
     - https://click.palletsprojects.com/en/stable/testing/
 

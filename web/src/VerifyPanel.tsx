@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Check, ShieldCheck, Sparkles, Flame, FileCode2 } from "lucide-react";
+import { Bot, Check, ShieldCheck, Sparkles, Flame, FileCode2 } from "lucide-react";
 import { useApp } from "./App";
-import { api, PlanFile, ReviewPlan, ReviewScope } from "./api";
+import { AiBatch, api, PlanFile, ReviewPlan, ReviewScope } from "./api";
 import { Spinner, useToast } from "./ui";
 
 /**
@@ -14,6 +14,24 @@ export default function VerifyPanel({ scope, reused }: { scope?: ReviewScope; re
   const [plan, setPlan] = useState<ReviewPlan | null>(null);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [batch, setBatch] = useState<AiBatch | null>(null);
+  const [batchSize, setBatchSize] = useState(10);
+
+  async function checkWithAi() {
+    if (!wid) return;
+    try {
+      let p = await api.aiCheckBatch(wid, batchSize);
+      setBatch(p);
+      while (p.running) {
+        await new Promise((r) => setTimeout(r, 1200));
+        p = await api.aiCheckBatchProgress(wid);
+        setBatch(p);
+      }
+      if (p.error) toast(p.error, "error");
+      else toast(`AI checked ${p.done}: ${Object.entries(p.verdicts).map(([v, n]) => `${n} ${v}`).join(", ") || "nothing to check"}`);
+      await reload();
+    } catch (e) { toast((e as Error).message, "error"); }
+  }
   const running = !!data?.running;
   const unproven = scope?.unproven ?? 0;
   // Show the suggested files straight away. This ranking is free; the model is only asked on request.
@@ -60,6 +78,14 @@ export default function VerifyPanel({ scope, reused }: { scope?: ReviewScope; re
           {scope.changed_count ? <> · {scope.changed_count} file{scope.changed_count === 1 ? "" : "s"} edited since they last ran</> : null}.
         </span>
         <span className="grow" />
+        <span className="row" style={{ gap: 4 }} title="Have the model read the top unverified findings against the code; their verdicts reorder the list">
+          <select className="select" style={{ height: 30, fontSize: 13 }} value={batchSize} onChange={(e) => setBatchSize(Number(e.target.value))} aria-label="How many to check">
+            {[5, 10, 25, 50].map((n) => <option key={n} value={n}>top {n}</option>)}
+          </select>
+          <button className="btn sm" disabled={!!batch?.running} onClick={checkWithAi}>
+            {batch?.running ? <Spinner size={13} /> : <Bot size={13} />}{batch?.running ? `AI checked ${batch.done}/${batch.total}` : "Check with AI"}
+          </button>
+        </span>
         <button className="btn sm" disabled={running || loading} onClick={() => suggest(true)}
           title="Ask your configured model which of these files are worth a test run">
           {loading ? <Spinner size={13} /> : <Sparkles size={13} />}{plan?.source === "ai" ? "Ask again" : "Ask AI to refine"}

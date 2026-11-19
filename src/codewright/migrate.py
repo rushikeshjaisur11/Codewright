@@ -164,7 +164,7 @@ def findings_for(
 
     st, at = _target_stack(stack, m, version)
     matches = detect(graph, only=set(m.intents))
-    found = make_findings(matches, st, graph, card_store.load())
+    found = make_findings(matches, st, graph, card_store.for_repo(graph.root))
     found = [f for f in found if f.intent in m.intents]
     if m.blocking_rule:
         rule = rules_mod.Rule("async-io", "no-blocking-in-async", paths=["**"])

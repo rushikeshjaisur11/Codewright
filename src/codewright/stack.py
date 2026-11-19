@@ -169,6 +169,17 @@ def _from_dockerfiles(root: Path, stack: Stack) -> None:
                 stack.python = m.group(1)
 
 
+MIN_PYTHON = (3, 11)  # the oldest Python whose code Codewright reviews
+
+
+def unsupported_python(stack: Stack) -> str | None:
+    """The repo's Python version when it is older than MIN_PYTHON (its advice assumes 3.11+), else None."""
+    m = re.search(r"(\d+)\.(\d+)", stack.python or "")
+    if m and (int(m.group(1)), int(m.group(2))) < MIN_PYTHON:
+        return f"{m.group(1)}.{m.group(2)}"
+    return None
+
+
 def python_version(stack: Stack) -> str:
     """Best guess at the concrete Python version the repo targets (major.minor)."""
     import sys

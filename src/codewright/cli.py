@@ -16,6 +16,7 @@ from . import stack as stack_mod
 
 app = typer.Typer(help="Codewright: version-aware, proven 'instead of X, use Y' suggestions.", no_args_is_help=True)
 console = Console()
+err_console = Console(stderr=True)  # warnings stay out of piped output (json, sarif, markdown)
 
 
 class Format(str, Enum):
@@ -94,6 +95,13 @@ def review(
             bench=bench and proof,
             bench_rounds=bench_rounds,
         )
+        from .stack import MIN_PYTHON, unsupported_python
+
+        if (old := unsupported_python(result.stack)) is not None:
+            err_console.print(
+                f"[yellow]This repo targets Python {old}. Codewright reviews code for Python "
+                f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]} and newer: suggestions may use features {old} lacks.[/]"
+            )
     if sarif_output:
         sarif_output.write_text(to_sarif(result))
     if fmt is Format.terminal and output is None:
@@ -214,6 +222,9 @@ def serve(
             f"[yellow]Bound to {host}: only requests addressed to localhost are served. "
             "Pass --allow-host <name> for each name other machines use to reach it.[/]"
         )
+    from .activity import configure_terminal
+
+    configure_terminal()  # one line per step: parsing, detection, tests, release lookups, map builds
     console.print(f"Codewright on [bold]http://{host}:{port}[/]  (repo: {path.resolve()})")
     uvicorn.run(create_app([str(path)], allowed_hosts=hosts), host=host, port=port, log_level="warning")
 

@@ -229,8 +229,7 @@
   effort: 1
   impact: 2
   risk: >-
-    None at runtime. On Python 3.8, import Annotated from typing_extensions instead of
-    typing.
+    None at runtime.
   when_not: >-
     Pydantic dataclasses, where a field without an assigned value must come before fields
     with defaults (Codewright only rewrites BaseModel and BaseSettings subclasses).

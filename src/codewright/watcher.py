@@ -113,7 +113,7 @@ def check(
     index = resolve_index(root)
     cache = _load_cache(root, index)
     previous = {k: v.get("version") for k, v in cache.items()}
-    cards = card_store.load()
+    cards = card_store.for_repo(root)
     names = names or sorted(stack.dependencies)
     libraries = {c.library for c in cards if c.library and c.intent != card_store.REFERENCE}
     matches: list | None = None  # detected on first use: only an upgrade preview needs it

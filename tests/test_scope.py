@@ -2,6 +2,7 @@
 
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -145,10 +146,10 @@ def test_map_and_dependencies_are_available_before_the_review_finishes(repo, mon
     gate, reached = threading.Event(), threading.Event()
     real = engine.detect
 
-    def slow(g):
+    def slow(g, **k):
         reached.set()
         gate.wait(10)
-        return real(g)
+        return real(g, **k)
 
     monkeypatch.setattr(engine, "detect", slow)
     w = Workspace(repo)
@@ -180,3 +181,114 @@ def test_release_rows_stream_as_each_lookup_finishes(repo, monkeypatch):
     rows = watcher.check(r.stack, repo, on_row=seen.append)
     assert len(seen) == len(rows) == len(r.stack.dependencies)
     assert {x["name"] for x in seen} == {x["name"] for x in rows}
+
+
+# ---------------------------------------------------------------- detection reused between runs
+
+
+def test_second_review_reuses_detection_and_finds_the_same(repo):
+    from codewright import graph
+
+    first = review(repo, run_proof=False, top=None)
+    graph._PARSED.clear()  # as after a restart
+    again = review(repo, run_proof=False, top=None)
+    files = [p for p in again.graph.files if not p.startswith("tests/")]
+    assert again.graph.__dict__["detect_reused"] >= len(files) - 1
+    assert again.graph.__dict__.get("detect_graph_reused")
+    assert sorted(f.id for f in again.findings) == sorted(f.id for f in first.findings)
+    assert [f.patch for f in sorted(again.findings, key=lambda f: f.id)] == [
+        f.patch for f in sorted(first.findings, key=lambda f: f.id)
+    ]
+
+
+def test_an_edited_file_is_the_only_one_detected_again(repo):
+    first = review(repo, run_proof=False, top=None)
+    target = memo(first).file
+    (repo / target).write_text((repo / target).read_text() + "\n\ndef extra():\n    return 1\n")
+    again = review(repo, run_proof=False, top=None)
+    scanned = [p for p in again.graph.files if not p.startswith("tests/") and "/tests/" not in p]
+    assert again.graph.__dict__["detect_reused"] == len(scanned) - 1
+    assert not again.graph.__dict__.get("detect_graph_reused")  # a file changed: whole-graph checks re-ran
+    assert memo(again).id == memo(first).id
+
+
+def test_detect_cache_encoding_round_trips_and_skips_live_objects():
+    from codewright import detectcache
+
+    data = {"edits": [(1, 2, "x")], "b": b"\x00raw", "s": {"a"}, "n": None, "nested": {"k": (3, [4])}}
+    assert detectcache._dec(detectcache._enc(data)) == data
+    with pytest.raises(detectcache.Unencodable):
+        detectcache._enc({"node": object()})
+
+
+def test_detect_cache_is_dropped_when_detectors_change(repo, monkeypatch):
+    from codewright import detectcache
+
+    review(repo, run_proof=False, top=None)
+    assert detectcache.load(repo)
+    monkeypatch.setattr(detectcache, "signature", lambda: "other")
+    assert detectcache.load(repo) == {}
+
+
+# ---------------------------------------------------------------- the saved review, activity and gitignore
+
+
+def test_reopening_shows_the_saved_review_at_once(repo):
+    from fastapi.testclient import TestClient
+
+    from codewright.server import create_app
+
+    c = TestClient(create_app([str(repo)]), base_url="http://localhost")
+    wid = c.get("/api/workspaces").json()[0]["id"]
+    c.post(f"/api/w/{wid}/review", json={"proof": False})
+    for _ in range(200):
+        d = c.get(f"/api/w/{wid}/review").json()
+        if d["has_result"] and not d["running"]:
+            break
+        time.sleep(0.05)
+    shown = len(d["result"]["findings"])
+
+    c2 = TestClient(create_app([str(repo)]), base_url="http://localhost")  # a new server process
+    d2 = c2.get(f"/api/w/{wid}/review").json()
+    assert d2["from_cache"] and not d2["has_result"]
+    assert len(d2["result"]["findings"]) == shown
+
+    feed = c2.get(f"/api/activity?workspace={wid}").json()
+    assert any("Review done" in e["message"] for e in feed["events"])
+    later = c2.get(f"/api/activity?since={feed['last']}&workspace={wid}").json()
+    assert later["events"] == []
+
+
+def test_old_gitignore_gains_the_cache_entries(tmp_path):
+    from codewright.feedback import ensure_dir
+
+    d = tmp_path / ".codewright"
+    d.mkdir()
+    (d / ".gitignore").write_text("snapshots/\nreleases.json\n")
+    ensure_dir(tmp_path)
+    lines = (d / ".gitignore").read_text().splitlines()
+    assert {"review-state.json", "cache/", "last-review.json", "snapshots/"} <= set(lines)
+
+
+def test_detectors_that_read_the_graph_are_marked():
+    """A function detector that reads other files (hot paths, callers) can't be cached per file or run while the
+    graph is still being built: it must say so with uses_graph=True."""
+    import ast
+    from pathlib import Path
+
+    from codewright.intents import detectors
+
+    for p in sorted((Path(detectors.__file__).parent).glob("*.py")):
+        for fn in ast.walk(ast.parse(p.read_text())):
+            if not isinstance(fn, ast.FunctionDef):
+                continue
+            decos = [
+                d for d in fn.decorator_list if isinstance(d, ast.Call) and getattr(d.func, "id", "") == "detector"
+            ]
+            if not decos or "graph" not in [a.arg for a in fn.args.args]:
+                continue
+            reads = any(isinstance(n, ast.Name) and n.id == "graph" for n in ast.walk(ast.Module(fn.body, [])))
+            marked = any(k.arg == "uses_graph" for k in decos[0].keywords)
+            intent = decos[0].args[0].value
+            filtered = intent in detectors.GRAPH_FILTERS  # reads the graph only when given one; filter does the rest
+            assert reads == (marked or filtered), f"{p.name}:{fn.name}: mark uses_graph or add a graph_filter"

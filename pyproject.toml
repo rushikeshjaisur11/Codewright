@@ -36,6 +36,7 @@ dependencies = [
     "uvicorn>=0.29",
     "mcp>=2.0",
     "pyjwt[crypto]>=2.10",
+    "watchfiles>=0.21",
 ]
 
 [project.optional-dependencies]

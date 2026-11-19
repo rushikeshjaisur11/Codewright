@@ -3,6 +3,8 @@ import { BellOff, Bot, CheckCircle2, Package, Plug, PlugZap, RotateCcw, Save, Sh
 import { useApp } from "../App";
 import { AiSettings, AiTest, api, IndexState, ProviderId, Settings } from "../api";
 import { CopyButton, Spinner, intentLabel, useToast } from "../ui";
+import ScanScope from "../ScanScope";
+import AiUsage from "../AiUsage";
 
 export default function SettingsPage() {
   const { wid, data, runReview } = useApp();
@@ -58,6 +60,10 @@ export default function SettingsPage() {
       <div className="page-head"><div><h1>Settings</h1><p>Repo settings are stored in <code>{data?.root}/.codewright/</code>, so the team shares them through git. The model and its key are stored on this machine only.</p></div></div>
 
       <ModelCard wid={wid} settings={s} onChange={setS} onOffline={(offline) => save({ offline })} />
+
+      <AiUsage />
+
+      {wid && <ScanScope />}
 
       <div className="card">
         <div className="card-head"><h2><Package size={16} />Package index</h2>

@@ -261,7 +261,9 @@ def plan(findings: list[Finding], changed: list[str], root: str | Path, limit: i
         )
         header = "file | unverified patches | impact | hot-path functions | tests reach | changed | kinds"
         ask = f"Choose up to {limit} files.\n\n{header}\n{table}"
-        text = complete(cfg, SYSTEM, [{"role": "user", "content": ask}], max_tokens=1500)
+        text = complete(
+            cfg, SYSTEM, [{"role": "user", "content": ask}], max_tokens=1500, purpose="choose files to verify"
+        )
         for item in _parse(text):
             f = item.get("file")
             if f in by_file and f not in {p for p, _ in picked}:
