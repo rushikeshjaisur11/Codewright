@@ -194,3 +194,82 @@ def test_plan_and_apply_an_upgrade_with_its_code_change(tmp_path):
 def test_lock_step_follows_the_lockfile(tmp_path):
     (tmp_path / "uv.lock").write_text("version = 1\n")
     assert upgrade.lock_step(tmp_path, "x", "1.0")["command"] == ["uv", "lock", "--upgrade-package", "x==1.0"]
+
+
+# ---------------------------------------------------------------- add a library, deepen one
+
+
+def _fake_pypi(monkeypatch, readme="# langgraph\nUse `Send` to fan out."):
+    monkeypatch.setattr(
+        kf,
+        "_get_json",
+        lambda url, timeout=8.0: {
+            "info": {
+                "name": "langgraph",
+                "version": "1.2.22",
+                "summary": "Graphs for agents",
+                "description": readme,
+                "project_urls": {"Docs": "https://docs.x/lg"},
+            }
+        },
+    )
+
+
+def test_add_a_library_drafts_grounded_cards(tmp_path, monkeypatch):
+    _fake_pypi(monkeypatch)
+    monkeypatch.setattr(llm, "status", lambda cfg: {"available": True, "reason": ""})
+    asked = []
+    reply = [
+        {
+            "title": "Fan out with Send",
+            "suggestion": "Return Send() from a conditional edge.",
+            "versions": ">=0.2",
+            "sources": ["https://docs.x/lg", "not-a-url"],
+        },
+        {"title": "No suggestion here"},
+    ]
+    monkeypatch.setattr(
+        llm, "complete", lambda cfg, sys_, msgs, **k: asked.append(msgs[0]["content"]) or json.dumps(reply)
+    )
+    out = kf.draft_library(
+        tmp_path, "LangGraph", focus="fan-out", usage=[{"file": "app/graph.py", "names": ["StateGraph"]}]
+    )
+    assert out["library"] == "langgraph" and out["existing"] == 0
+    assert [c["title"] for c in out["cards"]] == ["Fan out with Send"]
+    assert out["cards"][0]["sources"] == ["https://docs.x/lg"] and out["cards"][0]["library"] == "langgraph"
+    prompt = asked[0]
+    assert "Use `Send` to fan out." in prompt and "app/graph.py: StateGraph" in prompt and "Focus on: fan-out" in prompt
+
+
+def test_deepen_a_library_skips_cards_it_has(tmp_path, monkeypatch):
+    _fake_pypi(monkeypatch, readme="")
+    monkeypatch.setattr(llm, "status", lambda cfg: {"available": True, "reason": ""})
+    from codewright import cards
+
+    existing = next(c for c in cards.load() if c.library == "pydantic")
+    asked = []
+    reply = [
+        {"title": existing.title, "suggestion": "dup"},
+        {"title": "Validate with TypeAdapter", "suggestion": "Use TypeAdapter."},
+    ]
+    monkeypatch.setattr(
+        llm, "complete", lambda cfg, sys_, msgs, **k: asked.append(msgs[0]["content"]) or json.dumps(reply)
+    )
+    out = kf.draft_library(tmp_path, "pydantic", pasted="TypeAdapter validates any type.")
+    assert out["existing"] > 0 and [c["title"] for c in out["cards"]] == ["Validate with TypeAdapter"]
+    assert existing.title in asked[0] and "TypeAdapter validates any type." in asked[0]
+
+
+def test_library_endpoints(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from codewright.server import create_app
+
+    _fake_pypi(monkeypatch)
+    (tmp_path / "a.py").write_text("x = 1\n")
+    c = TestClient(create_app([str(tmp_path)]), base_url="http://localhost")
+    wid = c.get("/api/workspaces").json()[0]["id"]
+    info = c.get(f"/api/w/{wid}/knowledge/library?name=langgraph").json()
+    assert info["version"] == "1.2.22" and info["cards"] == 0 and "readme" not in info
+    r = c.post(f"/api/w/{wid}/knowledge/library", json={"name": "langgraph"})
+    assert r.status_code == 409 and "Settings" in r.json()["detail"]  # no model set up

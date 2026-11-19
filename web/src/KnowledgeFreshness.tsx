@@ -13,7 +13,7 @@ const STATUS: Record<KnowledgeRow["status"], { cls: string; label: string }> = {
  * Libraries move fast: each library's cards were checked against a version; this lists where newer releases
  * exist, what changed, and lets the model draft the card updates for the team to review and save.
  */
-export default function KnowledgeFreshness({ wid, onSaved }: { wid: string; onSaved: () => void }) {
+export default function KnowledgeFreshness({ wid, onSaved, onDeepen }: { wid: string; onSaved: () => void; onDeepen: (library: string) => void }) {
   const toast = useToast();
   const [rows, setRows] = useState<KnowledgeRow[] | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -76,6 +76,7 @@ export default function KnowledgeFreshness({ wid, onSaved }: { wid: string; onSa
               <td><span className={`badge ${STATUS[r.status].cls}`}>{STATUS[r.status].label}{r.status === "behind" ? ` (${r.bump})` : ""}</span></td>
               <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
                 {r.status !== "current" && <button className="btn sm" onClick={() => show(r)}>{open === r.library ? "Close" : "What changed"}</button>}
+                <button className="btn ghost sm" style={{ marginLeft: 4 }} onClick={() => onDeepen(r.library)} title={`Draft more cards for ${r.library}`}>Deepen</button>
               </td>
             </tr>
             {open === r.library && (

@@ -1,9 +1,10 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
-import { BookOpen, GraduationCap, Layers, Radar, Search, Trash2, Users, Wand2 } from "lucide-react";
+import { BookOpen, GraduationCap, Layers, Library, Radar, Search, Trash2, Users, Wand2 } from "lucide-react";
 import { api, Card, FitStatus } from "../api";
 import { CodeView, Source, Spinner, Tabs, intentLabel, useToast } from "../ui";
 import TeachCard from "../TeachCard";
 import KnowledgeFreshness from "../KnowledgeFreshness";
+import LibraryKnowledge from "../LibraryKnowledge";
 
 const FIT: Record<FitStatus, { cls: string; label: string }> = {
   fits: { cls: "green", label: "fits this repo" },
@@ -22,6 +23,7 @@ export default function Knowledge({ wid }: { wid: string | null }) {
   const [fitsOnly, setFitsOnly] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [teach, setTeach] = useState<{ deepen: Card | null } | null>(null);
+  const [libModal, setLibModal] = useState<{ name?: string } | null>(null);
   const toast = useToast();
   const refresh = () => api.cards(wid).then(setCards);
   useEffect(() => { setCards(null); refresh(); }, [wid]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -62,6 +64,9 @@ export default function Knowledge({ wid }: { wid: string | null }) {
       <div className="page-head">
         <div><h1>Knowledge base</h1><p>What each library version offers: the API, gain, risk, “when not to” and sources. Cards with a detector become findings; reference entries are for looking things up.</p></div>
         <div className="actions">
+          {wid && <button className="btn" onClick={() => setLibModal({})} title="Draft cards for a library the knowledge base doesn't cover yet">
+            <Library size={14} />Add library
+          </button>}
           {wid && <button className="btn primary" onClick={() => setTeach({ deepen: null })} title="Add a practice, convention or API your team knows to this repo's knowledge base">
             <GraduationCap size={14} />Teach Codewright
           </button>}
@@ -73,7 +78,7 @@ export default function Knowledge({ wid }: { wid: string | null }) {
       </div>
       {!cards ? <Spinner /> : (
         <div className="col" style={{ gap: 18 }}>
-          {wid && <KnowledgeFreshness wid={wid} onSaved={refresh} />}
+          {wid && <KnowledgeFreshness wid={wid} onSaved={refresh} onDeepen={(name) => setLibModal({ name })} />}
           <div className="row" style={{ gap: 12, flexWrap: "wrap", alignItems: "center" }}>
             <div style={{ overflowX: "auto", maxWidth: "100%", whiteSpace: "nowrap" }}>
               <Tabs<string> value={library} onChange={setLibrary} options={[
@@ -81,6 +86,11 @@ export default function Knowledge({ wid }: { wid: string | null }) {
                 ...libraries.map(([name, n]) => ({ value: name, label: <>{name} <span className="badge">{n}</span></> })),
               ]} />
             </div>
+            {wid && library !== "all" && library !== "python" && (
+              <button className="btn sm" onClick={() => setLibModal({ name: library })} title={`Draft more cards for ${library}, beyond the ones it has`}>
+                <Layers size={13} />Deepen {library}
+              </button>
+            )}
             {wid && (
               <label className="row" style={{ gap: 6, cursor: "pointer" }}>
                 <input type="checkbox" checked={fitsOnly} onChange={(e) => setFitsOnly(e.target.checked)} />
@@ -146,6 +156,9 @@ export default function Knowledge({ wid }: { wid: string | null }) {
             );
           })}
         </div>
+      )}
+      {libModal && wid && (
+        <LibraryKnowledge wid={wid} library={libModal.name} onClose={() => setLibModal(null)} onSaved={() => { setLibModal(null); refresh(); }} />
       )}
       {teach && wid && (
         <TeachCard wid={wid} deepen={teach.deepen} onClose={() => setTeach(null)} onSaved={() => { setTeach(null); refresh(); }} />

@@ -586,6 +586,41 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
             raise HTTPException(409, str(e)) from None
         return {**out, "notes": notes}
 
+    @app.get("/api/w/{wid}/knowledge/library")
+    def knowledge_library_info(wid: str, name: str):
+        """What the package index says about a library (newest version, summary, links), and its cards here."""
+        from . import knowledgefresh
+        from .models import normalise
+
+        w = ws(wid)
+        info = knowledgefresh.library_info(normalise(name))
+        info.pop("readme", None)
+        have = sum(1 for c in card_store.for_repo(w.root) if c.library and normalise(c.library) == normalise(name))
+        used = w.result.stack.version_of(name) if w.result else None
+        return {**info, "cards": have, "installed": used}
+
+    @app.post("/api/w/{wid}/knowledge/library")
+    def knowledge_library_draft(
+        wid: str,
+        name: Annotated[str, Body(embed=True)],
+        focus: Annotated[str, Body(embed=True)] = "",
+        pasted: Annotated[str, Body(embed=True)] = "",
+        use_repo: Annotated[bool, Body(embed=True)] = True,
+        count: Annotated[int, Body(embed=True)] = 8,
+    ):
+        """Cards for a library drafted by the model: a starter set, or deeper ones beside its existing cards,
+        grounded in its README, pasted docs and how this repo uses it. Nothing is saved."""
+        from . import knowledgefresh, upgrade
+        from .activity import Timer
+
+        w = ws(wid)
+        usage = upgrade.uses(w.result.graph, name) if use_repo and w.result is not None else None
+        try:
+            with Timer(w.name, f"Drafting knowledge cards for {name}"):
+                return knowledgefresh.draft_library(w.root, name, focus=focus, pasted=pasted, usage=usage, count=count)
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from None
+
     @app.post("/api/w/{wid}/knowledge/checked")
     def knowledge_checked(
         wid: str, library: Annotated[str, Body(embed=True)], version: Annotated[str, Body(embed=True)]

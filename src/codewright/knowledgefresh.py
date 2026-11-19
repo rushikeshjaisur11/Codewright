@@ -306,3 +306,132 @@ def draft_updates(root: str | Path, library: str, notes: dict, pasted: str = "")
         if isinstance(o, dict) and o.get("card") in ids
     ][:30]
     return {"library": library, "new_cards": new, "outdated": outdated, "model": cfg.model}
+
+
+# --------------------------------------------------------------------------- add a library, or go deeper on one
+
+
+def library_info(name: str) -> dict:
+    """What the package index says about `name`: newest version, summary, links and its README (trimmed)."""
+    try:
+        info = _get_json(f"https://pypi.org/pypi/{name}/json").get("info", {})
+    except Exception as exc:
+        return {"name": name, "found": False, "error": f"could not read {name} on PyPI ({type(exc).__name__})"}
+    urls = info.get("project_urls") or {}
+    return {
+        "name": info.get("name") or name,
+        "found": True,
+        "version": info.get("version"),
+        "summary": info.get("summary") or "",
+        "requires_python": info.get("requires_python"),
+        "links": [{"label": k, "url": v} for k, v in urls.items()][:8],
+        "readme": (info.get("description") or "")[:20000],
+        "error": None,
+    }
+
+
+LIBRARY_SYSTEM = (
+    "You write knowledge cards for a code-review tool, for one Python library. A card teaches one specific, "
+    "checkable practice: what to do instead, the gain, the risk, when not to, and sources. Prefer what matters "
+    "in production code and what reviewers miss: the right API for a job people hand-write, version-specific "
+    "APIs and deprecations, defaults that bite, performance and reliability pitfalls. Ground every card in the "
+    "material given (README, pasted docs, the repo's own usage) and do not invent APIs; give `versions` as a "
+    "PEP 440 specifier for the versions it applies to. Do not repeat the existing cards. Reply with JSON only: "
+    '[{"title", "symbol", "versions", "topic", "suggestion", "gain", "risk", "when_not", "threshold", '
+    '"sources" (URLs), "snippet" (short Python, may be empty)}]'
+)
+
+
+def draft_library(
+    root: str | Path,
+    name: str,
+    *,
+    focus: str = "",
+    pasted: str = "",
+    usage: list[dict] | None = None,
+    count: int = 8,
+) -> dict:
+    """Cards for `name` drafted by the model: a starter set for a new library, or deeper ones next to the cards
+    it already has. Nothing is saved; the team picks."""
+    from .llm import LLMConfig, complete, last_error
+    from .llm import status as llm_status
+
+    cfg = LLMConfig.load(root)
+    st = llm_status(cfg)
+    if not st["available"]:
+        raise RuntimeError(f"no model to draft with: {st['reason']}. Set one up in Settings")
+    from .models import normalise
+
+    key = normalise(name)
+    info = library_info(key)
+    have = [c for c in card_store.for_repo(root) if c.library and normalise(c.library) == key]
+    listing = "\n".join(f"- {c.title} [{c.symbol}] {c.versions}" for c in have[:150]) or "- none yet"
+    parts = [
+        f"Library: {info.get('name', key)}" + (f" (newest {info['version']})" if info.get("version") else ""),
+        f"Summary: {info.get('summary', '')}",
+        f"Write up to {max(1, min(15, count))} cards." + (f" Focus on: {focus}." if focus.strip() else ""),
+        f"Cards it already has:\n{listing}",
+    ]
+    if usage:
+        parts.append(
+            "How this repository uses it (write cards that apply to this code first):\n"
+            + "\n".join(f"- {u['file']}: {', '.join(u.get('names', []))}" for u in usage[:40])
+        )
+    if info.get("readme"):
+        parts.append("README:\n" + info["readme"])
+    if pasted.strip():
+        parts.append("Docs pasted by the team:\n" + pasted.strip()[:20000])
+    if info.get("links"):
+        parts.append("Links: " + ", ".join(f"{x['label']}: {x['url']}" for x in info["links"]))
+    if not info.get("readme") and not pasted.strip():
+        parts.append("(No README or docs were available: write only cards you are sure of, and fewer of them.)")
+    reply = complete(
+        cfg,
+        LIBRARY_SYSTEM,
+        [{"role": "user", "content": "\n\n".join(parts)}],
+        max_tokens=4000,
+        purpose=f"{'deepen' if have else 'add'} {key}",
+    )
+    if reply is None:
+        raise RuntimeError(last_error() or "the model did not answer")
+    m = re.search(r"\[.*\]", reply, re.S)
+    try:
+        items = json.loads(m.group(0)) if m else []
+    except json.JSONDecodeError:
+        items = []
+    seen = {c.title.lower() for c in have}
+    cards = []
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict) or not it.get("title") or not it.get("suggestion"):
+            continue
+        if str(it["title"]).lower() in seen:
+            continue
+        seen.add(str(it["title"]).lower())
+        cards.append(
+            {
+                **{
+                    k: str(it.get(k) or "")
+                    for k in (
+                        "title",
+                        "symbol",
+                        "versions",
+                        "topic",
+                        "suggestion",
+                        "gain",
+                        "risk",
+                        "when_not",
+                        "threshold",
+                        "snippet",
+                    )
+                },
+                "sources": [s for s in it.get("sources") or [] if isinstance(s, str) and s.startswith("http")][:5],
+                "library": key,
+            }
+        )
+    return {
+        "library": key,
+        "existing": len(have),
+        "info": {k: v for k, v in info.items() if k != "readme"},
+        "cards": cards[:15],
+        "model": cfg.model,
+    }

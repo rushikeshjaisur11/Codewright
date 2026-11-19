@@ -234,6 +234,14 @@ export interface KnowledgeDraft {
   new_cards: { title: string; symbol: string; versions: string; suggestion: string; gain: string; risk: string; when_not: string; topic: string; sources: string[]; library: string }[];
   outdated: { card: string; why: string; change: string }[];
 }
+export interface LibraryInfo {
+  name: string; found: boolean; version?: string | null; summary: string; requires_python?: string | null;
+  links: { label: string; url: string }[]; error: string | null; cards: number; installed: string | null;
+}
+export interface LibraryDraftCard {
+  title: string; symbol: string; versions: string; topic: string; suggestion: string; gain: string; risk: string;
+  when_not: string; threshold: string; snippet: string; sources: string[]; library: string;
+}
 export interface UpgradeItem { id: string; title: string; file: string; line: number; patch: string | null; suggestion: string; intent: string }
 export interface UpgradePlan {
   name: string; installed: string | null; version: string;
@@ -413,6 +421,9 @@ export const api = {
     req<KnowledgeDraft>("POST", `${w(id)}/knowledge/draft`, body),
   knowledgeChecked: (id: string, library: string, version: string) =>
     req<KnowledgeRow[]>("POST", `${w(id)}/knowledge/checked`, { library, version }),
+  libraryInfo: (id: string, name: string) => req<LibraryInfo>("GET", `${w(id)}/knowledge/library?name=${q(name)}`),
+  libraryDraft: (id: string, body: { name: string; focus: string; pasted: string; use_repo: boolean; count: number }) =>
+    req<{ library: string; existing: number; cards: LibraryDraftCard[]; model: string }>("POST", `${w(id)}/knowledge/library`, body),
   upgradePlan: (id: string, name: string, version: string) =>
     req<UpgradePlan>("GET", `${w(id)}/upgrade/plan?name=${q(name)}&version=${q(version)}`),
   upgradeBreaking: (id: string, name: string, version: string) =>

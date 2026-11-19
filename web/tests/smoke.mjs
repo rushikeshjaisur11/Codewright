@@ -106,6 +106,17 @@ try {
     await text("Keeping it current").waitFor({ timeout: 60000 });
   });
 
+  await check("Knowledge: add a library, deepen one", async () => {
+    await page.getByRole("button", { name: "Add library" }).click();
+    await page.getByLabel("Library", { exact: true }).fill("langgraph");
+    await page.getByRole("button", { name: "Draft cards with AI" }).waitFor();
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await page.getByRole("button", { name: /^pydantic/ }).first().click();
+    await page.getByRole("button", { name: "Deepen pydantic" }).click();
+    await text("Go deeper on").first().waitFor().catch(() => page.getByLabel("Focus").waitFor());
+    await page.getByRole("button", { name: "Cancel" }).click();
+  });
+
   await check("Dependencies: upgrade with code changes", async () => {
     await page.goto(`${base}/#/releases`);
     const btn = page.getByRole("button", { name: "Upgrade…" }).first();
