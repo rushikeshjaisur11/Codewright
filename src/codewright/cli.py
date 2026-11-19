@@ -644,7 +644,10 @@ def agent(
     path: Path = typer.Option(Path("."), "--path", exists=True, file_okay=False, help="The repository."),
     web: bool = typer.Option(True, "--web/--no-web", help="Let the agent search the web and read docs."),
     tests: bool = typer.Option(True, "--tests/--no-tests", help="Let the agent run the tests and Python scripts."),
-    max_steps: int = typer.Option(40, help="Most tool calls the agent may make."),
+    max_steps: int = typer.Option(40, help="Most model calls the agent may make."),
+    engine: str | None = typer.Option(
+        None, help="builtin, langgraph or adk (default: CODEWRIGHT_AGENT_ENGINE or the one chosen in Settings)."
+    ),
     apply_it: bool = typer.Option(False, "--apply", help="Apply the change to the working tree when it is done."),
     output: Path | None = typer.Option(None, "--output", "-o", help="Write the patch to this file."),
 ) -> None:
@@ -669,8 +672,10 @@ def agent(
             err_console.print(f"[cyan]{e['text']}[/]", highlight=False)
 
     with _clean_errors():
-        r = agent_mod.run(root, task, web=web, tests=tests, max_steps=max_steps, progress=show)
-    err_console.print(f"\n[bold]{r['ended'].capitalize()}[/] after {r['steps_used']} step(s). {r['summary']}")
+        r = agent_mod.run(root, task, web=web, tests=tests, max_steps=max_steps, progress=show, engine=engine)
+    err_console.print(
+        f"\n[bold]{r['ended'].capitalize()}[/] after {r['steps_used']} step(s) on {r['engine']}. {r['summary']}"
+    )
     v = r.get("verification")
     if v:
         err_console.print(

@@ -435,6 +435,16 @@ Everything happens in a **sandbox**: a temporary copy of the repo, with the envi
 
 Scripts the agent writes run with a time limit and without the API keys and tokens in the environment. The sandbox is a copy, not a container: code runs as you, as your own tests do. Web pages are read only from public addresses; localhost, private networks and cloud metadata addresses are refused, redirects included.
 
+**Engines.** The same tools, sandbox, limits and result can be driven by three engines, chosen on the AI agent page, with `--engine`, or with `CODEWRIGHT_AGENT_ENGINE`:
+
+| Engine | Install | How it runs |
+| --- | --- | --- |
+| `builtin` (default) | nothing | Codewright's own tool-calling loop. |
+| `langgraph` | `pip install "codewright[langgraph]"` | A LangGraph `StateGraph`: a model node and a tools node, looping until the agent finishes. |
+| `adk` | `pip install "codewright[adk]"` | A Google ADK `LlmAgent` with the sandbox tools, run by ADK's `Runner`. |
+
+Each framework reaches the model through a small adapter over Codewright's own model client (a LangChain chat model for LangGraph, an ADK `BaseLlm`), so every provider from Settings works with every engine, calls count in the daily budget, and no provider SDKs are needed. `agent_engines.build_graph` and `build_adk_agent` return the compiled graph and the agent, to extend with your own nodes or sub-agents.
+
 The agent also takes over from Codewright's own findings: *…or hand them to the AI agent* in the Upgrade dialog, and *Hand to the AI agent* on a migration step. It needs a model with tool calling: Claude, OpenAI-compatible servers whose model supports tools, Gemini, or LiteLLM.
 
 **Web search** is set in Settings or with `CODEWRIGHT_SEARCH_PROVIDER` (`duckduckgo`, the default with no key; `brave`; `tavily`; `searxng`; `off`), `CODEWRIGHT_SEARCH_KEY` (or `BRAVE_API_KEY` / `TAVILY_API_KEY`) and `CODEWRIGHT_SEARCH_URL` for SearXNG. DuckDuckGo sometimes blocks automated searches; a keyed provider is dependable.

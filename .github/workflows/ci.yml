@@ -38,7 +38,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           activate-environment: true  # create .venv and put it on PATH for the steps below
-      - run: uv pip install -e ".[dev]"
+      - run: uv pip install -e ".[dev,langgraph,adk]"  # the agent's LangGraph and ADK engines are tested too
       - run: pytest -q
 
   web:

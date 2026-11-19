@@ -564,7 +564,14 @@ class Workspace:
 
     # --------------------------------------------------------------- the AI agent
     def agent_start(
-        self, task: str, *, context: str = "", web: bool = True, tests: bool = True, origin: str = ""
+        self,
+        task: str,
+        *,
+        context: str = "",
+        web: bool = True,
+        tests: bool = True,
+        origin: str = "",
+        engine: str | None = None,
     ) -> dict:
         """Start the agent on `task` in the background, in a sandbox copy; poll agent_progress. Nothing in the
         repo changes until agent_apply."""
@@ -575,11 +582,17 @@ class Workspace:
             raise RuntimeError("the agent is already working on a task: stop it first")
         if not task.strip():
             raise ValueError("describe the change to make")
+        engine = (engine or agent.default_engine()).lower()
+        if engine not in agent.ENGINES:
+            raise ValueError(f"unknown agent engine {engine!r}")
+        if not (es := agent.engine_status()[engine])["available"]:
+            raise RuntimeError(f"the {es['label']} engine is not installed here: {es['reason']}")
         stop = threading.Event()
         state: dict = {
             "running": True,
             "task": task.strip(),
             "origin": origin,
+            "engine": engine,
             "started": time.time(),
             "events": [],
             "status": "Starting",
@@ -600,9 +613,9 @@ class Workspace:
 
         def run() -> None:
             try:
-                note(self.name, f"Agent started: {task.strip()[:120]}")
+                note(self.name, f"Agent started ({es['label']}): {task.strip()[:120]}")
                 state["result"] = agent.run(
-                    self.root, task, context=context, web=web, tests=tests, progress=tell, stop=stop
+                    self.root, task, context=context, web=web, tests=tests, progress=tell, stop=stop, engine=engine
                 )
                 res = state["result"]
                 note(

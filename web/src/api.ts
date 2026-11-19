@@ -274,14 +274,16 @@ export interface UpgradeTrial {
 export interface AgentEvent { kind: "tool" | "text"; tool?: string; detail?: string; ok?: boolean; result?: string; seconds?: number; text?: string }
 export interface AgentVerification { ok: boolean; seconds: number; failed: string[]; new_failures: string[]; already_failing?: string[]; output: string }
 export interface AgentResult {
-  summary: string; patch: string; files: string[]; model: string; ended: string; error?: string; steps_used: number;
+  summary: string; patch: string; files: string[]; model: string; engine?: string; ended: string; error?: string; steps_used: number;
   applies: boolean; apply_error?: string; tests: { ok: boolean; selection: string[]; after_last_edit: boolean } | null;
   verification?: AgentVerification;
 }
 export interface AgentJob {
-  running: boolean; task: string | null; origin?: string; started?: number; status?: string; events: AgentEvent[]; total: number;
+  running: boolean; task: string | null; origin?: string; engine?: string; started?: number; status?: string; events: AgentEvent[]; total: number;
   result: AgentResult | null; error: string | null; applied?: boolean;
 }
+export interface AgentEngine { id: "builtin" | "langgraph" | "adk"; label: string; available: boolean; reason: string }
+export interface AgentSettings { engine: AgentEngine["id"]; from_environment: boolean; engines: AgentEngine[] }
 export interface SearchSettings { provider: string; url: string; has_key: boolean; key_hint: string; providers: string[]; available: boolean; reason: string }
 export interface UpgradeSafety {
   key: string | null; running: boolean; step: string | null; log: string[]; error: string | null;
@@ -469,7 +471,9 @@ export const api = {
       "POST", `${w(id)}/upgrade/breaking`, { name, version }),
   upgradeSafety: (id: string, step: "check" | "rewrite" | "agent" | "trial", name: string, version: string, patches: string[] = []) =>
     req<UpgradeSafety>("POST", `${w(id)}/upgrade/safety`, { step, name, version, patches }),
-  agentStart: (id: string, task: string, opts: { web: boolean; tests: boolean }) => req<AgentJob>("POST", `${w(id)}/agent`, { task, ...opts }),
+  agentSettings: () => req<AgentSettings>("GET", "/api/settings/agent"),
+  saveAgentEngine: (engine: string) => req<AgentSettings>("PUT", "/api/settings/agent", { engine }),
+  agentStart: (id: string, task: string, opts: { web: boolean; tests: boolean; engine?: string }) => req<AgentJob>("POST", `${w(id)}/agent`, { task, ...opts }),
   agentProgress: (id: string, since = 0) => req<AgentJob>("GET", `${w(id)}/agent?since=${since}`),
   agentStop: (id: string) => req<AgentJob>("POST", `${w(id)}/agent/stop`),
   agentApply: (id: string) => req<{ applied: boolean; files: string[] }>("POST", `${w(id)}/agent/apply`),

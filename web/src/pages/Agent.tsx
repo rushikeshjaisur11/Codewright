@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Bot, CheckCircle2, CircleStop, FileSearch, FlaskConical, Globe, Pencil, Play, Search, Terminal, Wand2, XCircle } from "lucide-react";
 import { useApp } from "../App";
-import { AgentEvent, AgentJob, api } from "../api";
+import { AgentEvent, AgentJob, AgentSettings, api } from "../api";
 import { DiffView, Empty, Spinner, useToast } from "../ui";
 
 const EXAMPLES = [
@@ -48,6 +48,8 @@ export default function AgentPage() {
   const [web, setWeb] = useState(true);
   const [tests, setTests] = useState(true);
   const [job, setJob] = useState<AgentJob | null>(null);
+  const [engines, setEngines] = useState<AgentSettings | null>(null);
+  const [engine, setEngine] = useState("");  // the choice takes effect at once; saving it is for next time
   const [busy, setBusy] = useState("");
   const events = useRef<AgentEvent[]>([]);
   const log = useRef<HTMLDivElement>(null);
@@ -61,6 +63,12 @@ export default function AgentPage() {
   }
 
   useEffect(() => { events.current = []; setJob(null); if (wid) poll(0).catch(() => undefined); }, [wid]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { api.agentSettings().then((x) => { setEngines(x); setEngine(x.engine); }).catch(() => undefined); }, []);
+
+  async function pickEngine(id: string) {
+    setEngine(id);
+    try { setEngines(await api.saveAgentEngine(id)); } catch (e) { toast((e as Error).message, "error"); }
+  }
 
   useEffect(() => {
     if (!job?.running) return;
@@ -75,7 +83,7 @@ export default function AgentPage() {
     setBusy("start");
     try {
       events.current = [];
-      setJob(await api.agentStart(wid, task, { web, tests }));
+      setJob(await api.agentStart(wid, task, { web, tests, engine: engine || undefined }));
     } catch (e) { toast((e as Error).message, "error"); }
     setBusy("");
   }
@@ -117,6 +125,15 @@ export default function AgentPage() {
         <div className="row wrap" style={{ gap: 16 }}>
           <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={web} onChange={(e) => setWeb(e.target.checked)} disabled={job?.running} /><Globe size={13} />Search the web and read docs</label>
           <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={tests} onChange={(e) => setTests(e.target.checked)} disabled={job?.running} /><FlaskConical size={13} />Run tests and scripts in the sandbox</label>
+          {engines && (
+            <label className="row" style={{ gap: 6, fontSize: 13 }}>Engine
+              <select className="input" style={{ width: "auto", padding: "4px 8px" }} aria-label="Agent engine" value={engine}
+                disabled={job?.running || engines.from_environment} onChange={(e) => pickEngine(e.target.value)}
+                title={engines.from_environment ? "Set by CODEWRIGHT_AGENT_ENGINE" : "Which framework drives the agent; the tools and sandbox are the same"}>
+                {engines.engines.map((x) => <option key={x.id} value={x.id} disabled={!x.available}>{x.label}{x.available ? "" : ` (${x.reason})`}</option>)}
+              </select>
+            </label>
+          )}
           <div className="row" style={{ gap: 8, marginLeft: "auto" }}>
             {job?.running
               ? <button className="btn" onClick={stop}><CircleStop size={14} />Stop</button>
@@ -127,7 +144,7 @@ export default function AgentPage() {
 
       {job?.task && (
         <div className="card">
-          <div className="card-head"><h2><Bot size={16} />{job.origin ? `From ${job.origin}` : "Task"}</h2>
+          <div className="card-head"><h2><Bot size={16} />{job.origin ? `From ${job.origin}` : "Task"}{job.engine && <span className="badge outline" style={{ marginLeft: 8 }}>{engines?.engines.find((x) => x.id === job.engine)?.label ?? job.engine}</span>}</h2>
             <div className="right">
               {job.running ? <span className="badge blue"><Spinner size={11} />{job.status}</span>
                 : job.error ? <span className="badge amber"><XCircle size={11} />error</span>

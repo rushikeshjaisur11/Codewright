@@ -927,10 +927,12 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         context: Annotated[str, Body(embed=True)] = "",
         web: Annotated[bool, Body(embed=True)] = True,
         tests: Annotated[bool, Body(embed=True)] = True,
+        engine: Annotated[str | None, Body(embed=True)] = None,
     ):
-        """Start the agent on a task in a sandbox copy of the repo; poll GET for its steps and result."""
+        """Start the agent on a task in a sandbox copy of the repo; poll GET for its steps and result.
+        `engine`: builtin, langgraph or adk (default: the one chosen in Settings)."""
         try:
-            return ws(wid).agent_start(task, context=context, web=web, tests=tests)
+            return ws(wid).agent_start(task, context=context, web=web, tests=tests, engine=engine)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
         except RuntimeError as exc:
@@ -1041,6 +1043,24 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         except OSError as exc:
             raise HTTPException(500, f"could not write {llm_mod.settings_path()}: {exc}") from None
         return llm_mod.public(_root_of(workspace))
+
+    @app.get("/api/settings/agent")
+    def agent_settings():
+        """The agent engines (built-in, LangGraph, Google ADK), which are installed, and the chosen one."""
+        from . import agent
+
+        return agent.engines_public()
+
+    @app.put("/api/settings/agent")
+    def agent_settings_save(engine: Annotated[str, Body(embed=True)]):
+        from . import agent
+
+        try:
+            return agent.save_engine(engine)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except OSError as exc:
+            raise HTTPException(500, f"could not write the settings: {exc}") from None
 
     @app.get("/api/settings/search")
     def search_settings():

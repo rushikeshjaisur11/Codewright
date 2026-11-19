@@ -346,6 +346,168 @@ def _trim(turns: list[dict]) -> None:
             r["content"] = r["content"][:60] + "… [trimmed to save room; call the tool again if you need it]"
 
 
+ENGINES = ("builtin", "langgraph", "adk")
+
+
+@dataclass
+class Session:
+    """One agent task, shared by every engine: the model settings, the prompt, the tools the engine may offer,
+    and `tool()`, which runs a call against the sandbox and records it. An engine only drives the
+    conversation: ask the model, run the calls it makes, stop when `done()` says so."""
+
+    cfg: llm.LLMConfig
+    system: str
+    intro: str
+    tools: list[dict]
+    dispatch: object  # (name, args) -> str, raising ToolError
+    max_steps: int = 40
+    stop: threading.Event | None = None
+    tell: object = None
+    steps: list[dict] = field(default_factory=list)
+    finished: str | None = None
+    ended: str = ""
+    error: str = ""
+    model_calls: int = 0
+
+    def emit(self, event: dict) -> None:
+        if event.get("kind") != "status":
+            self.steps.append(event)
+        if self.tell:
+            self.tell(event)
+
+    def stopped(self) -> bool:
+        return self.stop is not None and self.stop.is_set()
+
+    def thinking(self) -> bool:
+        """Before each model call: False (and why, in `ended`) when the run must end instead."""
+        if self.stopped():
+            self.ended = "stopped"
+            return False
+        if self.model_calls >= self.max_steps:
+            self.ended = "step limit"
+            return False
+        self.model_calls += 1
+        self.emit({"kind": "status", "text": f"Thinking (step {self.model_calls} of up to {self.max_steps})"})
+        return True
+
+    def say(self, text: str) -> None:
+        if text and text.strip():
+            self.emit({"kind": "text", "text": text.strip()[:4000]})
+
+    def done(self) -> bool:
+        return self.finished is not None or self.stopped()
+
+    def tool(self, name: str, args: dict) -> str:
+        """Run one tool call; never raises. The result is what the model sees."""
+        if name == "finish":
+            self.finished = str((args or {}).get("summary") or "")
+            return "ok"
+        t0 = time.perf_counter()
+        try:
+            res, ok = self.dispatch(name, args or {}), True
+        except ToolError as exc:
+            res, ok = f"error: {exc}", False
+        except Exception as exc:  # a tool must never end the run
+            res, ok = f"error: {type(exc).__name__}: {exc}", False
+        if len(res) > MAX_RESULT:
+            res = res[: MAX_RESULT - 200] + f"\n… [{len(res) - MAX_RESULT + 200} more characters cut]"
+        self.emit(
+            {
+                "kind": "tool",
+                "tool": name,
+                "detail": _describe(name, args or {}),
+                "ok": ok,
+                "result": res[:1500],
+                "seconds": round(time.perf_counter() - t0, 1),
+            }
+        )
+        if self.model_calls == self.max_steps - 3 and self.finished is None:
+            res += "\n\n[3 steps left: wrap up, check your change, then call finish.]"
+        return res
+
+
+def run_builtin(s: Session) -> None:
+    """Codewright's own loop over `llm.tool_step`: no dependencies, every provider."""
+    turns: list[dict] = [{"role": "user", "content": s.intro}]
+    while s.thinking():
+        turn = llm.tool_step(s.cfg, s.system, turns, s.tools, max_tokens=8000, purpose="agent")
+        turns.append(turn)
+        s.say(turn["text"])
+        if not turn["calls"]:
+            if turn["truncated"]:
+                turns.append({"role": "user", "content": "Your answer was cut off. Continue, in smaller steps."})
+                continue
+            s.finished, s.ended = turn["text"], "answered"
+            return
+        results = [{"id": c["id"], "name": c["name"], "content": s.tool(c["name"], c["args"])} for c in turn["calls"]]
+        turns.append({"role": "tool", "results": results})
+        _trim(turns)
+        if s.finished is not None:
+            s.ended = "finished"
+            return
+
+
+def engine_status() -> dict:
+    """Which engines can run here: {name: {"available", "reason", "label"}}."""
+    import importlib.util
+
+    def has(mod: str) -> bool:
+        try:
+            return importlib.util.find_spec(mod) is not None
+        except (ImportError, ValueError):
+            return False
+
+    return {
+        "builtin": {"available": True, "reason": "", "label": "Built-in"},
+        "langgraph": {
+            "available": has("langgraph") and has("langchain_core"),
+            "reason": "" if has("langgraph") else "pip install 'codewright[langgraph]'",
+            "label": "LangGraph",
+        },
+        "adk": {
+            "available": has("google.adk"),
+            "reason": "" if has("google.adk") else "pip install 'codewright[adk]'",
+            "label": "Google ADK",
+        },
+    }
+
+
+def default_engine() -> str:
+    """CODEWRIGHT_AGENT_ENGINE, else the engine chosen in Settings, else the built-in loop."""
+    name = os.environ.get("CODEWRIGHT_AGENT_ENGINE", "").strip().lower()
+    if name not in ENGINES:
+        saved = llm._read(llm.settings_path()).get("agent")
+        name = str((saved or {}).get("engine", "")).lower() if isinstance(saved, dict) else ""
+    return name if name in ENGINES else "builtin"
+
+
+def save_engine(name: str) -> dict:
+    """Remember the engine for this machine (in ~/.codewright/settings.json)."""
+    import json
+
+    name = name.strip().lower()
+    if name not in ENGINES:
+        raise ValueError(f"unknown agent engine {name!r} (choose one of {', '.join(ENGINES)})")
+    p = llm.settings_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    data = llm._read(p)
+    data["agent"] = {**(data.get("agent") if isinstance(data.get("agent"), dict) else {}), "engine": name}
+    tmp = p.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=1)
+    os.replace(tmp, p)
+    return engines_public()
+
+
+def engines_public() -> dict:
+    return {
+        "engine": default_engine(),
+        "from_environment": os.environ.get("CODEWRIGHT_AGENT_ENGINE", "").strip().lower() in ENGINES,
+        "engines": [{"id": k, **v} for k, v in engine_status().items()],
+    }
+
+
 def run(
     root: str | Path,
     task: str,
@@ -358,9 +520,11 @@ def run(
     progress=None,
     stop: threading.Event | None = None,
     verify: bool = True,
+    engine: str | None = None,
 ) -> dict:
-    """Do `task` in a sandbox copy of the repo. Returns {summary, patch, files, steps, tests, verification,
-    applies, model, steps_used, ended}: `ended` is "finished", "answered", "stopped", "step limit" or "error"."""
+    """Do `task` in a sandbox copy of the repo, driven by `engine` ("builtin", "langgraph" or "adk"). Returns
+    {summary, patch, files, steps, tests, verification, applies, model, engine, steps_used, ended}: `ended` is
+    "finished", "answered", "stopped", "step limit" or "error"."""
     from . import proof
     from .proof import patch_error
     from .websearch import SearchError, fetch, search
@@ -371,6 +535,11 @@ def run(
     st = llm.status(cfg)
     if not st["available"]:
         raise RuntimeError(f"no model to run the agent: {st['reason']}. Set one up in Settings")
+    engine = (engine or default_engine()).lower()
+    if engine not in ENGINES:
+        raise ValueError(f"unknown agent engine {engine!r} (choose one of {', '.join(ENGINES)})")
+    if not (es := engine_status()[engine])["available"]:
+        raise RuntimeError(f"the {es['label']} engine is not installed: {es['reason']}")
     tell = progress or (lambda event: None)
     web_ok = web and web_status()["available"]
     tools = [
@@ -379,8 +548,7 @@ def run(
         if (web_ok or t["name"] not in ("web_search", "fetch_url"))
         and (tests or t["name"] not in ("run_tests", "run_python"))
     ]
-    steps: list[dict] = []
-    out: dict = {"summary": "", "patch": "", "files": [], "steps": steps, "model": cfg.model, "ended": "error"}
+    out: dict = {"summary": "", "patch": "", "files": [], "model": cfg.model, "engine": engine, "ended": "error"}
     with tempfile.TemporaryDirectory(prefix="codewright-agent-") as tmp:
         work = Path(tmp) / "repo"
         tell({"kind": "status", "text": "Copying the repository into a sandbox"})
@@ -441,72 +609,35 @@ def run(
             )
             + ("" if tests else "\n\n(Running code is turned off for this task: check by reading.)")
         )
-        turns: list[dict] = [{"role": "user", "content": intro}]
-        finished = None
+        s = Session(cfg, SYSTEM, intro, tools, call, max_steps=max_steps, stop=stop, tell=tell)
+        out["steps"] = s.steps
+        if engine != "builtin":
+            tell({"kind": "status", "text": f"Running on {es['label']}"})
         try:
-            for n in range(max_steps):
-                if stop is not None and stop.is_set():
-                    out["ended"] = "stopped"
-                    break
-                tell({"kind": "status", "text": f"Thinking (step {n + 1} of up to {max_steps})"})
-                turn = llm.tool_step(cfg, SYSTEM, turns, tools, max_tokens=8000, purpose="agent")
-                turns.append(turn)
-                if turn["text"]:
-                    steps.append({"kind": "text", "text": turn["text"][:4000]})
-                    tell(steps[-1])
-                if not turn["calls"]:
-                    if turn["truncated"]:
-                        turns.append(
-                            {"role": "user", "content": "Your answer was cut off. Continue, in smaller steps."}
-                        )
-                        continue
-                    finished, out["ended"] = turn["text"], "answered"
-                    break
-                results = []
-                for c in turn["calls"]:
-                    if c["name"] == "finish":
-                        finished = str(c["args"].get("summary") or turn["text"] or "")
-                        results.append({"id": c["id"], "name": c["name"], "content": "ok"})
-                        continue
-                    t0 = time.perf_counter()
-                    try:
-                        res, ok = call(c["name"], c["args"]), True
-                    except ToolError as exc:
-                        res, ok = f"error: {exc}", False
-                    except Exception as exc:  # a tool must never end the run
-                        res, ok = f"error: {type(exc).__name__}: {exc}", False
-                    if len(res) > MAX_RESULT:
-                        res = res[: MAX_RESULT - 200] + f"\n… [{len(res) - MAX_RESULT + 200} more characters cut]"
-                    step = {
-                        "kind": "tool",
-                        "tool": c["name"],
-                        "detail": _describe(c["name"], c["args"]),
-                        "ok": ok,
-                        "result": res[:1500],
-                        "seconds": round(time.perf_counter() - t0, 1),
-                    }
-                    steps.append(step)
-                    tell(step)
-                    results.append({"id": c["id"], "name": c["name"], "content": res})
-                if n == max_steps - 4 and finished is None:
-                    results[-1]["content"] += "\n\n[3 steps left: wrap up, check your change, then call finish.]"
-                turns.append({"role": "tool", "results": results})
-                _trim(turns)
-                if finished is not None:
-                    out["ended"] = "finished"
-                    break
+            if engine == "langgraph":
+                from .agent_engines import run_langgraph
+
+                run_langgraph(s)
+            elif engine == "adk":
+                from .agent_engines import run_adk
+
+                run_adk(s)
             else:
-                out["ended"] = "step limit"
-        except llm.LLMError as exc:
-            out["error"] = str(exc)
-            out["ended"] = "error"
-            tell({"kind": "status", "text": f"The model call failed: {exc}"})
-        out["summary"] = (finished or "").strip() or (
-            "The agent stopped before finishing" + (f": {out.get('error')}" if out.get("error") else ".")
+                run_builtin(s)
+            if not s.ended:
+                s.ended = "finished" if s.finished is not None else ("stopped" if s.stopped() else "answered")
+        except Exception as exc:  # the model or the framework failed: keep what was done
+            s.error, s.ended = str(exc)[:600] or type(exc).__name__, "error"
+            tell({"kind": "status", "text": f"The run failed: {s.error}"})
+        out["ended"] = s.ended
+        if s.error:
+            out["error"] = s.error
+        out["summary"] = (s.finished or "").strip() or (
+            "The agent stopped before finishing" + (f": {s.error}" if s.error else ".")
         )
         out["patch"] = box.patch()
         out["files"] = sorted(r for r in box.touched if (r in out["patch"]))
-        out["steps_used"] = sum(1 for s in steps if s["kind"] == "tool")
+        out["steps_used"] = sum(1 for x in s.steps if x["kind"] == "tool")
         last = box.test_runs[-1] if box.test_runs else None
         out["tests"] = {**last, "after_last_edit": last["after_edit"] == box.edits} if last else None
         if out["patch"]:
