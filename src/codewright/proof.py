@@ -186,7 +186,9 @@ def has_tests(root: Path) -> bool:
         return True
     if (root / "pytest.ini").exists() or (root / "conftest.py").exists():
         return True
-    return any(root.rglob("test_*.py"))
+    from .scanscope import walk_files
+
+    return next(walk_files(root, lambda name: name.startswith("test_") and name.endswith(".py")), None) is not None
 
 
 def default_jobs() -> int:

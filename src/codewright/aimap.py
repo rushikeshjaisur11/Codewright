@@ -435,8 +435,8 @@ def _model_text(node: TSNode | None) -> str:
     return text(node)[:60]
 
 
-def _short(s: str, n: int = 220) -> str:
-    s = " ".join(s.split())
+def _short(s: str | None, n: int = 220) -> str:
+    s = " ".join((s or "").split())
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
@@ -1211,7 +1211,8 @@ class AiMap:
                 if (fn := self._function_ref(pf, text(wrapped))) is not None:
                     return {"label": text(wrapped).rsplit(".", 1)[-1], "file": fn[0], "line": fn[1]}
             server = _first_string(item)
-            label = cname + (f": {_short(server, 40)}" if (server and "Toolset" in cname) or "MCP" in cname else "")
+            # MCP toolsets often get their server from a variable or a params object: no literal to show then
+            label = cname + (f": {_short(server, 40)}" if server and ("Toolset" in cname or "MCP" in cname) else "")
             return {"label": label, "file": pf.path, "line": item.start_point[0] + 1, "builtin": True}
         return {"label": _short(raw, 40), "file": pf.path, "line": item.start_point[0] + 1, "builtin": True}
 

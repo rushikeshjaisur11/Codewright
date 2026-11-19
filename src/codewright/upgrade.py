@@ -106,7 +106,9 @@ def requirement_edits(root: str | Path, name: str, version: str) -> list[dict]:
                     f"b/{path.name}",
                 )
             )
-            edits.append({"file": str(path.relative_to(root)), "changes": changes, "diff": diff, "text": new_text})
+            edits.append(
+                {"file": path.relative_to(root).as_posix(), "changes": changes, "diff": diff, "text": new_text}
+            )
 
     def pep508(text: str) -> tuple[str, list[dict]]:
         changes = []

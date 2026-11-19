@@ -1111,7 +1111,7 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         w = ws(workspace)
         p = _proposal(sid)
         path = design.save_intended(w.root, design.intended(svc.design_session(sid), p, candidate or p["recommended"]))
-        return {"saved": str(path.relative_to(w.root)), "drift": w.drift()}
+        return {"saved": path.relative_to(w.root).as_posix(), "drift": w.drift()}
 
     # ------------------------------------------------------------------ UI
     if (STATIC / "index.html").exists():

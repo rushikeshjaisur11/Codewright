@@ -272,7 +272,7 @@ def parse_cached(path: Path, root: Path) -> ParsedFile:
     source = path.read_bytes()
     key = str(path.resolve())
     hit = _PARSED.get(key)
-    rel = str(path.relative_to(root))
+    rel = path.relative_to(root).as_posix()
     if hit is not None and hit.source == source and hit.path == rel:
         _PARSED.move_to_end(key)
         return hit
@@ -286,7 +286,7 @@ def parse_cached(path: Path, root: Path) -> ParsedFile:
 def parse_file(path: Path, root: Path, source: bytes | None = None) -> ParsedFile:
     source = path.read_bytes() if source is None else source
     tree = _PARSER.parse(source)
-    rel = str(path.relative_to(root))
+    rel = path.relative_to(root).as_posix()
     module = Module(file=rel)
     pf = ParsedFile(rel, source, tree.root_node, module)
     _collect(tree.root_node, pf, prefix="")
@@ -519,7 +519,7 @@ def _parse_in_workers(
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    sources = {str(p.relative_to(root)): src for p, src in todo}
+    sources = {p.relative_to(root).as_posix(): src for p, src in todo}
     rels = list(sources)
     chunks = [rels[i : i + CHUNK] for i in range(0, len(rels), CHUNK)]
     out: dict[str, ParsedFile] = {}
@@ -565,7 +565,7 @@ def build(
         except OSError:
             continue
         hit = _PARSED.get(str(path.resolve()))
-        if hit is None or hit.source != source or hit.path != str(path.relative_to(root)):
+        if hit is None or hit.source != source or hit.path != path.relative_to(root).as_posix():
             fresh.append((path, source))
     parsed: dict[str, ParsedFile] = {}
     # Files unchanged since the last run (in any process) come back from the on-disk cache without parsing.
@@ -573,7 +573,7 @@ def build(
     if disk:
         still = []
         for path, source in fresh:
-            rel = str(path.relative_to(root))
+            rel = path.relative_to(root).as_posix()
             hit = disk.get(rel)
             sha = hashlib.sha1(source).hexdigest()
             if hit is not None and hit[0] == sha:
@@ -583,7 +583,7 @@ def build(
             else:
                 still.append((path, source))
         fresh = still
-    changed = bool(fresh) or set(disk) != {str(p.relative_to(root)) for p in paths}
+    changed = bool(fresh) or set(disk) != {p.relative_to(root).as_posix() for p in paths}
     if len(fresh) >= PARALLEL_MIN and _workers() > 1:
         try:
             parsed.update(_parse_in_workers(root, fresh, detect_cache, progress, len(paths) - len(fresh), len(paths)))
@@ -594,7 +594,7 @@ def build(
     for n, path in enumerate(paths):
         if progress and n % 20 == 0 and not parsed:
             progress(n, len(paths))
-        rel = str(path.relative_to(root))
+        rel = path.relative_to(root).as_posix()
         if rel in parsed:
             pf = parsed[rel]
             _PARSED[str(path.resolve())] = pf
