@@ -917,6 +917,24 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(409, str(exc)) from None
 
+    @app.post("/api/w/{wid}/migrations/{name}/run")
+    def migration_run_all(wid: str, name: str, web: Annotated[bool, Body(embed=True)] = True):
+        """Carry out every step left, in order, on branch codewright/<name>, one commit per step; poll GET."""
+        try:
+            return ws(wid).migration_run_all(name, web=web)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(404, str(e)) from None
+        except RuntimeError as e:  # includes gitops.GitError
+            raise HTTPException(409, str(e)) from None
+
+    @app.get("/api/w/{wid}/migration-run")
+    def migration_run_progress(wid: str):
+        return ws(wid).migration_run_progress()
+
+    @app.post("/api/w/{wid}/migration-run/stop")
+    def migration_run_stop(wid: str):
+        return ws(wid).migration_run_stop()
+
     # ------------------------------------------------------------------ the AI agent
     @app.post("/api/w/{wid}/agent")
     def agent_start(

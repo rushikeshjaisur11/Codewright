@@ -107,6 +107,7 @@ class Workspace:
     _saved: dict | None = None
     early: Snapshot | None = None  # the graph of the review in progress, before findings exist
     _upgrade_job: dict | None = None  # the running (or last) upgrade safety step and its results
+    _run_all_job: dict | None = None  # the running (or last) "run every step" of a migration plan
     _agent_job: dict | None = None  # the running (or last) AI agent task: its steps, patch and test run
     _ai_batch: dict | None = None  # progress of the running (or last) batch of AI checks
     _releases: dict | None = None  # progress and rows of the running (or last) release check
@@ -671,6 +672,127 @@ class Workspace:
             raise ValueError(f"step {n} has no changes left for the AI: apply its automatic patch")
         task, context = migrate.agent_task(name, r.graph, found)
         return self.agent_start(task, context=context, web=web, tests=tests, origin=f"migration {name} step {n}")
+
+    def migration_run_all(self, name: str, *, web: bool = True) -> dict:
+        """Carry out every step left in a migration plan, in order, on branch codewright/<name>: apply the
+        step's automatic patch, hand what is left to the agent, run the step's tests, commit the step. Stops at
+        the first step that fails and leaves its changes uncommitted to look at. Never pushes."""
+        from . import gitops
+
+        cur = self._run_all_job
+        if cur and cur["running"]:
+            raise RuntimeError("a migration is already running: stop it first")
+        if self._agent_job and self._agent_job["running"]:
+            raise RuntimeError("the agent is already working on a task: stop it first")
+        if not gitops.is_repo(self.root):
+            raise RuntimeError("running every step needs a git repository: each step is committed")
+        if dirty := self._code_changes():
+            raise RuntimeError(
+                f"commit or stash your {len(dirty)} uncommitted change(s) first, "
+                "so each step's commit holds only that step"
+            )
+        self.migration_status(name)  # raises when there is no plan
+        branch = f"codewright/{name}"
+        if gitops.status(self.root)["branch"] != branch:
+            local = gitops._git(self.root, "for-each-ref", "--format=%(refname:short)", "refs/heads").split()
+            (gitops.switch if branch in local else gitops.create)(self.root, branch)
+        stop = threading.Event()
+        state: dict = {
+            "running": True,
+            "name": name,
+            "branch": branch,
+            "log": [],
+            "status": "Starting",
+            "error": None,
+            "_stop": stop,
+        }
+        self._run_all_job = state
+
+        def run() -> None:
+            try:
+                note(self.name, f"Running every step of migration {name} on {branch}")
+                for s in self.migration_status(name)["steps"]:
+                    if s["done"]:
+                        continue
+                    if stop.is_set():
+                        state["status"] = "Stopped"
+                        return
+                    state["status"] = f"Step {s['n']}"
+                    entry = {"n": s["n"], "files": s["files"], "ok": False, "detail": "", "commit": None}
+                    state["log"].append(entry)
+                    entry["detail"] = self._run_step(name, s, stop, web)
+                    if not entry["detail"].startswith("ok"):
+                        state["status"] = f"Stopped at step {s['n']}"
+                        return
+                    if files := self._code_changes():
+                        entry["commit"] = gitops.commit(self.root, f"Migration {name}: step {s['n']}", files)[
+                            "committed"
+                        ]
+                    entry["ok"] = True
+                state["status"] = "Done"
+            except Exception as exc:
+                state["error"] = str(exc)
+                state["status"] = f"Stopped: {exc}"
+            finally:
+                state["running"] = False
+                note(self.name, f"Migration {name}: {state['status']}")
+
+        threading.Thread(target=run, daemon=True, name=f"codewright-migrate-{self.root.name}").start()
+        return self.migration_run_progress()
+
+    def _code_changes(self) -> list[str]:
+        """Uncommitted changes outside .codewright/ (plans and settings live there and are not part of a step)."""
+        from . import gitops
+
+        return [c["file"] for c in gitops.changed_files(self.root) if not c["file"].startswith(".codewright/")]
+
+    def _run_step(self, name: str, s: dict, stop: threading.Event, web: bool) -> str:
+        """One step of migration_run_all: "ok: ..." when it applied and its tests pass, else why it stopped."""
+        from . import migrate, proof, proof_env
+
+        if self.migration_step(name, s["n"])["patch"]:
+            self.migration_apply(name, s["n"])
+        r = self.ensure()
+        _step, found = migrate.step_findings(self.root, name, s["n"], r.graph, r.stack)
+        if any(not f.patch for f in found):
+            self.migration_agent(name, s["n"], web=web, tests=True)
+            job = self._agent_job
+            while job["running"]:
+                if stop.wait(1):
+                    self.agent_stop()
+            res = job["result"] or {}
+            if job["error"] or not res.get("patch"):
+                return f"the agent made no change: {job['error'] or res.get('summary', '')}"[:400]
+            t = res.get("tests")
+            if t and not (t["ok"] and t["after_last_edit"]):
+                return "the agent's last test run failed or came before its last edit; see the AI agent page"
+            if not res.get("applies"):
+                return f"the agent's change does not apply: {res.get('apply_error', '')}"[:400]
+            self.agent_apply()
+        if s["tests"]:
+            run = proof.run_tests(
+                self.root,
+                str(proof_env.resolve(self.root, None, build=True).python),
+                900,
+                selection=s["tests"],
+                fail_fast=False,
+            )
+            if not run.ok:
+                return f"tests failed ({' '.join(s['tests'])}): {run.output[-300:]}"
+        return "ok"
+
+    def migration_run_progress(self) -> dict:
+        s = self._run_all_job
+        if s is None:
+            return {"running": False, "name": None, "log": [], "status": None, "error": None}
+        return {k: v for k, v in s.items() if not k.startswith("_")}
+
+    def migration_run_stop(self) -> dict:
+        if self._run_all_job and self._run_all_job["running"]:
+            self._run_all_job["_stop"].set()
+            self._run_all_job["status"] = "Stopping after the current step"
+            self.agent_stop()
+        return self.migration_run_progress()
 
     def upgrade_progress(self) -> dict:
         s = self._upgrade_job or {"running": False, "step": None, "log": [], "error": None}

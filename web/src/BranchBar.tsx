@@ -33,6 +33,8 @@ export default function BranchBar() {
   }
   const ahead = git.ahead ?? 0, behind = git.behind ?? 0;
   const hasRemote = (git.remotes ?? []).length > 0;
+  // remote branches with no local copy, shown without the remote prefix; switching creates a tracking branch
+  const remoteOnly = [...new Set((git.remote_branches ?? []).map((r) => r.split("/").slice(1).join("/")))].filter((b) => !git.branches.includes(b));
 
   return (
     <div className="prbar" style={{ gap: 8 }}>
@@ -41,7 +43,8 @@ export default function BranchBar() {
         title={dirty ? "Commit or stash your changes to switch branch" : "Switch branch (the repo is re-scanned)"}
         onChange={(e) => act(() => api.gitSwitch(wid, e.target.value), "Switched to {branch}; re-scanning", true)} aria-label="Branch">
         {git.detached && <option value="">detached at {git.head}</option>}
-        {git.branches.map((b) => <option key={b} value={b}>{b}{b === git.default ? " (default)" : ""}</option>)}
+        <optgroup label="Local">{git.branches.map((b) => <option key={b} value={b}>{b}{b === git.default ? " (default)" : ""}</option>)}</optgroup>
+        {remoteOnly.length > 0 && <optgroup label="Remote">{remoteOnly.map((b) => <option key={b} value={b}>{b}{b === git.default ? " (default)" : ""}</option>)}</optgroup>}
       </select>
       <button className="btn sm" disabled={busy} onClick={() => setCreating({ name: git.suggested_branch ?? "codewright/fixes", from: null })}
         title="Start a branch from where you are; patches you already applied come along">
