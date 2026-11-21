@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from codewright import graph
+from codewright import graph, proof
 from codewright.archmap import ArchMap
 from codewright.cli import app
 from codewright.intents import detect
@@ -255,7 +255,7 @@ def test_os_system_patched_only_for_a_plain_command_whose_result_is_unused(tmp_p
 def test_os_system_patch_keeps_behaviour(tmp_path):
     (tmp_path / "m.py").write_text("import os\n\ndef touch():\n    os.system('touch made-by-patch')\n")
     f = next(f for f in _findings(tmp_path) if f.intent == "os-system")
-    subprocess.run(["git", "apply", "-"], cwd=tmp_path, input=f.patch, text=True, check=True)
+    assert not proof.patch_error(tmp_path, f.patch)
     subprocess.run([sys.executable, "-c", "import m; m.touch()"], cwd=tmp_path, check=True)
     assert (tmp_path / "made-by-patch").exists()
 

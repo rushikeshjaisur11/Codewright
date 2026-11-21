@@ -363,6 +363,8 @@ def test_web_api(tmp_path):
     assert stats["accepted"] == 1
     assert client.get(f"/api/w/{wid}/map/system").json()["nodes"]
     assert client.post(f"/api/w/{wid}/chat", json={"question": "where is handler", "history": []}).json()["citations"]
+    follow_up = {"question": "how would I fix it?", "history": [{"role": "user", "content": "where is handler"}]}
+    assert client.post(f"/api/w/{wid}/chat", json=follow_up).json()["citations"]  # found from the earlier question
     assert client.get(f"/api/w/{wid}/source", params={"path": "../../etc/passwd"}).status_code == 404
 
     st = client.post("/api/design").json()

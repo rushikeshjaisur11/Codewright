@@ -124,7 +124,7 @@ def test_a_file_edited_since_the_scan_is_skipped_with_the_reason(tmp_path, model
 
 def test_an_edit_elsewhere_in_the_file_does_not_stop_the_rewrite(tmp_path, model):
     graph = _scan(tmp_path, {"client.py": FETCH})
-    (tmp_path / "client.py").write_text("# a new header\n" + FETCH)
+    (tmp_path / "client.py").write_bytes(("# a new header\n" + FETCH).encode())
     model.replies = [{"explanation": "e", "code": FIXED}]
     out = upgradesafety.rewrite(tmp_path, graph, "httpx", "0.27", "0.28", [_problem("client.py", "fetch")])
     [p] = out["patches"]
@@ -234,3 +234,30 @@ def test_a_patch_that_does_not_apply_says_why_and_changes_nothing(tmp_path):
     err = proof.patch_error(tmp_path, patch)
     assert err and (tmp_path / "a.py").read_text() == "one\ntwo\nthree\n"
     assert not list(tmp_path.glob("*.rej")) and not list(tmp_path.glob("*.orig"))
+
+
+@pytest.mark.parametrize("eol", [b"\n", b"\r\n"])
+def test_a_patch_keeps_each_files_line_endings(tmp_path, eol):
+    raw = b"def f():" + eol + b"    return 1" + eol
+    (tmp_path / "a.py").write_bytes(raw)
+    patch = unified(["def f():\n", "    return 1\n"], ["def f():\n", "    return 2\n"], "a/a.py", "b/a.py")
+    assert proof.patch_error(tmp_path, patch) == ""
+    assert (tmp_path / "a.py").read_bytes() == raw.replace(b"1", b"2")
+    assert proof.patch_error(tmp_path, patch, reverse=True) == "" and (tmp_path / "a.py").read_bytes() == raw
+
+
+def test_a_probe_that_stubs_record_or_never_calls_it_is_sent_back():
+    stub = "from app import f\n\ndef record(name, fn):\n    pass\n\nrecord('f: one', lambda: f(1))\n"
+    assert "defines `record`" in upgradesafety.probe_check({"code": stub})
+    assert "never calls `record" in upgradesafety.probe_check({"code": "from app import f\nf(1)\n"})
+    assert upgradesafety.probe_check({"code": "from app import f\nrecord('f: one', lambda: f(1))\n"}) is None
+
+
+def test_breaking_changes_shows_the_model_the_lines_that_use_the_library(tmp_path, model):
+    from codewright import upgrade
+
+    graph = _scan(tmp_path, {"client.py": FETCH})
+    model.replies = [{"changes": []}]
+    notes = {"notes": [{"version": "0.28", "body": "Removed the `proxies` argument."}]}
+    upgrade.breaking_changes(tmp_path, graph, "httpx", "0.27", "0.28", notes)
+    assert 'httpx.Client(proxies="http://p:1", timeout=3)' in model.calls[0]["messages"][0]["content"]

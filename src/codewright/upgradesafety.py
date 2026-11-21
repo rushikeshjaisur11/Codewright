@@ -19,6 +19,7 @@ Nothing touches the repo; the Upgrade dialog applies what the user picks.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import hashlib
 import json
@@ -618,6 +619,24 @@ def compiles(name: str):
     return check
 
 
+def probe_check(value: dict) -> str | None:
+    """A `check` for probes: valid Python that calls the harness's `record` and doesn't redefine it (a stub
+    `record` would shadow the harness, so every scenario would silently keep nothing)."""
+    if err := compiles("probe.py")(value):
+        return err
+    tree = ast.parse(_unfence(str(value["code"])))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == "record":
+            return "it defines `record`, which the harness already provides; remove that definition"
+        if isinstance(node, ast.Name) and node.id == "record" and isinstance(node.ctx, ast.Store):
+            return "it assigns to `record`, which the harness already provides; don't"
+    if not any(
+        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "record" for n in ast.walk(tree)
+    ):
+        return "it never calls `record(name, lambda: ...)`, so nothing would be compared"
+    return None
+
+
 def _module_name(path: str) -> str:
     parts = path[:-3].split("/")
     if parts[0] == "src" and len(parts) > 1:
@@ -718,7 +737,7 @@ def write_probes(root: str | Path, graph: CodeGraph, name: str, targets: list[di
             CODE_SCHEMA,
             max_tokens=2500,
             purpose="upgrade probe",
-            check=compiles("probe.py"),
+            check=probe_check,
             fallback=code_from_text,
         )
         if value is None:

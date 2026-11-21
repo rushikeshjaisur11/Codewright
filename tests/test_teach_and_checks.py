@@ -143,6 +143,10 @@ def test_draft_and_deepen_with_the_model(repo, model):
     base = cards.load()[0]
     c.post(f"/api/w/{wid}/cards/draft", json={"deepen": base.id})
     assert "Go deeper than this existing card" in model.asked[-1] and base.title in model.asked[-1]
+    asked = len(model.asked)
+    assert c.post(f"/api/w/{wid}/cards/draft", json={"deepen": "no.such-card"}).status_code == 404
+    assert c.post(f"/api/w/{wid}/cards/draft", json={}).status_code == 400
+    assert len(model.asked) == asked  # nothing to draft from: the model is not asked
 
 
 # ---------------------------------------------------------------- verdicts rank, batches, the budget

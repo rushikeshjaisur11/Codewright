@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from codewright import cards, graph, stack
+from codewright import cards, graph, proof, stack
 from codewright.intents import detect
 from codewright.suggest import make_findings
 
@@ -66,7 +66,7 @@ def test_sqlalchemy_ext_declarative_import_is_patched(tmp_path):
     root = repo(tmp_path, {"models.py": src}, {"sqlalchemy": "2.1.8"})
     [f] = findings(root)["sqlalchemy.orm-declarative-base"]
     assert "+from sqlalchemy.orm import declarative_base" in f.patch
-    subprocess.run(["git", "apply", "-"], cwd=root, input=f.patch, text=True, check=True)
+    assert not proof.patch_error(root, f.patch)
     compile((root / "models.py").read_text(), "models.py", "exec")
 
 

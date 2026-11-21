@@ -6,7 +6,6 @@ import contextlib
 import io
 import os
 import re
-import subprocess
 import threading
 from dataclasses import asdict
 from pathlib import Path
@@ -358,15 +357,10 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         f = w.finding(fid)
         if f is None or not f.patch:
             raise HTTPException(404, "no patch for this finding") from None
-        proc = subprocess.run(
-            ["git", "apply", "--whitespace=nowarn", "-"], cwd=w.root, input=f.patch, capture_output=True, text=True
-        )
-        if proc.returncode != 0:
-            proc = subprocess.run(
-                ["patch", "-p1", "--forward"], cwd=w.root, input=f.patch, capture_output=True, text=True
-            )
-        if proc.returncode != 0:
-            raise HTTPException(409, f"patch did not apply: {proc.stderr.strip() or proc.stdout.strip()}") from None
+        from .proof import patch_error
+
+        if err := patch_error(Path(w.root), f.patch):
+            raise HTTPException(409, f"patch did not apply: {err}") from None
         w.feedback(fid, "accepted", "applied from the web UI")
         return {"applied": True, "file": f.file}
 
@@ -758,6 +752,10 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
 
         w = ws(wid)
         base = next((c for c in card_store.for_repo(w.root) if c.id == deepen), None) if deepen else None
+        if deepen and base is None:
+            raise HTTPException(404, "not one of this repo's cards")
+        if not (topic.strip() or library.strip() or notes.strip() or base):
+            raise HTTPException(400, "give a topic, a library or notes to draft from")
         lib = library or (base.library if base and base.library else "")
         installed = stack_mod.discover(w.root).version_of(lib) if lib else None
         try:
