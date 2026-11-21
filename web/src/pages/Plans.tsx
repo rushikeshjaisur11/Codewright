@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import {
-  ArrowRight, Bot, CheckCircle2, CircleDot, ClipboardCheck, FileDiff, GitBranch, Route, TriangleAlert, Wand2, XCircle,
+  ArrowRight, Bot, CheckCircle2, Play, Square, CircleDot, ClipboardCheck, FileDiff, GitBranch, Route, TriangleAlert, Wand2, XCircle,
 } from "lucide-react";
 import { useApp } from "../App";
-import { api, MigrationPlan, MigrationRow, PlanReview, StepDetail, UpgradeRewrite } from "../api";
+import { api, MigrationPlan, MigrationRow, MigrationRun, PlanReview, StepDetail, UpgradeRewrite } from "../api";
 import { CopyButton, DiffView, Empty, Inline, Modal, Spinner, Tabs, useToast } from "../ui";
 
 type Tab = "review" | "migrations";
@@ -44,7 +44,7 @@ const LEVEL = {
 } as const;
 
 function PlanReviewTab() {
-  const { wid } = useApp();
+  const { wid, go } = useApp();
   const toast = useToast();
   const [text, setText] = useState(() => {
     try { return sessionStorage.getItem("cw-plan") ?? ""; } catch { return ""; }
@@ -57,6 +57,17 @@ function PlanReviewTab() {
     if (!wid || !text.trim()) return;
     setBusy(true);
     try { setRes(await api.critique(wid, text)); } catch (e) { toast((e as Error).message, "error"); } finally { setBusy(false); }
+  };
+
+  const handToAgent = async () => {
+    if (!wid) return;
+    try {
+      await api.agentStart(wid, `Carry out this plan in the repository. It was reviewed against the code and judged go.
+
+${text.trim()}`, { web: true, tests: true });
+      toast("The AI agent is working on the plan in a sandbox; follow it on the AI agent page");
+      go("agent");
+    } catch (e) { toast((e as Error).message, "error"); }
   };
 
   return (
@@ -85,7 +96,14 @@ function PlanReviewTab() {
             <div className="card-head">
               <h2>{res.verdict === "go" ? <CheckCircle2 size={16} color="var(--green)" /> : <TriangleAlert size={16} color="var(--amber)" />}
                 {res.verdict === "go" ? "Go" : "Revise"}: {res.headline}</h2>
-              <div className="right"><span className="badge outline">Score {res.score}</span></div>
+              <div className="right row" style={{ gap: 6 }}>
+                <span className="badge outline">Score {res.score}</span>
+                {res.verdict === "go" && (
+                  <button className="btn sm primary" onClick={handToAgent} title="The agent carries out the plan in a sandbox copy and runs the tests; you apply its change from the AI agent page">
+                    <Wand2 size={13} />Hand to the AI agent
+                  </button>
+                )}
+              </div>
             </div>
             {res.points.length === 0 ? <div className="card-pad muted">Nothing to flag.</div> : (
               <div className="card-pad col" style={{ gap: 14 }}>
@@ -127,6 +145,23 @@ function MigrationsTab() {
   const [batch, setBatch] = useState(5);
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState<StepDetail | null>(null);
+  const [run, setRun] = useState<MigrationRun | null>(null);
+  useEffect(() => { if (wid) api.migrationRunProgress(wid).then(setRun).catch(() => {}); }, [wid]);
+  useEffect(() => {
+    if (!wid || !run?.running) return;
+    const t = setInterval(() => api.migrationRunProgress(wid).then((r) => {
+      setRun(r);
+      if (!r.running) { loadRows(); reload(); if (open) api.migration(wid, open).then(setPlan).catch(() => {}); }
+    }).catch(() => {}), 2000);
+    return () => clearInterval(t);
+  }, [wid, run?.running]); // eslint-disable-line react-hooks/exhaustive-deps
+  const runAll = async (name: string) => {
+    if (!wid) return;
+    try {
+      setRun(await api.migrationRunAll(wid, name));
+      toast(`Running every step on codewright/${name}: one commit per step, nothing is pushed`);
+    } catch (e) { toast((e as Error).message, "error"); }
+  };
 
   const loadRows = () => { if (wid) api.migrations(wid).then((m) => setRows(m.applicable)).catch((e) => toast(e.message, "error")); };
   useEffect(loadRows, [wid, data?.last_run]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -244,7 +279,15 @@ function MigrationsTab() {
               <h2>{plan.title}</h2>
               <div className="right row" style={{ gap: 6 }}>
                 {plan.library && <span className="badge outline mono">{plan.library} {plan.installed ?? "?"} → {plan.target ?? "current"}</span>}
-                <button className="btn sm ghost" disabled={busy} onClick={() => makePlan(plan.name)} title="Re-plan with the current code">Re-plan</button>
+                <button className="btn sm ghost" disabled={busy || !!run?.running} onClick={() => makePlan(plan.name)} title="Re-plan with the current code">Re-plan</button>
+                {run?.running && run.name === plan.name ? (
+                  <button className="btn sm" onClick={() => wid && api.migrationRunStop(wid).then(setRun)}><Square size={13} />Stop</button>
+                ) : plan.next_step != null && (
+                  <button className="btn sm primary" disabled={busy || !!run?.running} onClick={() => runAll(plan.name)}
+                    title="On branch codewright/<migration>: apply each step's patch, hand the rest to the AI agent, run the step's tests and commit it. Stops at the first failure. Never pushes.">
+                    <Play size={13} />Run all steps
+                  </button>
+                )}
               </div>
             </div>
             <div className="card-pad col" style={{ gap: 12 }}>
@@ -255,6 +298,23 @@ function MigrationsTab() {
                     <span className="mono muted">{Math.round(plan.progress * 100)}%</span>
                   </div>
                   <div className="meter" style={{ marginTop: 4 }}><span style={{ width: `${plan.progress * 100}%` }} /></div>
+                </div>
+              )}
+              {run && run.name === plan.name && (
+                <div className="callout col" style={{ gap: 4, fontSize: 13 }}>
+                  <div className="row" style={{ gap: 6 }}>
+                    {run.running && <Spinner size={13} />}<b>{run.status}</b><span className="faint mono">on {run.branch}</span>
+                    {run.running && <a onClick={() => go("agent")}>follow the agent</a>}
+                  </div>
+                  {run.log.map((e) => (
+                    <div key={e.n} className="row" style={{ gap: 6 }}>
+                      {e.ok ? <CheckCircle2 size={13} color="var(--green)" /> : e.detail ? <XCircle size={13} color="var(--red)" /> : <Spinner size={13} />}
+                      <span>Step {e.n}</span>
+                      {e.commit && <span className="mono faint">{e.commit}</span>}
+                      {!e.ok && e.detail && <span className="muted">{e.detail} (its changes are left uncommitted)</span>}
+                    </div>
+                  ))}
+                  {run.error && <div className="muted">{run.error}</div>}
                 </div>
               )}
               {plan.notes && <div className="muted" style={{ fontSize: 13 }}>{plan.notes}</div>}

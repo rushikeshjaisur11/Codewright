@@ -278,6 +278,11 @@ export interface AgentResult {
   applies: boolean; apply_error?: string; tests: { ok: boolean; selection: string[]; after_last_edit: boolean } | null;
   verification?: AgentVerification;
 }
+export interface MigrationRun {
+  running: boolean; name: string | null; branch?: string; status: string | null; error: string | null;
+  log: { n: number; files: string[]; ok: boolean; detail: string; commit: string | null }[];
+}
+
 export interface AgentJob {
   running: boolean; task: string | null; origin?: string; engine?: string; started?: number; status?: string; events: AgentEvent[]; total: number;
   result: AgentResult | null; error: string | null; applied?: boolean;
@@ -477,6 +482,9 @@ export const api = {
   agentProgress: (id: string, since = 0) => req<AgentJob>("GET", `${w(id)}/agent?since=${since}`),
   agentStop: (id: string) => req<AgentJob>("POST", `${w(id)}/agent/stop`),
   agentApply: (id: string) => req<{ applied: boolean; files: string[] }>("POST", `${w(id)}/agent/apply`),
+  migrationRunAll: (id: string, name: string) => req<MigrationRun>("POST", `${w(id)}/migrations/${encodeURIComponent(name)}/run`, {}),
+  migrationRunProgress: (id: string) => req<MigrationRun>("GET", `${w(id)}/migration-run`),
+  migrationRunStop: (id: string) => req<MigrationRun>("POST", `${w(id)}/migration-run/stop`),
   migrationAgent: (id: string, name: string, n: number) => req<AgentJob>("POST", `${w(id)}/migrations/${encodeURIComponent(name)}/steps/${n}/agent`, {}),
   searchSettings: () => req<SearchSettings>("GET", "/api/settings/search"),
   saveSearch: (s: Partial<{ provider: string; api_key: string; url: string; clear_key: boolean }>) => req<SearchSettings>("PUT", "/api/settings/search", s),

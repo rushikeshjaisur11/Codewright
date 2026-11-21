@@ -51,6 +51,17 @@ def test_fix_branch_switch_and_commit(repo):
         gitops.create(repo, "bad name..")
 
 
+def test_switch_to_remote_only_branch(repo, tmp_path):
+    _git(repo, "branch", "feature/x")
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(repo), str(clone))
+    assert "feature/x" not in gitops.status(clone)["branches"]  # only on the remote so far
+    s = gitops.switch(clone, "feature/x")
+    assert s["branch"] == "feature/x" and s["upstream"] == "origin/feature/x"
+    with pytest.raises(gitops.GitError, match="local or remote"):
+        gitops.switch(clone, "nope")
+
+
 def test_branch_api(repo):
     from fastapi.testclient import TestClient
 

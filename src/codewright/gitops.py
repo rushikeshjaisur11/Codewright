@@ -110,8 +110,10 @@ def switch(root: Path, branch: str) -> dict:
         names = ", ".join(c["file"] for c in changed[:5]) + ("…" if len(changed) > 5 else "")
         raise GitError(f"commit or stash your {len(changed)} uncommitted change(s) first ({names})")
     if branch not in _git(root, "for-each-ref", "--format=%(refname:short)", "refs/heads").split():
-        raise GitError(f"no local branch {branch!r}")
-    _git(root, "switch", branch)
+        remote = _git(root, "for-each-ref", "--format=%(refname:short)", "refs/remotes", check=False).split()
+        if not any(r.split("/", 1)[-1] == branch for r in remote if "/" in r):
+            raise GitError(f"no branch {branch!r}, local or remote")
+    _git(root, "switch", branch)  # remote-only: git's --guess creates a local branch tracking it
     return status(root)
 
 

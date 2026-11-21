@@ -115,3 +115,49 @@ def test_cli(tmp_path):
     (tmp_path / ".codewright/rules.yaml").unlink()
     res = run(cli, ["rules", "init", "--path", str(tmp_path)])
     assert res.exit_code == 0 and "Wrote .codewright/rules.yaml" in res.output
+
+
+def test_migration_run_all_commits_each_step_on_its_branch(tmp_path):
+    import subprocess
+    import time
+
+    from codewright import gitops
+
+    write(tmp_path, REPO)
+
+    def g(*a):
+        subprocess.run(
+            ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *a],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+    g("init", "-q", "-b", "main")
+    g("add", "-A")
+    g("commit", "-qm", "init")
+    g("config", "user.email", "t@example.com")
+    g("config", "user.name", "t")
+    c = TestClient(create_app([str(tmp_path)]), base_url="http://localhost")
+    wid = c.get("/api/workspaces").json()[0]["id"]
+    c.post(f"/api/w/{wid}/migrations/pydantic-v2/plan", json={"batch": 3})
+    (tmp_path / "app/db/models.py").write_text((tmp_path / "app/db/models.py").read_text() + "# wip\n")
+    r = c.post(f"/api/w/{wid}/migrations/pydantic-v2/run", json={})
+    assert r.status_code == 409 and "uncommitted" in r.json()["detail"]  # refuses on a dirty tree
+    g("checkout", "--", "app/db/models.py")
+    assert c.post(f"/api/w/{wid}/migrations/nope/run", json={}).status_code == 404
+    c.post(f"/api/w/{wid}/migrations/pydantic-v2/run", json={})
+    for _ in range(300):
+        run = c.get(f"/api/w/{wid}/migration-run").json()
+        if not run["running"]:
+            break
+        time.sleep(0.1)
+    assert run["status"] == "Done", run
+    assert run["branch"] == "codewright/pydantic-v2" and run["log"][0]["ok"] and run["log"][0]["commit"]
+    s = gitops.status(tmp_path)
+    assert (
+        s["branch"] == "codewright/pydantic-v2"
+        and [c["file"] for c in s["changed"] if not c["file"].startswith(".codewright/")] == []
+    )
+    assert "field_validator" in (tmp_path / "app/db/models.py").read_text()
+    assert c.get(f"/api/w/{wid}/migrations/pydantic-v2").json()["progress"] == 1.0
