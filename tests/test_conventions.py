@@ -6,14 +6,13 @@ original and must expose the same OpenAPI schema, answer requests the same and v
 
 import importlib.util
 import json
-import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
-from codewright import cards, graph, stack
+from codewright import cards, graph, proof, stack
 from codewright.intents import detect
 from codewright.suggest import make_findings
 
@@ -37,7 +36,7 @@ def findings(tmp_path: Path) -> dict:
 
 
 def apply(tmp_path: Path, f) -> str:
-    subprocess.run(["git", "apply", "-"], cwd=tmp_path, input=f.patch, text=True, check=True)
+    assert not proof.patch_error(tmp_path, f.patch)
     src = (tmp_path / f.file).read_text()
     compile(src, f.file, "exec")
     return src

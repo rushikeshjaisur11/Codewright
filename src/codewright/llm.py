@@ -297,6 +297,10 @@ def public(root: str | Path | None = None) -> dict:
 # --------------------------------------------------------------------------- the call
 
 
+_RETRY_STATUS = (408, 409, 429, 500, 502, 503, 504, 529)  # rate limits, overload and server hiccups pass
+_RETRIES = 3
+
+
 def _post(url: str, body: dict, headers: dict, who: str, timeout: int) -> dict:
     req = urllib.request.Request(
         url,
@@ -304,21 +308,37 @@ def _post(url: str, body: dict, headers: dict, who: str, timeout: int) -> dict:
         method="POST",
         headers={"Content-Type": "application/json", "User-Agent": "codewright", **headers},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:300]
+    for attempt in range(_RETRIES + 1):
         try:
-            err = json.loads(detail).get("error")
-            detail = err.get("message", detail) if isinstance(err, dict) else (err or detail)
-        except (ValueError, AttributeError):
-            pass
-        raise LLMError(f"{who} answered HTTP {e.code}: {detail}") from None
-    except (urllib.error.URLError, OSError) as e:
-        raise LLMError(f"cannot reach {url.split('/v1')[0]}: {getattr(e, 'reason', e)}") from None
-    except ValueError:
-        raise LLMError(f"{who} did not answer with JSON; check the server address") from None
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            if e.code not in _RETRY_STATUS or attempt == _RETRIES:
+                _raise_http(e, who)
+            wait = e.headers.get("retry-after", "") if e.headers else ""
+            time.sleep(min(float(wait), 30) if wait.replace(".", "", 1).isdigit() else 2**attempt)
+        except (urllib.error.URLError, OSError) as e:
+            # A timed-out answer is not retried: the user would wait `timeout` again, several times over.
+            if (
+                attempt == _RETRIES
+                or isinstance(e, TimeoutError)
+                or isinstance(getattr(e, "reason", None), TimeoutError)
+            ):
+                raise LLMError(f"cannot reach {url.split('/v1')[0]}: {getattr(e, 'reason', e)}") from None
+            time.sleep(2**attempt)
+        except ValueError:
+            raise LLMError(f"{who} did not answer with JSON; check the server address") from None
+    raise AssertionError("unreachable")
+
+
+def _raise_http(e: urllib.error.HTTPError, who: str):
+    detail = e.read().decode("utf-8", "replace")[:300]
+    try:
+        err = json.loads(detail).get("error")
+        detail = err.get("message", detail) if isinstance(err, dict) else (err or detail)
+    except (ValueError, AttributeError):
+        pass
+    raise LLMError(f"{who} answered HTTP {e.code}: {detail}") from None
 
 
 # --------------------------------------------------------------------------- usage and budget

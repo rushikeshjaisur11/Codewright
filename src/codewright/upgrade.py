@@ -278,6 +278,17 @@ BREAKING_SCHEMA = {
 }
 
 
+def _use_lines(root: str | Path, use: dict, limit: int = 25) -> str:
+    """The lines of a file that mention the names it imports from the library, so the model sees the calls."""
+    pat = re.compile(r"\b(?:" + "|".join(re.escape(n) for n in use["names"]) + r")\b")
+    try:
+        lines = (Path(root) / use["file"]).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    hits = [f"  {i}: {ln.strip()[:200]}" for i, ln in enumerate(lines, 1) if pat.search(ln)]
+    return "\n".join(hits[:limit])
+
+
 def breaking_changes(root: str | Path, graph, name: str, installed: str | None, version: str, notes: dict) -> dict:
     from .llm import LLMConfig, complete_json, last_error
     from .llm import status as llm_status
@@ -292,7 +303,7 @@ def breaking_changes(root: str | Path, graph, name: str, installed: str | None, 
         raise RuntimeError("no release notes found for these versions; check the changelog links by hand")
     ask = (
         f"{name}: {installed or 'unknown'} -> {version}\n\nWhere the repo uses it:\n"
-        + "\n".join(f"- {u['file']}: {', '.join(u['names'])}" for u in used)
+        + "\n".join(f"- {u['file']}: {', '.join(u['names'])}\n{_use_lines(root, u)}" for u in used)
         + f"\n\nRelease notes:\n{text[:30000]}"
     )
     data = complete_json(

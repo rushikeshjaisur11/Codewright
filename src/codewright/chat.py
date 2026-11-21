@@ -130,6 +130,9 @@ def answer(
 def _answer(index: CodeIndex, question: str, history, cfg, kn: list[dict]) -> dict:
     extra = {"knowledge": kn}
     hits = index.search(question)
+    if not hits and history:  # a follow-up ("how do I fix it?") is about the code the earlier questions found
+        earlier = " ".join(m["content"] for m in history[-6:] if m.get("role") == "user" and m.get("content"))
+        hits = index.search(f"{earlier} {question}")
     citations = [
         {"n": i + 1, "id": p.id, "file": p.file, "line": p.line, "end": p.end, "title": p.title, "score": round(s, 2)}
         for i, (p, s) in enumerate(hits)

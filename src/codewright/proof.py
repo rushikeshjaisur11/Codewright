@@ -277,30 +277,57 @@ def patch_error(workdir: Path, patch: str, *, reverse: bool = False, check: bool
         return "the patch is empty"
     rev = ["-R"] if reverse else []
     dry = ["--check"] if check else []
+    # autocrlf off: line endings are handled below, so git writes the lines exactly as the patch has them
+    git = ["git", "-c", "core.autocrlf=false", "apply", "--whitespace=nowarn"]
     tools = (
-        ["git", "apply", "--whitespace=nowarn", *rev, *dry, "-"],
-        ["git", "apply", "--whitespace=nowarn", "--ignore-whitespace", "-C1", *rev, *dry, "-"],
+        [*git, *rev, *dry, "-"],
+        [*git, "--ignore-whitespace", "-C1", *rev, *dry, "-"],
         ["patch", "-p1", "--quiet", "--batch", "-l", "--dry-run", *(rev or ["--forward"])],
     )
     errors = []
+    # Bytes, not text: text mode on Windows turns every "\n" of the patch into "\r\n", so added lines gain a "\r".
+    data = patch.replace("\r\n", "\n").encode("utf-8")
 
     def run(tool: list[str]) -> str | None:
         try:
-            proc = subprocess.run(tool, cwd=workdir, input=patch, capture_output=True, text=True, timeout=60)
+            proc = subprocess.run(tool, cwd=workdir, input=data, capture_output=True, timeout=60)
         except (OSError, subprocess.TimeoutExpired) as exc:
             return str(exc)
-        return None if proc.returncode == 0 else ((proc.stderr or proc.stdout).strip() or "did not apply")
+        out = (proc.stderr or proc.stdout).decode("utf-8", "replace").strip()
+        return None if proc.returncode == 0 else (out or "did not apply")
 
-    for tool in tools:
-        if shutil.which(tool[0]) is None:
-            continue
-        err = run(tool)
-        if err is None and tool[0] == "patch" and not check:  # `patch` is not atomic: it ran dry; now for real
-            err = run([t for t in tool if t != "--dry-run"])
-        if err is None:
-            return ""
-        errors.append(err)
+    # Patches are made from LF text; a CRLF file (git's autocrlf on Windows) is patched as LF and turned back.
+    crlf = _crlf_files(workdir, patch)
+    for p in crlf:
+        p.write_bytes(p.read_bytes().replace(b"\r\n", b"\n"))
+    try:
+        for tool in tools:
+            if shutil.which(tool[0]) is None:
+                continue
+            err = run(tool)
+            if err is None and tool[0] == "patch" and not check:  # `patch` is not atomic: it ran dry; now for real
+                err = run([t for t in tool if t != "--dry-run"])
+            if err is None:
+                return ""
+            errors.append(err)
+    finally:
+        for p in crlf:
+            if p.exists():
+                p.write_bytes(p.read_bytes().replace(b"\n", b"\r\n"))
     return next((e for e in errors if e), "no patch tool (git or patch) is installed")[:600]
+
+
+def _crlf_files(workdir: Path, patch: str) -> list[Path]:
+    """The files a patch touches whose every line ends in CRLF (mixed files are left as they are)."""
+    out = []
+    for m in re.finditer(r"^(?:---|\+\+\+) (?:[ab]/)?([^\t\r\n]+)", patch, re.M):
+        p = Path(workdir) / m.group(1).strip()
+        if p in out or m.group(1).strip() == "/dev/null" or not p.is_file():
+            continue
+        raw = p.read_bytes()
+        if b"\r\n" in raw and raw.count(b"\n") == raw.count(b"\r\n"):
+            out.append(p)
+    return out
 
 
 def apply_patch(workdir: Path, patch: str, *, reverse: bool = False) -> bool:

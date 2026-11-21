@@ -220,3 +220,38 @@ def test_review_reports_every_stage(tmp_path):
         Workspace.__setattr__ = real
     assert list(dict.fromkeys(seen)) == ["stack", "graph", "detect", "check", "rank"]
     assert ws.progress is None and not ws.running
+
+
+def test_overloaded_and_rate_limited_answers_are_retried_but_bad_requests_are_not(monkeypatch):
+    codes = [529, 429, 200, 400]
+    hits: list[int] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            code = codes.pop(0)
+            hits.append(code)
+            ok = {"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn"}
+            data = json.dumps(ok if code == 200 else {"error": {"message": f"status {code}"}}).encode()
+            self.send_response(code)
+            if code == 429:
+                self.send_header("retry-after", "0")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}/v1/messages"
+    try:
+        assert llm._post(url, {}, {}, "Claude", 5)["content"][0]["text"] == "ok"
+        assert hits == [529, 429, 200]
+        with pytest.raises(llm.LLMError, match="HTTP 400: status 400"):
+            llm._post(url, {}, {}, "Claude", 5)
+        assert hits == [529, 429, 200, 400]  # a bad request is not sent again
+    finally:
+        server.shutdown()
