@@ -119,7 +119,7 @@ function PlanReviewTab() {
 // ------------------------------------------------------------------ migrations
 
 function MigrationsTab() {
-  const { wid, data, reload, openCode } = useApp();
+  const { wid, data, reload, openCode, go } = useApp();
   const toast = useToast();
   const [rows, setRows] = useState<MigrationRow[] | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -160,6 +160,14 @@ function MigrationsTab() {
       if (!r.patches.length) toast("The AI could not write these changes; see why below", "error");
     } catch (e) { toast((e as Error).message, "error"); } finally { setWriting(false); }
   };
+  const handToAgent = async () => {
+    if (!wid || !open || !step) return;
+    try {
+      await api.migrationAgent(wid, open, step.step.n);
+      toast("The AI agent is working on this step in a sandbox; follow it on the AI agent page");
+      go("agent");
+    } catch (e) { toast((e as Error).message, "error"); }
+  };
   const showStep = async (n: number) => {
     setAi(null);
     if (!wid || !open) return;
@@ -174,7 +182,7 @@ function MigrationsTab() {
       setPlan(r.status);
       setStep(null);
       setAi(null);
-      toast(`Applied step ${step.step.n} to ${r.files.length} file(s)${r.failed.length ? `; ${r.failed.length} AI change(s) did not apply (${r.failed.join(", ")})` : ""}. Nothing is committed: run its tests, then commit from Review.`);
+      toast(`Applied step ${step.step.n} to ${r.files.length} file(s)${r.failed.length ? `; ${r.failed.length} AI change(s) did not apply (${r.failed.join(", ")}${r.errors?.[0] ? `: ${r.errors[0].why.split("\n")[0].slice(0, 160)}` : ""})` : ""}. Nothing is committed: run its tests, then commit from Review.`);
       reload();
     } catch (e) { toast((e as Error).message, "error"); } finally { setBusy(false); }
   };
@@ -290,6 +298,11 @@ function MigrationsTab() {
           <>
             <CopyButton text={step.pr_body} label="Copy PR text" />
             {step.patch && <CopyButton text={step.patch} label="Copy patch" />}
+            {!step.step.done && step.step.items.some((i) => !i.autofix) && (
+              <button className="btn" disabled={writing || busy} onClick={handToAgent} title="Searches the code and the web, edits a sandbox copy and runs the tests">
+                <Wand2 size={14} />Hand to the AI agent
+              </button>
+            )}
             {!step.step.done && step.step.items.some((i) => !i.autofix) && (
               <button className="btn" disabled={writing || busy} onClick={writeWithAi}>
                 {writing ? <Spinner size={14} /> : <Bot size={14} />}{ai ? "Write again with AI" : "Write the changes with AI"}

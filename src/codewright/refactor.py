@@ -34,6 +34,17 @@ from .models import IntentMatch
 # --------------------------------------------------------------------------- diffs
 
 
+def unified(before: list[str], after: list[str], fromfile: str, tofile: str) -> str:
+    """difflib's unified diff, made applicable: a last line without a newline gets git's
+    `\\ No newline at end of file` marker instead of running into the next line (which corrupts the patch)."""
+    out = []
+    for line in difflib.unified_diff(before, after, fromfile=fromfile, tofile=tofile):
+        if line.startswith(("---", "+++")) and not line.endswith("\n"):
+            line += "\n"
+        out.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
+    return "".join(out)
+
+
 def diff(changes: dict[str, tuple[list[str] | None, list[str]]]) -> str | None:
     """One unified diff for several files. `before` None means a new file."""
     out = []
@@ -42,8 +53,14 @@ def diff(changes: dict[str, tuple[list[str] | None, list[str]]]) -> str | None:
         if before == after:
             continue
         a = "/dev/null" if before is None else f"a/{path}"
-        out.append("".join(difflib.unified_diff(before or [], after, fromfile=a, tofile=f"b/{path}")))
+        out.append(unified(before or [], after, a, f"b/{path}"))
     return "".join(out) or None
+
+
+def read_source(path: Path) -> str:
+    """A file's text with its line endings as they are (read_text would turn CRLF into LF, and a diff made
+    from that doesn't apply to the file)."""
+    return path.read_bytes().decode("utf-8", errors="replace")
 
 
 def _lines(src: str) -> list[str]:
@@ -551,7 +568,7 @@ def combine(root: str | Path, patches: list[tuple[str, str]]) -> tuple[str, list
                 skipped.append(pid)
         changes = {}
         for rel in sorted(touched):
-            before = _lines((root / rel).read_text()) if (root / rel).is_file() else None
-            after = _lines((work / rel).read_text()) if (work / rel).is_file() else []
+            before = _lines(read_source(root / rel)) if (root / rel).is_file() else None
+            after = _lines(read_source(work / rel)) if (work / rel).is_file() else []
             changes[rel] = (before, after)
     return diff(changes) or "", skipped

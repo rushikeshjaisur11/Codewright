@@ -21,7 +21,7 @@ import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .llm import LLMConfig, complete
+from .llm import LLMConfig, complete_json
 
 # --------------------------------------------------------------------------- interview
 
@@ -846,25 +846,52 @@ def adr_markdown(d: dict) -> str:
 # --------------------------------------------------------------------------- data model / API
 
 
+DATA_MODEL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "entities": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}, "fields": {"type": "array", "items": {"type": "string"}}},
+                "required": ["name", "fields"],
+            },
+        },
+        "endpoints": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "method": {"type": "string"},
+                    "path": {"type": "string"},
+                    "summary": {"type": "string"},
+                },
+                "required": ["method", "path", "summary"],
+            },
+        },
+    },
+    "required": ["entities", "endpoints"],
+}
+
+
 def data_model(s: Session, cfg: LLMConfig | None) -> dict:
     idea = s.value("idea") or ""
     if cfg is not None:
         prompt = (
             f"Project: {idea}\nWorkload: {', '.join(s.workload()) or 'plain API'}\n"
-            'Return only JSON: {"entities":[{"name":str,"fields":[str]}],'
-            '"endpoints":[{"method":str,"path":str,"summary":str}]}. '
             "At most 6 entities and 10 endpoints. Field format: 'name: type'."
         )
-        text = complete(cfg, "You draft concise data models and REST APIs.", [{"role": "user", "content": prompt}], 900)
-        if text:
-            m = re.search(r"\{.*\}", text, re.S)
-            if m:
-                try:
-                    data = json.loads(m.group(0))
-                    data["source"] = "model draft — review before use"
-                    return data
-                except json.JSONDecodeError:
-                    pass
+        data = complete_json(
+            cfg,
+            "You draft concise data models and REST APIs.",
+            [{"role": "user", "content": prompt}],
+            DATA_MODEL_SCHEMA,
+            max_tokens=1500,
+            purpose="draft a data model",
+        )
+        if data is not None:
+            data["source"] = "model draft — review before use"
+            return data
     multi = "multi-tenant" in s.workload()
     entities = []
     if multi:

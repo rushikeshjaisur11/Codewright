@@ -107,6 +107,7 @@ class Workspace:
     _saved: dict | None = None
     early: Snapshot | None = None  # the graph of the review in progress, before findings exist
     _upgrade_job: dict | None = None  # the running (or last) upgrade safety step and its results
+    _agent_job: dict | None = None  # the running (or last) AI agent task: its steps, patch and test run
     _ai_batch: dict | None = None  # progress of the running (or last) batch of AI checks
     _releases: dict | None = None  # progress and rows of the running (or last) release check
     _cache_lock: threading.RLock = field(default_factory=threading.RLock)
@@ -497,7 +498,7 @@ class Workspace:
                     tell(f"Installing {key} on its own and checking every use against it")
                     state["check"] = upgradesafety.check_uses(self.root, r.graph, r.stack, name, version)
                     tell(state["check"]["summary"])
-                elif step == "rewrite":
+                elif step in ("rewrite", "agent"):
                     problems = [p for p in (state.get("check") or {}).get("problems") or [] if p["issue"] != "changed"]
                     problems += upgradesafety.behaviour_problems(
                         r.graph, name, version, state.get("trial"), (state.get("probes") or {}).get("probes")
@@ -509,10 +510,29 @@ class Workspace:
                     installed = r.stack.version_of(name)
                     tell("Reading the release notes")
                     notes = knowledgefresh.release_notes(name, installed, version)
-                    tell(f"Writing the code changes for {len(problems)} use(s)")
-                    state["rewrite"] = upgradesafety.rewrite(
-                        self.root, r.graph, name, installed, version, problems, notes
-                    )
+                    if step == "agent":
+                        from . import agent
+
+                        tell(f"The AI agent is working on {len(problems)} use(s) in a sandbox copy")
+                        notes_text = "\n\n".join(f"## {x['version']}\n{x['body']}" for x in notes.get("notes", []))
+                        task, context = agent.task_for_problems(
+                            f"Upgrade {name} from {installed or 'the installed version'} to {version}",
+                            problems,
+                            notes_text,
+                        )
+                        context += (
+                            f"\n\nThe sandbox still has {name} {installed or ''} installed: check the new API from "
+                            "its docs and changelog on the web; the tests run against the installed version."
+                        )
+                        result = agent.run(
+                            self.root, task, context=context, progress=lambda e: _agent_line(e, tell), verify=False
+                        )
+                        state["rewrite"] = agent.as_patches(result, [p["detail"] for p in problems])
+                    else:
+                        tell(f"Writing the code changes for {len(problems)} use(s)")
+                        state["rewrite"] = upgradesafety.rewrite(
+                            self.root, r.graph, name, installed, version, problems, notes
+                        )
                     tell(
                         f"{len(state['rewrite']['patches'])} change(s) written, "
                         f"{len(state['rewrite']['skipped'])} left by hand"
@@ -541,6 +561,116 @@ class Workspace:
 
         threading.Thread(target=run, daemon=True, name=f"codewright-upgrade-{self.root.name}").start()
         return self.upgrade_progress()
+
+    # --------------------------------------------------------------- the AI agent
+    def agent_start(
+        self,
+        task: str,
+        *,
+        context: str = "",
+        web: bool = True,
+        tests: bool = True,
+        origin: str = "",
+        engine: str | None = None,
+    ) -> dict:
+        """Start the agent on `task` in the background, in a sandbox copy; poll agent_progress. Nothing in the
+        repo changes until agent_apply."""
+        from . import agent
+
+        cur = self._agent_job
+        if cur and cur["running"]:
+            raise RuntimeError("the agent is already working on a task: stop it first")
+        if not task.strip():
+            raise ValueError("describe the change to make")
+        engine = (engine or agent.default_engine()).lower()
+        if engine not in agent.ENGINES:
+            raise ValueError(f"unknown agent engine {engine!r}")
+        if not (es := agent.engine_status()[engine])["available"]:
+            raise RuntimeError(f"the {es['label']} engine is not installed here: {es['reason']}")
+        stop = threading.Event()
+        state: dict = {
+            "running": True,
+            "task": task.strip(),
+            "origin": origin,
+            "engine": engine,
+            "started": time.time(),
+            "events": [],
+            "status": "Starting",
+            "result": None,
+            "error": None,
+            "applied": False,
+            "_stop": stop,
+        }
+        self._agent_job = state
+
+        def tell(event: dict) -> None:
+            if event.get("kind") == "status":
+                state["status"] = event["text"]
+            else:
+                state["events"].append(event)
+                if event.get("kind") == "tool" and event["tool"] in ("edit_file", "write_file", "run_tests"):
+                    note(self.name, f"Agent: {event['tool']} {event['detail']}" + ("" if event["ok"] else " (failed)"))
+
+        def run() -> None:
+            try:
+                note(self.name, f"Agent started ({es['label']}): {task.strip()[:120]}")
+                state["result"] = agent.run(
+                    self.root, task, context=context, web=web, tests=tests, progress=tell, stop=stop, engine=engine
+                )
+                res = state["result"]
+                note(
+                    self.name,
+                    f"Agent {res['ended']}: {len(res['files'])} file(s) changed in the sandbox"
+                    + (f"; error: {res['error']}" if res.get("error") else ""),
+                )
+            except Exception as exc:
+                state["error"] = str(exc)
+            finally:
+                state["running"] = False
+                state["status"] = "Done" if not state["error"] else f"Stopped: {state['error']}"
+
+        threading.Thread(target=run, daemon=True, name=f"codewright-agent-{self.root.name}").start()
+        return self.agent_progress()
+
+    def agent_progress(self, since: int = 0) -> dict:
+        s = self._agent_job
+        if s is None:
+            return {"running": False, "task": None, "events": [], "result": None, "error": None, "total": 0}
+        out = {k: v for k, v in s.items() if not k.startswith("_") and k != "events"}
+        out["events"] = s["events"][since:]
+        out["total"] = len(s["events"])
+        return out
+
+    def agent_stop(self) -> dict:
+        if self._agent_job and self._agent_job["running"]:
+            self._agent_job["_stop"].set()
+            self._agent_job["status"] = "Stopping after the current step"
+        return self.agent_progress()
+
+    def agent_apply(self) -> dict:
+        """Apply the agent's patch to the working tree (nothing is committed), then re-review."""
+        s = self._agent_job
+        res = (s or {}).get("result") or {}
+        if not res.get("patch"):
+            raise ValueError("the agent has no change to apply")
+        if s and s.get("applied"):
+            raise ValueError("this change is already applied")
+        self._apply(res["patch"])
+        s["applied"] = True
+        note(self.name, f"Applied the agent's change to {len(res['files'])} file(s)")
+        self.run_review(proof=False)
+        return {"applied": True, "files": res["files"]}
+
+    def migration_agent(self, name: str, n: int, *, web: bool = True, tests: bool = True) -> dict:
+        """Hand a migration step's changes without an automatic patch to the agent."""
+        from . import migrate
+
+        r = self.ensure()
+        _step, found = migrate.step_findings(self.root, name, n, r.graph, r.stack)
+        if not any(not f.patch for f in found):
+            raise ValueError(f"step {n} has no changes left for the AI: apply its automatic patch")
+        task, context = migrate.agent_task(name, r.graph, found)
+        return self.agent_start(task, context=context, web=web, tests=tests, origin=f"migration {name} step {n}")
 
     def upgrade_progress(self) -> dict:
         s = self._upgrade_job or {"running": False, "step": None, "log": [], "error": None}
@@ -646,10 +776,13 @@ class Workspace:
 
     # --------------------------------------------------------------- applying patches
     def _apply(self, patch: str) -> None:
-        from .proof import apply_patch
+        from .proof import patch_error
 
-        if not apply_patch(self.root, patch):
-            raise RuntimeError("the patch did not apply; the files changed since the review. Run the review again")
+        if err := patch_error(self.root, patch):
+            raise RuntimeError(
+                f"the patch did not apply ({err.splitlines()[0][:200]}); the files changed since the review. "
+                "Run the review again"
+            )
 
     def apply_findings(
         self, ids: list[str] | None = None, *, verified_only: bool = True, dry_run: bool = False
@@ -773,22 +906,28 @@ class Workspace:
     def migration_apply(self, name: str, n: int, extra_patches: list[str] | None = None) -> dict:
         """Apply a step's combined patch and the chosen AI-written changes to the working tree (nothing is
         committed), then re-scan."""
-        from .proof import apply_patch
+        from .proof import patch_error
 
         step = self.migration_step(name, n)
         if not step["patch"] and not extra_patches:
             raise ValueError(f"step {n} has nothing to patch automatically: write its changes with AI or by hand")
-        if step["patch"] and not apply_patch(self.root, step["patch"]):
-            raise RuntimeError("the step's patch did not apply; the files changed since the plan was made")
-        failed = []
+        if step["patch"] and (err := patch_error(self.root, step["patch"])):
+            raise RuntimeError(
+                f"the step's patch did not apply ({err.splitlines()[0][:200]}); "
+                "the files changed since the plan was made"
+            )
+        failed, errors = [], []
         for patch in extra_patches or []:
-            if not apply_patch(self.root, patch):
-                failed += re.findall(r"^\+\+\+ b/(\S+)", patch, re.M)
+            if err := patch_error(self.root, patch):
+                files = re.findall(r"^\+\+\+ b/(\S+)", patch, re.M)
+                failed += files
+                errors.append({"files": files, "why": err[:400]})
         self.run_review(proof=False)
         return {
             "applied": True,
             "files": step["step"]["files"],
             "failed": failed,
+            "errors": errors,
             "status": self.migration_status(name),
         }
 
@@ -934,3 +1073,11 @@ class Service:
         p = design.propose(s, cfg if llm_status(cfg)["available"] else None, root)
         self.proposals[sid] = p
         return p
+
+
+def _agent_line(event: dict, tell) -> None:
+    """An agent event as one line of a progress log."""
+    if event.get("kind") == "tool":
+        tell(f"{event['tool']} {event['detail']}" + ("" if event["ok"] else " (failed)"))
+    elif event.get("kind") == "status":
+        tell(event["text"])

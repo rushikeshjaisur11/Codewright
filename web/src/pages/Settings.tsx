@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { BellOff, Bot, CheckCircle2, Package, Plug, PlugZap, RotateCcw, Save, ShieldOff, Trash2, Wifi, XCircle } from "lucide-react";
+import { BellOff, Bot, CheckCircle2, Globe, Package, Plug, PlugZap, RotateCcw, Save, ShieldOff, Trash2, Wifi, XCircle } from "lucide-react";
 import { useApp } from "../App";
-import { AiSettings, AiTest, api, IndexState, ProviderId, Settings } from "../api";
+import { AiSettings, AiTest, api, IndexState, ProviderId, SearchSettings, Settings } from "../api";
 import { CopyButton, Spinner, intentLabel, useToast } from "../ui";
 import ScanScope from "../ScanScope";
 import AiUsage from "../AiUsage";
@@ -60,6 +60,8 @@ export default function SettingsPage() {
       <div className="page-head"><div><h1>Settings</h1><p>Repo settings are stored in <code>{data?.root}/.codewright/</code>, so the team shares them through git. The model and its key are stored on this machine only.</p></div></div>
 
       <ModelCard wid={wid} settings={s} onChange={setS} onOffline={(offline) => save({ offline })} />
+
+      <WebSearchCard />
 
       <AiUsage />
 
@@ -305,9 +307,81 @@ function ModelCard({ wid, settings, onChange, onOffline }: {
             <li><b>Nothing</b> while the model is off or offline mode is on, and nothing during a review either way.</li>
             <li><b>Code chat:</b> your question, the last few messages and the handful of code passages and knowledge cards that matched it.</li>
             <li><b>Design:</b> the project idea and workload you typed in the interview, to draft the data model. No code.</li>
+            <li><b>AI agent:</b> your task, and the files, search results, web pages and test output it reads while it works. It edits a sandbox copy; your files change only when you apply its patch.</li>
           </ul>
         </div>
       </div>
     </div>
   );
 }
+
+const SEARCH_HELP: Record<string, { label: string; blurb: string; key?: string; url?: boolean }> = {
+  duckduckgo: { label: "DuckDuckGo", blurb: "No key needed. Fine for occasional use; it sometimes blocks automated searches." },
+  brave: { label: "Brave Search", blurb: "Dependable results with an API key (free tier available).", key: "Brave Search API key" },
+  tavily: { label: "Tavily", blurb: "Search made for AI agents; needs an API key.", key: "Tavily API key" },
+  searxng: { label: "SearXNG", blurb: "Your own metasearch server: private, no key.", url: true },
+  off: { label: "Off", blurb: "The agent works only from the repository and installed packages." },
+};
+
+function WebSearchCard() {
+  const toast = useToast();
+  const [s, setS] = useState<SearchSettings | null>(null);
+  const [provider, setProvider] = useState("");
+  const [key, setKey] = useState("");
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => { api.searchSettings().then((x) => { setS(x); setProvider(x.provider); setUrl(x.url); }).catch(() => undefined); }, []);
+  if (!s) return null;
+  const help = SEARCH_HELP[provider] ?? SEARCH_HELP.duckduckgo;
+
+  async function save() {
+    setBusy(true); setTest(null);
+    try {
+      const x = await api.saveSearch({ provider, url, ...(key ? { api_key: key } : {}) });
+      setS(x); setKey("");
+      const t = provider === "off" ? null : await api.testSearch();
+      setTest(t ? { ok: t.ok, text: t.ok ? `Working: ${t.results?.[0]?.title ?? ""}` : `Not working: ${t.error}` } : null);
+      toast("Web search settings saved on this machine");
+    } catch (e) { toast((e as Error).message, "error"); }
+    setBusy(false);
+  }
+
+  return (
+    <div className="card">
+      <div className="card-head"><h2><Globe size={16} />Web search for the AI agent</h2>
+        <div className="right">{s.available ? <span className="badge blue">{SEARCH_HELP[s.provider]?.label ?? s.provider}</span> : <span className="badge amber">{s.reason}</span>}</div>
+      </div>
+      <div className="card-pad col" style={{ gap: 14 }}>
+        <div className="muted" style={{ fontSize: 13 }}>The agent looks up release notes, migration guides and API docs while it changes code. It only reads public pages: addresses on your network are refused.</div>
+        <div className="choices">
+          {s.providers.map((p) => (
+            <button key={p} className={`choice ${provider === p ? "on" : ""}`} aria-pressed={provider === p} onClick={() => { setProvider(p); setTest(null); }}>
+              <b>{SEARCH_HELP[p]?.label ?? p}</b><span>{SEARCH_HELP[p]?.blurb}</span>
+            </button>
+          ))}
+        </div>
+        {(help.key || help.url) && (
+          <div className="form-grid">
+            {help.key && <label className="field">{help.key}
+              <input className="input" type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)}
+                placeholder={s.has_key && s.provider === provider ? `saved ${s.key_hint} (type to replace)` : "paste the key"} />
+              <span className="hint">Stored on this machine, outside the repo; never shown again.</span>
+            </label>}
+            {help.url && <label className="field">SearXNG address
+              <input className="input mono" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://search.example.org" />
+              <span className="hint">The instance must have the JSON format enabled.</span>
+            </label>}
+          </div>
+        )}
+        <div className="row wrap" style={{ gap: 10 }}>
+          <button className="btn primary" disabled={busy} onClick={save}>{busy ? <Spinner size={14} /> : <Save size={14} />}Save and test</button>
+          {test && <span className="row" role={test.ok ? "status" : "alert"} style={{ fontSize: 13, color: test.ok ? "var(--green)" : "var(--red)" }}>
+            {test.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}{test.text}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+

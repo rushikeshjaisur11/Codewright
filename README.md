@@ -420,6 +420,40 @@ With a model set up, Code chat sends your question and the code passages that ma
 
 The mocked wire formats are covered by the test suite; run *Save and test* against your real provider before relying on it.
 
+## AI agent
+
+The **AI agent** page (or `codewright agent "…"`) makes a code change the way a developer would, with tools:
+
+| Tool | What it does |
+| --- | --- |
+| `search_code`, `list_files`, `read_file` | Find and read the code involved, its callers and its tests. |
+| `web_search`, `fetch_url` | Look up release notes, migration guides and API docs instead of guessing. |
+| `edit_file`, `write_file` | Exact-text edits; a Python file that would no longer compile is not saved. |
+| `run_tests`, `run_python` | Run the repo's tests (pytest) or a short script, to check the change. |
+
+Everything happens in a **sandbox**: a temporary copy of the repo, with the environment Codewright builds for proof. When the agent finishes, the whole test suite runs on the changed copy; any failure is re-run on today's code, so only failures the change caused count against it. You get its summary, every step it took, the test result and the diff, and the repo changes only when you click *Apply* (or pass `--apply`). Nothing is committed.
+
+Scripts the agent writes run with a time limit and without the API keys and tokens in the environment. The sandbox is a copy, not a container: code runs as you, as your own tests do. Web pages are read only from public addresses; localhost, private networks and cloud metadata addresses are refused, redirects included.
+
+**Engines.** The same tools, sandbox, limits and result can be driven by three engines, chosen on the AI agent page, with `--engine`, or with `CODEWRIGHT_AGENT_ENGINE`:
+
+| Engine | Install | How it runs |
+| --- | --- | --- |
+| `builtin` (default) | nothing | Codewright's own tool-calling loop. |
+| `langgraph` | `pip install "codewright[langgraph]"` | A LangGraph `StateGraph`: a model node and a tools node, looping until the agent finishes. |
+| `adk` | `pip install "codewright[adk]"` | A Google ADK `LlmAgent` with the sandbox tools, run by ADK's `Runner`. |
+
+Each framework reaches the model through a small adapter over Codewright's own model client (a LangChain chat model for LangGraph, an ADK `BaseLlm`), so every provider from Settings works with every engine, calls count in the daily budget, and no provider SDKs are needed. `agent_engines.build_graph` and `build_adk_agent` return the compiled graph and the agent, to extend with your own nodes or sub-agents.
+
+The agent also takes over from Codewright's own findings: *…or hand them to the AI agent* in the Upgrade dialog, and *Hand to the AI agent* on a migration step. It needs a model with tool calling: Claude, OpenAI-compatible servers whose model supports tools, Gemini, or LiteLLM.
+
+**Web search** is set in Settings or with `CODEWRIGHT_SEARCH_PROVIDER` (`duckduckgo`, the default with no key; `brave`; `tavily`; `searxng`; `off`), `CODEWRIGHT_SEARCH_KEY` (or `BRAVE_API_KEY` / `TAVILY_API_KEY`) and `CODEWRIGHT_SEARCH_URL` for SearXNG. DuckDuckGo sometimes blocks automated searches; a keyed provider is dependable.
+
+```bash
+codewright agent "Replace the deprecated datetime.utcnow() calls" --path . > change.patch
+codewright agent "Add retries to the HTTP client" --no-web --apply
+```
+
 ## Development
 
 ```bash

@@ -903,6 +903,57 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(409, str(exc)) from None
 
+    @app.post("/api/w/{wid}/migrations/{name}/steps/{n}/agent")
+    def migration_agent(
+        wid: str,
+        name: str,
+        n: int,
+        web: Annotated[bool, Body(embed=True)] = True,
+        tests: Annotated[bool, Body(embed=True)] = True,
+    ):
+        """Hand the step's changes to the AI agent (search, read, edit and test in a sandbox); poll /agent."""
+        try:
+            return ws(wid).migration_agent(name, n, web=web, tests=tests)
+        except KeyError:
+            raise HTTPException(404, f"unknown migration {name!r}") from None
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    # ------------------------------------------------------------------ the AI agent
+    @app.post("/api/w/{wid}/agent")
+    def agent_start(
+        wid: str,
+        task: Annotated[str, Body(embed=True)],
+        context: Annotated[str, Body(embed=True)] = "",
+        web: Annotated[bool, Body(embed=True)] = True,
+        tests: Annotated[bool, Body(embed=True)] = True,
+        engine: Annotated[str | None, Body(embed=True)] = None,
+    ):
+        """Start the agent on a task in a sandbox copy of the repo; poll GET for its steps and result.
+        `engine`: builtin, langgraph or adk (default: the one chosen in Settings)."""
+        try:
+            return ws(wid).agent_start(task, context=context, web=web, tests=tests, engine=engine)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.get("/api/w/{wid}/agent")
+    def agent_progress(wid: str, since: int = 0):
+        return ws(wid).agent_progress(since)
+
+    @app.post("/api/w/{wid}/agent/stop")
+    def agent_stop(wid: str):
+        return ws(wid).agent_stop()
+
+    @app.post("/api/w/{wid}/agent/apply")
+    def agent_apply(wid: str):
+        """Apply the agent's patch to the working tree. Only on an explicit click; nothing is committed."""
+        try:
+            return ws(wid).agent_apply()
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from None
+
     @app.post("/api/w/{wid}/migrations/{name}/steps/{n}/apply")
     def migration_apply(
         wid: str, name: str, n: int, extra_patches: Annotated[list[str] | None, Body(embed=True)] = None
@@ -992,6 +1043,64 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         except OSError as exc:
             raise HTTPException(500, f"could not write {llm_mod.settings_path()}: {exc}") from None
         return llm_mod.public(_root_of(workspace))
+
+    @app.get("/api/settings/agent")
+    def agent_settings():
+        """The agent engines (built-in, LangGraph, Google ADK), which are installed, and the chosen one."""
+        from . import agent
+
+        return agent.engines_public()
+
+    @app.put("/api/settings/agent")
+    def agent_settings_save(engine: Annotated[str, Body(embed=True)]):
+        from . import agent
+
+        try:
+            return agent.save_engine(engine)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except OSError as exc:
+            raise HTTPException(500, f"could not write the settings: {exc}") from None
+
+    @app.get("/api/settings/search")
+    def search_settings():
+        from . import websearch
+
+        return websearch.public()
+
+    @app.put("/api/settings/search")
+    def search_settings_save(
+        provider: Annotated[str | None, Body(embed=True)] = None,
+        api_key: Annotated[str | None, Body(embed=True)] = None,
+        url: Annotated[str | None, Body(embed=True)] = None,
+        clear_key: Annotated[bool, Body(embed=True)] = False,
+    ):
+        """Where the agent searches the web. The key is stored on this machine, never returned."""
+        from . import websearch
+
+        if provider and provider not in websearch.PROVIDERS:
+            raise HTTPException(400, f"unknown search provider {provider}") from None
+        if url and not re.match(r"^https?://[^\s]+$", url.strip()):
+            raise HTTPException(400, "the address must start with http:// or https://") from None
+        vals: dict = {k: v for k, v in (("provider", provider), ("url", url)) if v is not None}
+        if clear_key:
+            vals["api_key"] = None
+        elif api_key:
+            vals["api_key"] = api_key.strip()
+        try:
+            return websearch.save(vals)
+        except OSError as exc:
+            raise HTTPException(500, f"could not write the settings: {exc}") from None
+
+    @app.post("/api/settings/search/test")
+    def search_settings_test(query: Annotated[str, Body(embed=True)] = "python packaging pyproject.toml"):
+        from . import websearch
+
+        try:
+            rows = websearch.search(query, limit=3)
+        except websearch.SearchError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": bool(rows), "results": rows, "error": "" if rows else "no results"}
 
     @app.get("/api/settings/ai/usage")
     def ai_usage():

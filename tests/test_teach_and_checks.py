@@ -28,7 +28,6 @@ def model(monkeypatch):
 
     model.reply = ""
     monkeypatch.setattr(llm, "complete", complete)
-    monkeypatch.setattr(aicheck, "complete", complete)
     model.asked = replies
     return model
 
@@ -177,7 +176,9 @@ def test_a_wrong_verdict_moves_the_finding_down_and_can_be_batched(repo, model, 
 def test_usage_is_counted_and_the_budget_stops_calls(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        llm, "_generate", lambda *a: (calls.append(1) or "ok", {"usage": {"prompt_tokens": 50, "completion_tokens": 7}})
+        llm,
+        "_generate",
+        lambda *a: (calls.append(1) or "ok", {"usage": {"prompt_tokens": 50, "completion_tokens": 7}}, False),
     )
     cfg = llm.LLMConfig(model="m", provider="openai", api_key="k")
     llm.set_budget(2)

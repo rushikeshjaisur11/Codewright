@@ -17,12 +17,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import time
 from pathlib import Path
 
 from .graph import CodeGraph, is_test_file, iter_python_files
-from .llm import LLMConfig, complete
+from .llm import LLMConfig, complete_json
 from .llm import status as llm_status
 from .models import Finding, ProofStatus
 
@@ -239,9 +238,23 @@ SYSTEM = (
     "You choose which source files of a Python repository are worth spending a test run on, because each file "
     "chosen means running the repository's test suite against that file's suggested patches. Prefer files that "
     "changed, sit on hot paths, are reached by tests (so the run can prove something) and carry high-impact "
-    'patches; skip the rest. Reply with JSON only: a list of {"file": <path from the table>, "reason": <one short '
-    "sentence>}, best first. Use only paths from the table."
+    "patches; skip the rest. List them best first, each with a one-sentence reason. Use only paths from the table."
 )
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "files": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"file": {"type": "string"}, "reason": {"type": "string"}},
+                "required": ["file", "reason"],
+            },
+        }
+    },
+    "required": ["files"],
+}
 
 
 def plan(findings: list[Finding], changed: list[str], root: str | Path, limit: int = 12, use_ai: bool = True) -> dict:
@@ -261,10 +274,10 @@ def plan(findings: list[Finding], changed: list[str], root: str | Path, limit: i
         )
         header = "file | unverified patches | impact | hot-path functions | tests reach | changed | kinds"
         ask = f"Choose up to {limit} files.\n\n{header}\n{table}"
-        text = complete(
-            cfg, SYSTEM, [{"role": "user", "content": ask}], max_tokens=1500, purpose="choose files to verify"
+        data = complete_json(
+            cfg, SYSTEM, [{"role": "user", "content": ask}], SCHEMA, max_tokens=2000, purpose="choose files to verify"
         )
-        for item in _parse(text):
+        for item in [d for d in (data or {}).get("files", []) if isinstance(d, dict)]:
             f = item.get("file")
             if f in by_file and f not in {p for p, _ in picked}:
                 picked.append((f, str(item.get("reason") or "")[:200]))
@@ -284,14 +297,3 @@ def plan(findings: list[Finding], changed: list[str], root: str | Path, limit: i
 
 def _public(r: dict) -> dict:
     return {k: r[k] for k in ("file", "findings", "impact", "hot", "covered", "intents", "changed")}
-
-
-def _parse(text: str | None) -> list[dict]:
-    if not text:
-        return []
-    m = re.search(r"\[.*\]", text, re.S)
-    try:
-        data = json.loads(m.group(0)) if m else []
-    except json.JSONDecodeError:
-        return []
-    return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []

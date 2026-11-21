@@ -8,7 +8,6 @@ the Knowledge page, code chat, the MCP `search_knowledge` tool and the release w
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -150,10 +149,33 @@ DRAFT_SYSTEM = (
     "You write one knowledge card for a code-review tool's knowledge base. A card teaches one specific, "
     "checkable practice for a library version: what to do instead, why (the gain), the risk, when not to, and "
     "sources. Ground it in the notes you are given; do not invent APIs. If the notes don't support a field, "
-    "leave it empty. Reply with JSON only, with these keys: title, topic, library, versions (a PEP 440 "
-    "specifier such as '>=2.0', or '*'), symbol (the dotted API it is about, if any), suggestion, gain, risk, "
-    "when_not, threshold, sources (list of URLs from the notes), snippet (short Python, may be empty)."
+    "leave it empty. `versions` is a PEP 440 specifier such as '>=2.0', or '*'; `symbol` is the dotted API it "
+    "is about, if any; `sources` are URLs from the notes; `snippet` is short Python and may be empty."
 )
+
+DRAFT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        **{
+            k: {"type": "string"}
+            for k in (
+                "title",
+                "topic",
+                "library",
+                "versions",
+                "symbol",
+                "suggestion",
+                "gain",
+                "risk",
+                "when_not",
+                "threshold",
+                "snippet",
+            )
+        },
+        "sources": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["title", "suggestion"],
+}
 
 
 def draft(
@@ -166,7 +188,7 @@ def draft(
     installed: str | None = None,
 ) -> dict:
     """Card fields drafted by the configured model, for the user to edit before saving (nothing is saved)."""
-    from .llm import LLMConfig, complete
+    from .llm import LLMConfig, complete_json
     from .llm import status as llm_status
 
     cfg = LLMConfig.load(root)
@@ -184,18 +206,18 @@ def draft(
         )
     if notes.strip():
         parts.append("Notes and documentation excerpts:\n" + notes.strip()[:16000])
-    reply = complete(
-        cfg, DRAFT_SYSTEM, [{"role": "user", "content": "\n\n".join(parts)}], max_tokens=1400, purpose="draft a card"
+    data = complete_json(
+        cfg,
+        DRAFT_SYSTEM,
+        [{"role": "user", "content": "\n\n".join(parts)}],
+        DRAFT_SCHEMA,
+        max_tokens=2000,
+        purpose="draft a card",
     )
-    if reply is None:
+    if data is None:
         from .llm import last_error
 
         raise RuntimeError(last_error() or "the model did not answer; check the model in Settings")
-    m = re.search(r"\{.*\}", reply, re.S)
-    try:
-        data = json.loads(m.group(0)) if m else {}
-    except json.JSONDecodeError:
-        data = {}
     out = {k: data.get(k, "") for k in (*TEXT_FIELDS, "sources") if k in data}
     if library and not out.get("library"):
         out["library"] = library

@@ -7,8 +7,10 @@ Three checks, each with evidence:
    still exist, does it still accept those keywords, is it marked deprecated. The same names are inspected in
    the repo's current environment, so a changed signature shows old and new side by side.
 2. `rewrite`: for every broken use, the model rewrites the whole function (or the import block), grounded in
-   the target version's real signatures and docstrings and the release notes. Each rewrite must compile; it
-   is returned as a patch for review.
+   the target version's real signatures and docstrings and the release notes. The model answers in a JSON
+   schema ({explanation, code}); the code is spliced into the file as it is on disk, must compile, still
+   define the function and apply cleanly, or it goes back to the model with the reason. It is returned as a
+   patch for review.
 3. `trial`: the tests run on today's code, then in a sandbox copy with the upgrade (requirement, lockfile, and
    the chosen patches) applied and an environment built from it. The result lists what fails only after.
 
@@ -18,7 +20,6 @@ Nothing touches the repo; the Upgrade dialog applies what the user picks.
 from __future__ import annotations
 
 import contextlib
-import difflib
 import hashlib
 import json
 import os
@@ -259,9 +260,103 @@ REWRITE_SYSTEM = (
     "You upgrade code to a new version of a Python library. You get one function (or a file's import block) "
     "that uses the library, the uses that break or are deprecated in the new version with the new version's "
     "real signatures and docstrings, and its release notes. Rewrite it so it works with the new version and "
-    "behaves exactly as before: change only what the upgrade requires, keep names, arguments, return values and "
-    "comments. Reply with a one-line explanation, then the complete rewritten code in one ```python block."
+    "behaves exactly as before: change only what the upgrade requires, keep names, arguments, return values, "
+    "decorators and comments."
 )
+
+# What the code writer must answer: the whole replacement for the code it was given, as a JSON string.
+REWRITE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "explanation": {"type": "string", "description": "One sentence: what changed and why."},
+        "code": {
+            "type": "string",
+            "description": "The complete rewritten code that replaces the code given, from its first line (any "
+            "decorators) to its last, with the same indentation. Plain code: no ``` fences, no placeholders "
+            "such as '...' or '# rest unchanged'.",
+        },
+    },
+    "required": ["explanation", "code"],
+    "additionalProperties": False,
+}
+
+_FENCE = re.compile(r"(?:```|~~~)[ \t]*([\w+.-]*)[^\n]*\n(.*?)(?:```|~~~)", re.S)
+_ELIDED = re.compile(
+    r"^[ \t]*(?:\.\.\.|#[ \t]*\.\.\..*|#.*\b(?:rest|remainder) of the (?:code|function|method|body|file|class)\b.*"
+    r"|#.*\b(?:existing|original|unchanged) code\b.*)[ \t]*$",
+    re.I | re.M,
+)
+
+
+def code_from_text(reply: str) -> dict | None:
+    """{explanation, code} from a reply that ignored the schema: the longest Python code block (```python,
+    ```py, ~~~ or unlabelled), and the first line before it as the explanation."""
+    blocks = [m for m in _FENCE.finditer(reply) if m.group(1).lower() in ("", "python", "py", "python3")]
+    if not blocks:
+        return None
+    m = max(blocks, key=lambda b: len(b.group(2)))
+    before = reply[: m.start()].strip().splitlines()
+    return {"explanation": before[0] if before else "", "code": m.group(2)}
+
+
+def _unfence(code: str) -> str:
+    """The code itself, when the model put fences inside the JSON string anyway."""
+    m = re.fullmatch(r"\s*(?:```|~~~)[ \t]*[\w+.-]*[^\n]*\n(.*?)(?:```|~~~)\s*", code, re.S)
+    return m.group(1) if m else code
+
+
+def _candidates(new: str, indent: str) -> list[str]:
+    """Ways to fit the model's code at the original indentation: as written, dedented and re-indented, or with
+    only the first line indented (code copied out of a class often loses just that one)."""
+    out = [new]
+    if indent:
+        body = textwrap.dedent(new)
+        out.append("".join(indent + ln if ln.strip() else ln for ln in body.splitlines(keepends=True)))
+        first, _, rest = new.partition("\n")
+        if not first.startswith((" ", "\t")):
+            out.append(indent + first + "\n" + rest)
+    if not new.startswith(indent):  # most likely right first
+        out = out[1:] + out[:1]
+    return list(dict.fromkeys(out))
+
+
+def splice(
+    before: str, old: str, new: str, file: str, defines: str | None = None, at: int | None = None
+) -> tuple[str | None, str]:
+    """`before` with `old` (at offset `at`, or found once in the file) replaced by the model's `new` code, fitted
+    to the original indentation and line endings. Returns (the new file text, "") or (None, why it can't be
+    used)."""
+    new = _unfence(new)
+    if not new.strip():
+        return None, "the code is empty"
+    if {m.group(0).strip() for m in _ELIDED.finditer(new)} - {m.group(0).strip() for m in _ELIDED.finditer(old)}:
+        return None, "the code leaves parts out ('...' or '# rest of the code'): give all of it"
+    if at is None or before[at : at + len(old)] != old:
+        at = before.find(old)
+        if at < 0 or before.find(old, at + 1) >= 0:
+            return None, "the code to replace is no longer in the file as it was scanned; run the review again"
+    newline = "\r\n" if "\r\n" in old else "\n"
+    new = new.replace("\r\n", "\n")
+    if old.endswith(("\n", "\r\n")) and not new.endswith("\n"):
+        new += "\n"
+    if not old.endswith("\n") and new.endswith("\n"):
+        new = new.rstrip("\n")
+    if defines and not re.search(rf"^[ \t]*(?:async[ \t]+)?def[ \t]+{re.escape(defines)}[ \t]*\(", new, re.M):
+        return None, f"the code no longer defines `{defines}`: give the whole function, from its `def` line"
+    indent = re.match(r"[ \t]*", old).group(0)
+    first_error = ""
+    for cand in _candidates(new, indent):
+        after = before[:at] + cand.replace("\n", newline) + before[at + len(old) :]
+        try:
+            compile(after, file, "exec")
+        except SyntaxError as exc:
+            first_error = first_error or f"the file would not compile ({exc.msg}, line {exc.lineno})"
+            continue
+        except ValueError as exc:  # null bytes and the like
+            first_error = first_error or f"the file would not compile ({exc})"
+            continue
+        return after, ""
+    return None, first_error
 
 
 def _function_span(pf, qualname: str) -> tuple[int, int] | None:
@@ -297,10 +392,16 @@ def rewrite(
     system: str | None = None,
     heading: str | None = None,
 ) -> dict:
-    """One patch per affected function (or import block), written by the model, each checked to compile."""
-    from .llm import LLMConfig, complete, last_error
+    """One patch per affected function (or import block), written by the model as structured output
+    ({explanation, code}). Each is spliced into the file as it is on disk now, must compile and still define
+    the function, and must apply to the working tree; an answer that fails any of these goes back to the model
+    with the reason, once. What still fails is listed in `skipped` with the reason."""
+    from .llm import LLMConfig, complete_json, last_error
     from .llm import status as llm_status
+    from .proof import patch_error
+    from .refactor import read_source, unified
 
+    root = Path(root)
     cfg = LLMConfig.load(root)
     st = llm_status(cfg)
     if not st["available"]:
@@ -312,12 +413,23 @@ def rewrite(
     patches, skipped = [], []
     for (file, fn), items in list(groups.items())[:max_groups]:
         pf = graph.files.get(file)
-        span = _import_span(pf) if fn in ("<imports>", "<module>") else _function_span(pf, fn) if pf else None
+        is_imports = fn in ("<imports>", "<module>")
+        span = (_import_span(pf) if is_imports else _function_span(pf, fn)) if pf else None
         if pf is None or span is None:
             skipped.append({"file": file, "function": fn, "why": "could not find the code to rewrite"})
             continue
-        lines = pf.lines
-        old = "".join(lines[span[0] - 1 : span[1]])
+        try:
+            before = read_source(root / file)
+        except OSError as exc:
+            skipped.append({"file": file, "function": fn, "why": f"could not read the file: {exc}"})
+            continue
+        old = "".join(pf.lines[span[0] - 1 : span[1]])
+        at = len("".join(pf.lines[: span[0] - 1])) if before == "".join(pf.lines) else None
+        if at is None and before.find(old) < 0:
+            skipped.append(
+                {"file": file, "function": fn, "why": "the file changed since the scan; run the review again"}
+            )
+            continue
         issues = "\n".join(
             f"- line {p['line']}: {p['detail']}"
             + (f"\n  new signature: {p['symbol']}{p['new_signature']}" if p.get("new_signature") else "")
@@ -328,48 +440,44 @@ def rewrite(
         ask = (
             (heading or f"{name} {installed or '?'} -> {version}")
             + f". File {file}, "
-            + ("its import block" if fn in ("<imports>", "<module>") else f"function `{fn}`")
+            + ("its import block" if is_imports else f"function `{fn}`")
             + (".\n\nWhat to change:\n" if heading else ".\n\nWhat breaks or is deprecated:\n")
-            + f"{issues}\n\nCode now:\n```python\n{old}```"
+            + f"{issues}\n\nCode now (lines {span[0]}-{span[1]}):\n```python\n{old}```"
             + (f"\n\nRelease notes:\n{notes_text}" if notes_text else "")
         )
-        reply = complete(
+        defines = None if is_imports else fn.rsplit(".", 1)[-1]
+        result: dict = {}
+
+        def check(value: dict, before=before, old=old, file=file, defines=defines, at=at, result=result) -> str | None:
+            after, why = splice(before, old, str(value.get("code") or ""), file, defines, at)
+            if after is None:
+                return why
+            if after == before:
+                result["patch"] = ""
+                return None
+            patch = unified(before.splitlines(keepends=True), after.splitlines(keepends=True), f"a/{file}", f"b/{file}")
+            if err := patch_error(root, patch, check=True):
+                return f"the change does not apply to the file ({err.splitlines()[0][:200]})"
+            result["patch"] = patch
+            return None
+
+        value = complete_json(
             cfg,
             system or REWRITE_SYSTEM,
             [{"role": "user", "content": ask}],
-            max_tokens=3000,
+            REWRITE_SCHEMA,
+            # room for the whole function written out again, as a JSON string, plus the explanation
+            max_tokens=min(16000, max(2000, len(old) // 2 + 1200)),
             purpose=f"upgrade {file}",
+            check=check,
+            fallback=code_from_text,
         )
-        if reply is None:
+        if value is None:
             skipped.append({"file": file, "function": fn, "why": last_error() or "the model did not answer"})
             continue
-        m = re.search(r"```(?:python)?\s*\n(.*?)```", reply, re.S)
-        if not m:
-            skipped.append({"file": file, "function": fn, "why": "the model's answer had no code"})
-            continue
-        new = m.group(1)
-        indent = re.match(r"[ \t]*", old).group(0)
-        if indent and not new.startswith(indent):  # a method: keep the class's indentation
-            new = "".join(indent + ln if ln.strip() else ln for ln in new.splitlines(keepends=True))
-        if not new.endswith("\n"):
-            new += "\n"
-        before = "".join(lines)
-        after = "".join(lines[: span[0] - 1]) + new + "".join(lines[span[1] :])
-        try:
-            compile(after, file, "exec")
-        except SyntaxError as exc:
-            skipped.append(
-                {"file": file, "function": fn, "why": f"the rewrite does not compile ({exc.msg}, line {exc.lineno})"}
-            )
-            continue
-        if after == before:
-            continue
-        patch = "".join(
-            difflib.unified_diff(
-                before.splitlines(keepends=True), after.splitlines(keepends=True), f"a/{file}", f"b/{file}"
-            )
-        )
-        explain = reply[: m.start()].strip().splitlines()[0][:300] if reply[: m.start()].strip() else ""
+        patch = result.get("patch", "")
+        if not patch:
+            continue  # the model changed nothing
         pid = hashlib.sha1(f"{file}:{fn}:{patch}".encode()).hexdigest()[:10]
         patches.append(
             {
@@ -377,7 +485,9 @@ def rewrite(
                 "file": file,
                 "function": fn,
                 "patch": patch,
-                "explanation": explain,
+                "explanation": str(value.get("explanation") or "").strip().splitlines()[0][:300]
+                if str(value.get("explanation") or "").strip()
+                else "",
                 "fixes": [p["detail"] for p in items],
             }
         )
@@ -481,8 +591,31 @@ PROBE_SYSTEM = (
     "clocks, randomness, environment and files outside the working directory with unittest.mock (start the "
     "patches with `.start()`, not a `with` block around `record`), but do NOT mock the upgraded library itself "
     "unless it would reach the network: its behaviour is what is being compared. Never assert anything. Import "
-    "the functions from their modules. Reply with the Python code only, in one ```python block."
+    "the functions from their modules."
 )
+
+CODE_SCHEMA = {
+    "type": "object",
+    "properties": {"code": {"type": "string", "description": "The complete Python code, without ``` fences."}},
+    "required": ["code"],
+    "additionalProperties": False,
+}
+
+
+def compiles(name: str):
+    """A `check` for complete_json: the answer's `code` must be valid Python."""
+
+    def check(value: dict) -> str | None:
+        code = _unfence(str(value.get("code") or ""))
+        if not code.strip():
+            return "the code is empty"
+        try:
+            compile(code, name, "exec")
+        except (SyntaxError, ValueError) as exc:
+            return f"the code is not valid Python ({getattr(exc, 'msg', exc)}, line {getattr(exc, 'lineno', '?')})"
+        return None
+
+    return check
 
 
 def _module_name(path: str) -> str:
@@ -553,7 +686,7 @@ def probe_targets(graph: CodeGraph, name: str, problems: list[dict] | None = Non
 def write_probes(root: str | Path, graph: CodeGraph, name: str, targets: list[dict]) -> dict:
     """The model writes one probe per function: inputs only, no expected values; today's code is the
     reference. {probes: [{file, function, code}], skipped: [{file, function, why}], model}"""
-    from .llm import LLMConfig, complete, last_error
+    from .llm import LLMConfig, complete_json, last_error
     from .llm import status as llm_status
 
     cfg = LLMConfig.load(root)
@@ -578,19 +711,20 @@ def write_probes(root: str | Path, graph: CodeGraph, name: str, targets: list[di
             + t["function"]
             + ": <what it tries>'."
         )
-        reply = complete(
-            cfg, PROBE_SYSTEM, [{"role": "user", "content": ask}], max_tokens=2000, purpose="upgrade probe"
+        value = complete_json(
+            cfg,
+            PROBE_SYSTEM,
+            [{"role": "user", "content": ask}],
+            CODE_SCHEMA,
+            max_tokens=2500,
+            purpose="upgrade probe",
+            check=compiles("probe.py"),
+            fallback=code_from_text,
         )
-        if reply is None:
+        if value is None:
             skipped.append({**t, "why": last_error() or "the model did not answer"})
             continue
-        m = re.search(r"```(?:python)?\s*\n(.*?)```", reply, re.S)
-        body = (m.group(1) if m else reply).strip() + "\n"
-        try:
-            compile(body, "probe.py", "exec")
-        except SyntaxError as exc:
-            skipped.append({**t, "why": f"the probe is not valid Python ({exc.msg})"})
-            continue
+        body = _unfence(str(value["code"])).strip() + "\n"
         probes.append({"file": t["file"], "function": t["function"], "code": body})
     return {"probes": probes, "skipped": skipped, "model": cfg.model}
 

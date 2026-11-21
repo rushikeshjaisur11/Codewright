@@ -305,7 +305,8 @@ def test_symbol_in_a_module_whose_own_imports_fail_is_unchecked(tmp_path, monkey
 
 
 def test_symbol_of_a_library_missing_from_the_checking_env_is_unchecked(tmp_path, monkeypatch):
-    """Another package in the `google` namespace is installed, google-adk is not: that's no evidence."""
+    """Another package in the `google` namespace is installed, the card's library is not: that's no evidence.
+    (A made-up distribution, so the test holds whether or not google-adk is installed here.)"""
     ns = tmp_path / "google" / "other"
     ns.mkdir(parents=True)
     (ns / "__init__.py").write_text("")
@@ -314,6 +315,9 @@ def test_symbol_of_a_library_missing_from_the_checking_env_is_unchecked(tmp_path
     def finding(fid, symbol):
         return Finding(fid, "i", "f.py", 1, "fn", "t", "", "", symbol, "", "", 1, 1, "", "", "", [], "")
 
-    adk, ghost = finding("a", "google.adk.Workflow"), finding("b", "google.other.Ghost")
-    critic.check_symbols([adk, ghost], sys.executable, {"a": adk.symbol, "b": ghost.symbol}, {adk.symbol: "google-adk"})
+    adk = finding("a", "google.notinstalled.Workflow")
+    ghost = finding("b", "google.other.Ghost")
+    critic.check_symbols(
+        [adk, ghost], sys.executable, {"a": adk.symbol, "b": ghost.symbol}, {adk.symbol: "google-notinstalled"}
+    )
     assert (adk.symbol_check, ghost.symbol_check) == ("unchecked", "missing")

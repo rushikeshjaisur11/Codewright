@@ -253,13 +253,33 @@ BREAKING_SYSTEM = (
     "You plan a dependency upgrade for one Python repository. You get the release notes between the installed "
     "and the target version, and where the repository uses the library (files and the names they import). "
     "List the changes this repository must make: removed or renamed APIs it uses, changed defaults or behaviour "
-    "that affect the names it imports. Only what the notes support and the code uses. Reply with JSON only: "
-    '[{"file": <path from the list>, "change": "...", "why": "...", "version": "..."}]'
+    "that affect the names it imports. Only what the notes support and the code uses; an empty list when "
+    "nothing applies. `file` is a path from the list."
 )
+
+BREAKING_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "changes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "file": {"type": "string"},
+                    "change": {"type": "string"},
+                    "why": {"type": "string"},
+                    "version": {"type": "string"},
+                },
+                "required": ["file", "change", "why", "version"],
+            },
+        }
+    },
+    "required": ["changes"],
+}
 
 
 def breaking_changes(root: str | Path, graph, name: str, installed: str | None, version: str, notes: dict) -> dict:
-    from .llm import LLMConfig, complete, last_error
+    from .llm import LLMConfig, complete_json, last_error
     from .llm import status as llm_status
 
     cfg = LLMConfig.load(root)
@@ -275,18 +295,17 @@ def breaking_changes(root: str | Path, graph, name: str, installed: str | None, 
         + "\n".join(f"- {u['file']}: {', '.join(u['names'])}" for u in used)
         + f"\n\nRelease notes:\n{text[:30000]}"
     )
-    reply = complete(
-        cfg, BREAKING_SYSTEM, [{"role": "user", "content": ask}], max_tokens=2000, purpose="plan an upgrade"
+    data = complete_json(
+        cfg,
+        BREAKING_SYSTEM,
+        [{"role": "user", "content": ask}],
+        BREAKING_SCHEMA,
+        max_tokens=3000,
+        purpose="plan an upgrade",
     )
-    if reply is None:
+    if data is None:
         raise RuntimeError(last_error() or "the model did not answer")
-    import json
-
-    m = re.search(r"\[.*\]", reply, re.S)
-    try:
-        items = json.loads(m.group(0)) if m else []
-    except json.JSONDecodeError:
-        items = []
+    items = data["changes"]
     files = {u["file"] for u in used}
     return {
         "items": [
@@ -349,7 +368,7 @@ def apply(
     """Do the upgrade: optionally on a new branch, edit the requirements, update the lockfile, apply the chosen
     patches. Nothing is committed."""
     from . import gitops
-    from .proof import apply_patch
+    from .proof import apply_patch, patch_error
     from .refactor import combine
 
     root = Path(root)
@@ -390,10 +409,11 @@ def apply(
             out["skipped"] = [f.id for f in ordered]
     for patch in extra_patches or []:  # the code changes written for this upgrade (upgradesafety.rewrite)
         files = re.findall(r"^\+\+\+ b/(\S+)", patch, re.M)
-        if apply_patch(root, patch):
+        if not (err := patch_error(root, patch)):
             out["files"] += [f for f in files if f not in out["files"]]
             out.setdefault("rewrites_applied", 0)
             out["rewrites_applied"] += 1
         else:
             out.setdefault("rewrites_failed", []).extend(files)
+            out.setdefault("rewrite_errors", []).append({"files": files, "why": err[:400]})
     return out

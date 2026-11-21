@@ -253,15 +253,46 @@ DRAFT_SYSTEM = (
     "(id, title, API, versions) and the release notes since they were checked. Find what a reviewer should now "
     "know: new APIs that replace hand-written code, deprecations and removals, changed defaults or behaviour. "
     "For each, either a new card or a note on an existing card that is now out of date. Ground every item in the "
-    'notes, name the version, and do not invent APIs. Reply with JSON only: {"new_cards": [{"title", "symbol", '
-    '"versions" (PEP 440, e.g. ">=2.15"), "suggestion", "gain", "risk", "when_not", "sources" (URLs), "topic"}], '
-    '"outdated": [{"card": <id>, "why", "change"}]}'
+    "notes, name the version, and do not invent APIs. `outdated[].card` is the id of an existing card."
 )
+
+DRAFT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "new_cards": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "symbol": {"type": "string"},
+                    "versions": {"type": "string", "description": "PEP 440, e.g. '>=2.15'"},
+                    "topic": {"type": "string"},
+                    "suggestion": {"type": "string"},
+                    "gain": {"type": "string"},
+                    "risk": {"type": "string"},
+                    "when_not": {"type": "string"},
+                    "sources": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["title", "suggestion"],
+            },
+        },
+        "outdated": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"card": {"type": "string"}, "why": {"type": "string"}, "change": {"type": "string"}},
+                "required": ["card", "why"],
+            },
+        },
+    },
+    "required": ["new_cards", "outdated"],
+}
 
 
 def draft_updates(root: str | Path, library: str, notes: dict, pasted: str = "") -> dict:
     """The model's proposed new cards and outdated-card notes for `library`, for the team to review."""
-    from .llm import LLMConfig, complete, last_error
+    from .llm import LLMConfig, complete_json, last_error
     from .llm import status as llm_status
 
     cfg = LLMConfig.load(root)
@@ -279,14 +310,11 @@ def draft_updates(root: str | Path, library: str, notes: dict, pasted: str = "")
         f"Library: {library}. Cards checked up to {notes.get('since') or 'an unrecorded version'}; newest is "
         f"{notes.get('until')}.\n\nCards now:\n{listing}\n\nRelease notes:\n{text[:30000]}"
     )
-    reply = complete(cfg, DRAFT_SYSTEM, [{"role": "user", "content": ask}], max_tokens=3000, purpose="update knowledge")
-    if reply is None:
+    data = complete_json(
+        cfg, DRAFT_SYSTEM, [{"role": "user", "content": ask}], DRAFT_SCHEMA, max_tokens=4000, purpose="update knowledge"
+    )
+    if data is None:
         raise RuntimeError(last_error() or "the model did not answer")
-    m = re.search(r"\{.*\}", reply, re.S)
-    try:
-        data = json.loads(m.group(0)) if m else {}
-    except json.JSONDecodeError:
-        data = {}
     ids = {c.id for c in have}
     new = [
         {
@@ -336,10 +364,36 @@ LIBRARY_SYSTEM = (
     "in production code and what reviewers miss: the right API for a job people hand-write, version-specific "
     "APIs and deprecations, defaults that bite, performance and reliability pitfalls. Ground every card in the "
     "material given (README, pasted docs, the repo's own usage) and do not invent APIs; give `versions` as a "
-    "PEP 440 specifier for the versions it applies to. Do not repeat the existing cards. Reply with JSON only: "
-    '[{"title", "symbol", "versions", "topic", "suggestion", "gain", "risk", "when_not", "threshold", '
-    '"sources" (URLs), "snippet" (short Python, may be empty)}]'
+    "PEP 440 specifier for the versions it applies to. Do not repeat the existing cards. `sources` are URLs; "
+    "`snippet` is short Python and may be empty."
 )
+
+LIBRARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "cards": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "symbol": {"type": "string"},
+                    "versions": {"type": "string", "description": "PEP 440, e.g. '>=2.15'"},
+                    "topic": {"type": "string"},
+                    "suggestion": {"type": "string"},
+                    "gain": {"type": "string"},
+                    "risk": {"type": "string"},
+                    "when_not": {"type": "string"},
+                    "threshold": {"type": "string"},
+                    "sources": {"type": "array", "items": {"type": "string"}},
+                    "snippet": {"type": "string"},
+                },
+                "required": ["title", "suggestion"],
+            },
+        }
+    },
+    "required": ["cards"],
+}
 
 
 def draft_library(
@@ -353,7 +407,7 @@ def draft_library(
 ) -> dict:
     """Cards for `name` drafted by the model: a starter set for a new library, or deeper ones next to the cards
     it already has. Nothing is saved; the team picks."""
-    from .llm import LLMConfig, complete, last_error
+    from .llm import LLMConfig, complete_json, last_error
     from .llm import status as llm_status
 
     cfg = LLMConfig.load(root)
@@ -385,20 +439,17 @@ def draft_library(
         parts.append("Links: " + ", ".join(f"{x['label']}: {x['url']}" for x in info["links"]))
     if not info.get("readme") and not pasted.strip():
         parts.append("(No README or docs were available: write only cards you are sure of, and fewer of them.)")
-    reply = complete(
+    data = complete_json(
         cfg,
         LIBRARY_SYSTEM,
         [{"role": "user", "content": "\n\n".join(parts)}],
-        max_tokens=4000,
+        LIBRARY_SCHEMA,
+        max_tokens=6000,
         purpose=f"{'deepen' if have else 'add'} {key}",
     )
-    if reply is None:
+    if data is None:
         raise RuntimeError(last_error() or "the model did not answer")
-    m = re.search(r"\[.*\]", reply, re.S)
-    try:
-        items = json.loads(m.group(0)) if m else []
-    except json.JSONDecodeError:
-        items = []
+    items = data["cards"]
     seen = {c.title.lower() for c in have}
     cards = []
     for it in items if isinstance(items, list) else []:

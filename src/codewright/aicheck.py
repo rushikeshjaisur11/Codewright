@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import time
 from pathlib import Path
 
-from .llm import LLMConfig, complete
+from .llm import LLMConfig, complete_json
 from .llm import status as llm_status
 from .models import Finding
 
@@ -25,10 +24,20 @@ SYSTEM = (
     "it is about, the library version it was checked against and, when there is one, the patch. Decide whether "
     "the suggestion is correct and safe for this code as written: does the API exist in that version, does the "
     "patch keep the behaviour (arguments, return values, errors, side effects, thread or async safety), and do "
-    "the 'when not to' conditions apply here? Be concrete and refer to the code. Reply with JSON only: "
-    '{"verdict": "confirmed" | "needs-changes" | "wrong", "confidence": 0.0-1.0, "reason": "...", '
-    '"risks": ["..."], "test": "a test that would prove it, in a sentence"}'
+    "the 'when not to' conditions apply here? Be concrete and refer to the code."
 )
+
+SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": list(VERDICTS)},
+        "confidence": {"type": "number", "description": "0.0 to 1.0"},
+        "reason": {"type": "string"},
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "test": {"type": "string", "description": "A test that would prove it, in a sentence."},
+    },
+    "required": ["verdict", "confidence", "reason", "risks", "test"],
+}
 
 
 def _path(root: str | Path) -> Path:
@@ -107,18 +116,18 @@ def check(root: str | Path, f: Finding, cfg: LLMConfig | None = None) -> dict:
         parts.append("Patch:\n```diff\n" + f.patch[:12000] + "\n```")
     elif f.snippet:
         parts.append(f"Suggested shape:\n```{f.snippet_lang}\n" + f.snippet[:4000] + "\n```")
-    reply = complete(
-        cfg, SYSTEM, [{"role": "user", "content": "\n\n".join(parts)}], max_tokens=900, purpose="check a finding"
+    data = complete_json(
+        cfg,
+        SYSTEM,
+        [{"role": "user", "content": "\n\n".join(parts)}],
+        SCHEMA,
+        max_tokens=1200,
+        purpose="check a finding",
     )
-    if reply is None:
+    if data is None:
         from .llm import last_error
 
         raise RuntimeError(last_error() or "the model did not answer; check the model in Settings")
-    m = re.search(r"\{.*\}", reply, re.S)
-    try:
-        data = json.loads(m.group(0)) if m else {}
-    except json.JSONDecodeError:
-        data = {}
     verdict = data.get("verdict") if data.get("verdict") in VERDICTS else "needs-changes"
     try:
         confidence = max(0.0, min(1.0, float(data.get("confidence", 0.5))))
@@ -128,7 +137,7 @@ def check(root: str | Path, f: Finding, cfg: LLMConfig | None = None) -> dict:
         "key": key(f),
         "verdict": verdict,
         "confidence": confidence,
-        "reason": str(data.get("reason") or reply.strip())[:2000],
+        "reason": str(data.get("reason") or "")[:2000],
         "risks": [str(r)[:300] for r in data.get("risks", []) if r][:6] if isinstance(data.get("risks"), list) else [],
         "test": str(data.get("test") or "")[:500],
         "model": cfg.model,

@@ -639,6 +639,65 @@ def apply(
 
 
 @app.command()
+def agent(
+    task: str = typer.Argument(..., help="The change to make, in plain words (or - to read it from stdin)."),
+    path: Path = typer.Option(Path("."), "--path", exists=True, file_okay=False, help="The repository."),
+    web: bool = typer.Option(True, "--web/--no-web", help="Let the agent search the web and read docs."),
+    tests: bool = typer.Option(True, "--tests/--no-tests", help="Let the agent run the tests and Python scripts."),
+    max_steps: int = typer.Option(40, help="Most model calls the agent may make."),
+    engine: str | None = typer.Option(
+        None, help="builtin, langgraph or adk (default: CODEWRIGHT_AGENT_ENGINE or the one chosen in Settings)."
+    ),
+    apply_it: bool = typer.Option(False, "--apply", help="Apply the change to the working tree when it is done."),
+    output: Path | None = typer.Option(None, "--output", "-o", help="Write the patch to this file."),
+) -> None:
+    """Have the AI agent make a change: it searches and reads the code, looks things up on the web, edits in a
+    sandbox copy and runs the tests there. Prints the patch; the repo changes only with --apply."""
+    import sys
+
+    from . import agent as agent_mod
+    from .proof import patch_error
+
+    if task == "-":
+        task = sys.stdin.read()
+    root = path.resolve()
+
+    def show(e: dict) -> None:
+        if e["kind"] == "tool":
+            mark = "[green]✓[/]" if e["ok"] else "[red]✗[/]"
+            err_console.print(f"  {mark} [bold]{e['tool']}[/] {e['detail']}", highlight=False)
+        elif e["kind"] == "text":
+            err_console.print(f"[dim]{e['text'][:400]}[/]", highlight=False)
+        else:
+            err_console.print(f"[cyan]{e['text']}[/]", highlight=False)
+
+    with _clean_errors():
+        r = agent_mod.run(root, task, web=web, tests=tests, max_steps=max_steps, progress=show, engine=engine)
+    err_console.print(
+        f"\n[bold]{r['ended'].capitalize()}[/] after {r['steps_used']} step(s) on {r['engine']}. {r['summary']}"
+    )
+    v = r.get("verification")
+    if v:
+        err_console.print(
+            "[green]Test suite passes with the change.[/]"
+            if v["ok"]
+            else f"[yellow]Tests failing with the change: {len(v['failed'])}; caused by it: {len(v['new_failures'])}[/]"
+        )
+    if not r["patch"]:
+        err_console.print("[yellow]No change was made.[/]")
+        raise typer.Exit(1)
+    if output:
+        output.write_text(r["patch"])
+    if apply_it:
+        if err := patch_error(root, r["patch"]):
+            err_console.print(f"[red]The patch did not apply:[/] {err}")
+            raise typer.Exit(2)
+        err_console.print(f"Applied to {', '.join(r['files'])}. Nothing is committed: `git diff`.")
+    else:
+        print(r["patch"])
+
+
+@app.command()
 def critique(
     plan: Path = typer.Argument(..., help="The plan to review (Markdown or text), or - for stdin."),
     path: Path = typer.Option(Path("."), "--path", exists=True, file_okay=False, help="Repository it would change."),

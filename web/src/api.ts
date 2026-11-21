@@ -261,6 +261,7 @@ export interface UpgradeCheck {
 export interface UpgradeRewrite {
   patches: { id: string; file: string; function: string; patch: string; explanation: string; fixes: string[] }[];
   skipped: { file: string; function: string; why: string }[]; model: string;
+  agent?: { summary: string; steps: AgentEvent[]; ended: string; steps_used: number; tests: AgentResult["tests"] };
 }
 export interface UpgradeTrialRun { ok: boolean; passed: number; failed: string[]; counts: Record<string, number>; seconds: number; output: string }
 export interface UpgradeTrial {
@@ -270,6 +271,20 @@ export interface UpgradeTrial {
   imports: { modules: number; broken: { module: string; error: string }[]; already_failing: string[]; error: string | null } | null;
   behaviour: { functions?: number; scenarios?: number; changed?: { scenario: string; before: unknown; after: unknown }[]; probe_errors?: string[]; error?: string } | null;
 }
+export interface AgentEvent { kind: "tool" | "text"; tool?: string; detail?: string; ok?: boolean; result?: string; seconds?: number; text?: string }
+export interface AgentVerification { ok: boolean; seconds: number; failed: string[]; new_failures: string[]; already_failing?: string[]; output: string }
+export interface AgentResult {
+  summary: string; patch: string; files: string[]; model: string; engine?: string; ended: string; error?: string; steps_used: number;
+  applies: boolean; apply_error?: string; tests: { ok: boolean; selection: string[]; after_last_edit: boolean } | null;
+  verification?: AgentVerification;
+}
+export interface AgentJob {
+  running: boolean; task: string | null; origin?: string; engine?: string; started?: number; status?: string; events: AgentEvent[]; total: number;
+  result: AgentResult | null; error: string | null; applied?: boolean;
+}
+export interface AgentEngine { id: "builtin" | "langgraph" | "adk"; label: string; available: boolean; reason: string }
+export interface AgentSettings { engine: AgentEngine["id"]; from_environment: boolean; engines: AgentEngine[] }
+export interface SearchSettings { provider: string; url: string; has_key: boolean; key_hint: string; providers: string[]; available: boolean; reason: string }
 export interface UpgradeSafety {
   key: string | null; running: boolean; step: string | null; log: string[]; error: string | null;
   check: UpgradeCheck | null; rewrite: UpgradeRewrite | null; trial: UpgradeTrial | null;
@@ -454,11 +469,21 @@ export const api = {
   upgradeBreaking: (id: string, name: string, version: string) =>
     req<{ items: { file: string; change: string; why: string; version: string }[]; model: string; links: { label: string; url: string }[]; versions: string[] }>(
       "POST", `${w(id)}/upgrade/breaking`, { name, version }),
-  upgradeSafety: (id: string, step: "check" | "rewrite" | "trial", name: string, version: string, patches: string[] = []) =>
+  upgradeSafety: (id: string, step: "check" | "rewrite" | "agent" | "trial", name: string, version: string, patches: string[] = []) =>
     req<UpgradeSafety>("POST", `${w(id)}/upgrade/safety`, { step, name, version, patches }),
+  agentSettings: () => req<AgentSettings>("GET", "/api/settings/agent"),
+  saveAgentEngine: (engine: string) => req<AgentSettings>("PUT", "/api/settings/agent", { engine }),
+  agentStart: (id: string, task: string, opts: { web: boolean; tests: boolean; engine?: string }) => req<AgentJob>("POST", `${w(id)}/agent`, { task, ...opts }),
+  agentProgress: (id: string, since = 0) => req<AgentJob>("GET", `${w(id)}/agent?since=${since}`),
+  agentStop: (id: string) => req<AgentJob>("POST", `${w(id)}/agent/stop`),
+  agentApply: (id: string) => req<{ applied: boolean; files: string[] }>("POST", `${w(id)}/agent/apply`),
+  migrationAgent: (id: string, name: string, n: number) => req<AgentJob>("POST", `${w(id)}/migrations/${encodeURIComponent(name)}/steps/${n}/agent`, {}),
+  searchSettings: () => req<SearchSettings>("GET", "/api/settings/search"),
+  saveSearch: (s: Partial<{ provider: string; api_key: string; url: string; clear_key: boolean }>) => req<SearchSettings>("PUT", "/api/settings/search", s),
+  testSearch: (query?: string) => req<{ ok: boolean; results?: { title: string; url: string; snippet: string }[]; error: string }>("POST", "/api/settings/search/test", query ? { query } : {}),
   upgradeSafetyProgress: (id: string) => req<UpgradeSafety>("GET", `${w(id)}/upgrade/safety`),
   upgradeApply: (id: string, body: { name: string; version: string; patch_ids: string[]; branch: string; run_lock: boolean; extra_patches: string[] }) =>
-    req<{ branch: string | null; files: string[]; lock: { ok: boolean; command: string; output: string } | null; applied: string[]; skipped: string[]; rewrites_applied?: number; rewrites_failed?: string[] }>(
+    req<{ branch: string | null; files: string[]; lock: { ok: boolean; command: string; output: string } | null; applied: string[]; skipped: string[]; rewrites_applied?: number; rewrites_failed?: string[]; rewrite_errors?: { files: string[]; why: string }[] }>(
       "POST", `${w(id)}/upgrade/apply`, body),
   git: (id: string) => req<GitState>("GET", `${w(id)}/git`),
   gitSwitch: (id: string, branch: string) => req<GitState>("POST", `${w(id)}/git/switch`, { branch }),
@@ -496,7 +521,7 @@ export const api = {
   migration: (id: string, name: string) => req<MigrationPlan>("GET", `${w(id)}/migrations/${q(name)}`),
   migrationStep: (id: string, name: string, n: number) => req<StepDetail>("GET", `${w(id)}/migrations/${q(name)}/steps/${n}`),
   applyStep: (id: string, name: string, n: number, extra_patches: string[] = []) =>
-    req<{ applied: boolean; files: string[]; failed: string[]; status: MigrationPlan }>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/apply`, { extra_patches }),
+    req<{ applied: boolean; files: string[]; failed: string[]; errors?: { files: string[]; why: string }[]; status: MigrationPlan }>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/apply`, { extra_patches }),
   stepAi: (id: string, name: string, n: number) =>
     req<UpgradeRewrite>("POST", `${w(id)}/migrations/${q(name)}/steps/${n}/ai`),
   critique: (id: string, text: string) => req<PlanReview>("POST", `${w(id)}/critique`, { text }),

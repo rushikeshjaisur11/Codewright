@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from codewright import llm, scope
 from codewright import proof as proof_mod
-from codewright import scope
 from codewright.engine import review
 from codewright.models import ProofStatus
 from codewright.service import Workspace
@@ -108,8 +108,9 @@ def test_plan_uses_the_models_picks_and_ignores_invented_files(repo, monkeypatch
     rows = scope.candidates(r.findings, set())
     real, other = rows[0]["file"], rows[-1]["file"]
     monkeypatch.setattr(scope, "llm_status", lambda cfg: {"available": True, "reason": ""})
+    monkeypatch.setattr(llm, "status", lambda cfg: {"available": True, "reason": ""})
     monkeypatch.setattr(
-        scope,
+        llm,
         "complete",
         lambda *a, **k: f'Sure:\n[{{"file": "{other}", "reason": "hot"}}, {{"file": "ghost.py", "reason": "x"}}]',
     )
@@ -123,7 +124,8 @@ def test_plan_uses_the_models_picks_and_ignores_invented_files(repo, monkeypatch
 def test_plan_falls_back_when_the_model_answers_nonsense(repo, monkeypatch):
     r = review(repo, run_proof=False, top=None)
     monkeypatch.setattr(scope, "llm_status", lambda cfg: {"available": True, "reason": ""})
-    monkeypatch.setattr(scope, "complete", lambda *a, **k: "no json here")
+    monkeypatch.setattr(llm, "status", lambda cfg: {"available": True, "reason": ""})
+    monkeypatch.setattr(llm, "complete", lambda *a, **k: "no json here")
     plan = scope.plan(r.findings, [], repo)
     assert plan["source"] == "ranking" and plan["files"]
 
