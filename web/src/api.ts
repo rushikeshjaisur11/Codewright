@@ -88,6 +88,22 @@ export interface DepFinding {
   kind: "overlap" | "stdlib" | "unused" | "license" | "abandoned" | "heavy";
   title: string; deps: string[]; detail: string; suggestion: string; saves: number; effort: number; severity: "info" | "warn";
 }
+export type UntangleKind =
+  | "unused" | "test-only" | "unused-module" | "wrapper" | "unused-param" | "swallowed" | "commented-code"
+  | "co-change" | "stale-global" | "split-setting" | "copied-constant" | "call-order" | "outside-state" | "copied-logic";
+export interface UntangleItem {
+  id: string; kind: UntangleKind; file: string; line: number; end_line: number; name: string;
+  title: string; why: string; confidence: "high" | "medium"; lines: number; chain: string[];
+  data: Record<string, unknown>;
+}
+export interface UntangleInventory {
+  mode: "service" | "library"; items: UntangleItem[]; counts: Record<UntangleKind, number>;
+  high: number; removable_lines: number; kinds: Record<UntangleKind, string>;
+  groups: Record<UntangleKind, "surplus" | "links">; history: string; links: number; silenced: number;
+}
+export interface RemovalResult {
+  patch: string; removed: string[]; skipped: { id: string; why: string }[]; files: string[]; deleted: string[]; lines: number;
+}
 export interface DepAudit {
   python: string; declared: number; locked: number; lockfile: string | null;
   dependencies: DepRow[]; findings: DepFinding[]; could_remove: number;
@@ -521,6 +537,10 @@ export const api = {
   fixRules: (id: string, keys: string[] | null, dry_run: boolean) =>
     req<ApplyResult>("POST", `${w(id)}/rules/fix`, { keys, dry_run }),
   initRules: (id: string, overwrite = false) => req<RulesSummary>("POST", `${w(id)}/rules/init`, { overwrite }),
+  untangle: (id: string) => req<UntangleInventory>("GET", `${w(id)}/untangle`),
+  untangleRemove: (id: string, ids: string[], dry_run: boolean) =>
+    req<RemovalResult>("POST", `${w(id)}/untangle/remove`, { ids, dry_run }),
+  untangleAgent: (id: string, ids: string[]) => req<AgentJob>("POST", `${w(id)}/untangle/agent`, { ids }),
   deps: (id: string, online: boolean) => req<DepAudit>("GET", `${w(id)}/deps?online=${online}`),
   migrations: (id: string) =>
     req<{ applicable: MigrationRow[]; catalog: { name: string; title: string; library: string | null }[] }>("GET", `${w(id)}/migrations`),

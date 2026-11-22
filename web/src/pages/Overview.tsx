@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import {
   AlertCircle, ArrowRight, BellOff, CheckCircle2, Compass, FileCode2, Flame, GitPullRequest, Layers, MessagesSquare, Network,
-  ShieldCheck, ThumbsUp, XCircle,
+  Scissors, ShieldCheck, ThumbsUp, XCircle,
 } from "lucide-react";
 import { useApp } from "../App";
 import VerifyPanel from "../VerifyPanel";
-import { api, Drift, Insight, Release } from "../api";
+import { api, Drift, Insight, Release, UntangleInventory } from "../api";
 import { CATEGORY, CATEGORY_ORDER, CategoryBadge, Empty, Inline, ProofBadge, Spinner, Stat, intentLabel, useToast } from "../ui";
 
 function Insights({ items }: { items: Insight[] }) {
@@ -44,10 +44,12 @@ export default function Overview() {
   const { data, go, wid } = useApp();
   const [drift, setDrift] = useState<Drift | null | undefined>(undefined);
   const [releases, setReleases] = useState<Release[] | null>(null);
+  const [untangle, setUntangle] = useState<UntangleInventory | null | undefined>(undefined);
   const r = data?.result;
 
   useEffect(() => {
     if (!wid || !r) return;
+    api.untangle(wid).then(setUntangle).catch(() => setUntangle(null));
     api.mapMeta(wid).then((m) => setDrift(m.drift)).catch(() => setDrift(null));
     api.releases(wid).then(setReleases).catch(() => setReleases([]));
   }, [wid, r]);
@@ -174,6 +176,8 @@ export default function Overview() {
             </div>
           </div>
 
+          <UntangleCard inv={untangle} go={go} />
+
           <div className="card">
             <div className="card-head">
               <h2><ShieldCheck size={16} />Architecture rules</h2>
@@ -261,6 +265,36 @@ export default function Overview() {
             </table>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function UntangleCard({ inv, go }: { inv: UntangleInventory | null | undefined; go: ReturnType<typeof useApp>["go"] }) {
+  const sureLinks = (inv?.items ?? []).filter((i) => inv?.groups[i.kind] === "links" && i.confidence === "high");
+  const sureSurplus = (inv?.items ?? []).filter((i) => inv?.groups[i.kind] === "surplus" && i.confidence === "high");
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h2><Scissors size={16} />Untangle</h2>
+        <div className="right"><button className="btn sm ghost" onClick={() => go("untangle", { group: "links" })}>Open<ArrowRight size={13} /></button></div>
+      </div>
+      <div className="card-pad col" style={{ gap: 8 }}>
+        {inv === undefined ? <Spinner size={14} /> : inv === null ? <span className="muted">Couldn't read the code for this.</span> : (
+          <>
+            <div className="row wrap" style={{ gap: 6, fontSize: 13 }}>
+              <button className="chip" style={{ height: 28 }} onClick={() => go("untangle", { group: "links" })}>{sureLinks.length} sure hidden link(s)</button>
+              <button className="chip" style={{ height: 28 }} onClick={() => go("untangle")}>{sureSurplus.length} sure surplus · {inv.removable_lines} unused line(s)</button>
+            </div>
+            {sureLinks.slice(0, 4).map((i) => (
+              <button key={i.id} className="kind-row" style={{ textAlign: "left" }} onClick={() => go("untangle", { group: "links" })}>
+                <div style={{ fontSize: 13 }}><Inline text={i.title} /></div>
+                <div className="mono faint" style={{ fontSize: 11.5 }}>{inv.kinds[i.kind]} · {i.file}:{i.line}</div>
+              </button>
+            ))}
+            {inv.history && <span className="faint" style={{ fontSize: 12 }}>Git history: {inv.history}.</span>}
+          </>
+        )}
       </div>
     </div>
   );

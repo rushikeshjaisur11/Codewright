@@ -1,7 +1,7 @@
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen, Bot, ClipboardCheck, Compass, GitPullRequest, LayoutDashboard, MessageSquareCode, Moon, Package,
-  PenTool, Play, Radio, Settings as SettingsIcon, ShieldCheck, Sun, Wand2, X,
+  PenTool, Play, Radio, Scissors, Settings as SettingsIcon, ShieldCheck, Sun, Wand2, X,
 } from "lucide-react";
 import { api, ReviewPayload, WorkspaceInfo } from "./api";
 import { CodeView, ProgressBar, ReviewProgress, Spinner, timeAgo, useToast } from "./ui";
@@ -20,9 +20,11 @@ const Plans = lazy(() => import("./pages/Plans"));
 const Rules = lazy(() => import("./pages/Rules"));
 const SettingsPage = lazy(() => import("./pages/Settings"));
 const AgentPage = lazy(() => import("./pages/Agent"));
+const Untangle = lazy(() => import("./pages/Untangle"));
 
 export type Page =
-  | "overview" | "review" | "map" | "ai" | "chat" | "agent" | "design" | "plans" | "rules" | "releases" | "knowledge" | "settings";
+  | "overview" | "review" | "map" | "ai" | "chat" | "agent" | "design" | "plans" | "untangle" | "rules" | "releases" | "knowledge"
+  | "settings";
 
 interface Ctx {
   wid: string | null;
@@ -39,7 +41,7 @@ export const useApp = () => useContext(AppCtx);
 function parseHash(): { page: Page; params: URLSearchParams } {
   const h = window.location.hash.replace(/^#\/?/, "");
   const [p, qs] = h.split("?");
-  const pages: Page[] = ["overview", "review", "map", "ai", "chat", "agent", "design", "plans", "rules", "releases", "knowledge", "settings"];
+  const pages: Page[] = ["overview", "review", "map", "ai", "chat", "agent", "design", "plans", "untangle", "rules", "releases", "knowledge", "settings"];
   return { page: (pages.includes(p as Page) ? p : "overview") as Page, params: new URLSearchParams(qs || "") };
 }
 
@@ -178,6 +180,7 @@ export default function App() {
     { page: "agent", label: "AI agent", icon: <Wand2 size={17} /> },
     { page: "design", label: "Design", icon: <PenTool size={17} /> },
     { page: "plans", label: "Plans & migrations", icon: <ClipboardCheck size={17} /> },
+    { page: "untangle", label: "Untangle", icon: <Scissors size={17} /> },
   ];
   const nav2: { page: Page; label: string; icon: JSX.Element; count?: number }[] = [
     { page: "rules", label: "Architecture rules", icon: <ShieldCheck size={17} />, count: r?.rules?.errors || undefined },
@@ -187,7 +190,7 @@ export default function App() {
   ];
   const titles: Record<Page, string> = {
     overview: "Overview", review: "Review", map: "Map", ai: "AI & agents", chat: "Code chat", agent: "AI agent", design: "Design",
-    plans: "Plans & migrations", rules: "Architecture rules",
+    plans: "Plans & migrations", untangle: "Untangle", rules: "Architecture rules",
     releases: "Dependencies", knowledge: "Knowledge base", settings: "Settings",
   };
 
@@ -196,7 +199,7 @@ export default function App() {
   // A repo's first review: pages that need a result show the progress instead of an empty state.
   const needsResult = !["design", "knowledge", "settings", "agent"].includes(route.page);
   // These pages need only the parsed code, so they show as soon as it is read, while findings are still computed.
-  const graphOnly = ["map", "ai", "releases", "rules"].includes(route.page);
+  const graphOnly = ["map", "ai", "releases", "rules", "untangle"].includes(route.page);
   const firstRun = needsResult && !!data && !data.result && data.running && !(graphOnly && data.graph_ready);
   const finishing = graphOnly && !!data && !data.result && data.running && !!data.graph_ready;
   const flush = !firstRun && (route.page === "map" || route.page === "chat");
@@ -279,6 +282,7 @@ export default function App() {
             {route.page === "agent" && <AgentPage />}
             {route.page === "design" && <Design />}
             {route.page === "plans" && <Plans />}
+            {route.page === "untangle" && <Untangle />}
             {route.page === "rules" && <Rules />}
             {route.page === "releases" && <Releases />}
             {route.page === "knowledge" && <Knowledge wid={wid} />}

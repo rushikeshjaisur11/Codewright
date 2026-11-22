@@ -488,6 +488,103 @@ def deps(
         console.print(f"Removing what isn't needed takes {r['could_remove']} package(s) out of the install.")
 
 
+@app.command()
+def untangle(
+    path: Path = typer.Argument(Path("."), exists=True, file_okay=False),
+    everything: bool = typer.Option(False, "--all", help="Also list the findings to check by hand (medium)."),
+    kind: list[str] = typer.Option(
+        [],
+        "--kind",
+        help="Only these kinds: unused, test-only, unused-module, wrapper, unused-param, swallowed, commented-code, "
+        "co-change, stale-global, split-setting, copied-constant, call-order, outside-state, copied-logic.",
+    ),
+    fmt: str = typer.Option("table", "--format", "-f", help="table, markdown or json."),
+    remove: bool = typer.Option(
+        False,
+        "--remove",
+        help="Remove the sure unused code, modules and "
+        "commented-out code (with the imports only they used). Nothing is committed.",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="With --remove: print the patch, change nothing."),
+    fail_on: str = typer.Option(
+        "none",
+        "--fail-on",
+        help="For CI: exit 1 when a finding of this confidence is listed (high, or any). Combine with --kind.",
+    ),
+) -> None:
+    """What the code carries that nothing needs (unused code and modules, code only tests use, pass-through
+    wrappers, unused parameters, silenced errors, commented-out code) and the links it doesn't show (files that
+    change together in git, stale copies of globals, settings read in several places, copied constants and
+    logic, call order nothing enforces, state set from another module). Each with how sure it is and why."""
+    from . import graph as graph_mod
+    from . import untangle as untangle_mod
+    from . import untangle_fix
+    from .proof import patch_error
+
+    root = path.resolve()
+    with err_console.status("Reading the code..."), _clean_errors():
+        g = graph_mod.build(root)
+        inv = untangle_mod.inventory(g)
+    rows = [i for i in inv["items"] if (everything or i["confidence"] == "high") and (not kind or i["kind"] in kind)]
+    if remove:
+        ids = [i["id"] for i in rows if i["kind"] in untangle_fix.REMOVABLE]
+        res = untangle_fix.removal(root, g, inv["items"], ids)
+        for s in res["skipped"]:
+            err_console.print(f"[yellow]skipped[/] {s['id']}: {s['why']}", highlight=False)
+        if not res["patch"]:
+            err_console.print("Nothing to remove.")
+            return
+        if dry_run:
+            print(res["patch"], end="")
+            return
+        if err := patch_error(root, res["patch"]):
+            err_console.print(f"[red]The patch did not apply:[/] {err}")
+            raise typer.Exit(1)
+        err_console.print(
+            f"Removed {len(res['removed'])} item(s), {res['lines']} line(s), in {len(res['files'])} file(s). "
+            "Nothing is committed: run the tests, then `git diff`."
+        )
+        return
+    failing = [i for i in rows if fail_on == "any" or (fail_on == "high" and i["confidence"] == "high")]
+    if fail_on not in ("none", "high", "any"):
+        err_console.print("[red]--fail-on is none, high or any[/]")
+        raise typer.Exit(2)
+    _untangle_print(inv, rows, fmt, everything)
+    if failing:
+        err_console.print(f"[red]{len(failing)} finding(s) at --fail-on {fail_on}[/]")
+        raise typer.Exit(1)
+
+
+def _untangle_print(inv: dict, rows: list[dict], fmt: str, everything: bool) -> None:
+    from . import untangle as untangle_mod
+
+    if fmt == "json":
+        print(json.dumps({**inv, "items": rows}, indent=2))
+        return
+    if fmt == "markdown":
+        print(untangle_mod.to_markdown({**inv, "items": rows}, everything=True))
+        return
+    if not rows:
+        console.print("[green]Nothing to untangle.[/]" + ("" if everything else " (--all lists what to check by hand)"))
+        return
+    for label_kind, label in untangle_mod.KINDS.items():
+        group = [i for i in rows if i["kind"] == label_kind]
+        if not group:
+            continue
+        console.print(f"\n[bold]{label}[/] ({len(group)})")
+        for i in group:
+            tag = "" if i["confidence"] == "high" else " [yellow](check)[/]"
+            console.print(f"  [cyan]{i['file']}:{i['line']}[/] {i['title']}{tag}", highlight=False)
+            console.print(f"      [dim]{i['why']}[/]", highlight=False)
+    if inv.get("history"):
+        console.print(f"\n[yellow]Git history:[/] {inv['history']}.", highlight=False)
+    mode = "a library: its public API is never reported" if inv["mode"] == "library" else "an app or service"
+    console.print(
+        f"\n{inv['high']} sure finding(s); {inv['removable_lines']} line(s) of unused code. Read as {mode}. "
+        "`--remove` deletes the sure unused code."
+    )
+
+
 migrate_app = typer.Typer(
     help="Planned migrations (Pydantic v2, SQLAlchemy 2, async I/O...): small steps, leaf modules first.",
     no_args_is_help=True,

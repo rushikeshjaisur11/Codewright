@@ -21,6 +21,7 @@ Around them:
 - **Architecture rules** (`.codewright/rules.yaml`): "api/ may not import db/", "only billing/ calls Stripe", layers, no blocking calls in `async def`. Checked on every review and by `codewright check` in CI, each violation with a way round it.
 - **Plans and migrations**: review a plan or an agent's proposal before any code is written, and carry out upgrades (Pydantic v2, SQLAlchemy 2, blocking calls out of async code...) as small steps, leaf modules first, each with a combined patch, its tests and a PR description.
 - **Dependency audit**: two libraries for one job, backports the standard library now covers, unused, heavy, copyleft and abandoned dependencies.
+- **Untangle**: what the code carries that nothing needs (unused functions, classes and modules and the dead code only they use, code only tests use, pass-through wrappers, unused parameters, silenced errors, commented-out code) and the **hidden links** it doesn't show: files that keep changing together in git without importing each other, `from m import X` copies of a global that `m` reassigns, settings read in several places with different defaults, copied constants and logic, calls that only work after an `init()`, state set from another module. Each with how sure it is and why. One click removes the sure unused code as a patch that keeps every import working; the rest goes to the AI agent.
 - **Production readiness**: N+1 queries, missing or disabled timeouts, unbounded caches, `lru_cache` on methods, POSTs that repeat side effects on retry, pools without pre-ping; each with the scale at which it matters.
 - **Learning from feedback**: accept/reject verdicts re-rank findings per area of the repo, fade with age, and turn into suggestions ("your team rejected 8 of 10 X under `scripts/`: mute it there?").
 
@@ -41,13 +42,14 @@ The web app only answers requests addressed to `localhost`, and refuses requests
 
 | Page | What it does |
 | --- | --- |
-| Overview | Findings by kind, architecture suggestions, proof rate, acceptance rate, hot-path count, stack, rule violations, drift and upgrades at a glance, and what the team's verdicts say (with a one-click mute where they keep rejecting a check) |
+| Overview | Findings by kind, architecture suggestions, the sure hidden links and unused code from Untangle, proof rate, acceptance rate, hot-path count, stack, rule violations, drift and upgrades at a glance, and what the team's verdicts say (with a one-click mute where they keep rejecting a check) |
 | Review | **Apply all verified** combines every proven patch into one change and shows the diff before writing it. Findings tagged by kind (**Architecture**, Agents, Performance, Reliability, Upgrade, Use the library) and filterable by it, with evidence, the suggested API and version, gain, risk, "when not to", scale threshold, proof (and measured speed after **Measure speed**), diff and sources. Accept, reject (with a reason), mute an intent, copy or apply a patch, PR mode and PR-comment export |
 | Map | System, module and request-flow diagrams generated from the code graph, laid out with ELK (layered, orthogonal edges). Hover a box to trace its connections; click any box for an inspector with what it is, its facts, links, the suggestions in its code and the code itself (components, modules, functions and external systems alike); **Focus** shows only a box and its neighbours, and *Ask about it* opens Code chat with a question about it. Double-click to drill in (breadcrumbs take you back), press `/` to find a node, filter by kind, switch direction. Every box links to its files and lines; overlays show findings, fan-in hotspots and untested code. Files the running system never loads (nothing in use imports them, only tests do, or they live in `scripts/`, `docs/` or `examples/`) are left off and listed beside the map, with a switch to show them. Monorepos (`packages/*`, `src/` layouts) are split into their real packages. Entry points include files that start the app, not only routes and `main()`: an `app.py` or other script nothing imports, Streamlit, Chainlit, Gradio, NiceGUI and Panel apps, FastAPI/Flask/Starlette/Django/Dash/Celery/Typer/MCP app objects (shown as `uvicorn app:app`, `streamlit run app.py`...), module-level starts such as `app.run()` or `asyncio.run(main())`, `__main__` blocks, `__main__.py`, console scripts in pyproject, and handlers like `@mcp.tool` or `@cl.on_message`. Mermaid export, drift panel and "changes this week" |
 | AI & agents | The files that need a model, and the agent architecture drawn from the code: which route or job runs each agent, its sub-agents and handoffs, its tools and model, plus LangGraph workflows and direct model calls. The graph follows the whole chain from the app: `app.py` → the function that runs the agent (a `Runner`, `.run()`, `kickoff()`…) → the root agent → its sub-agents, handoffs and agents used as tools → their tools and models. It sees agents defined inline in a list, built by factory functions (with the model the caller passes), defined in other modules and imported, aliased (`root_agent = build()`), custom agent classes (subclasses of `BaseAgent` and friends), LangGraph steps that are agents, ADK's `root_agent` convention (`adk web`) and `langgraph.json`. Pick an entry point in *Start from* (or *Show its tree* on any agent) to see only what it reaches; every agent's inspector shows its path from the app. Every box opens the same inspector: an agent's model, full instruction, options, tools, sub-agents, who runs it and its definition; a tool's signature, docstring and code; a model's users and call sites. Search, kind filters, Focus and Mermaid export work as on the Map. Google ADK, OpenAI Agents SDK, Pydantic AI, CrewAI, LangChain/LangGraph, smolagents, AutoGen, LlamaIndex, and the Anthropic, OpenAI, Gemini and LiteLLM SDKs |
 | Code chat | Questions about the code, answered with citations you can click open |
 | Design | Interview → three candidate architectures with fit scores, a diagram, components with exact versions from PyPI, editable capacity assumptions, decision records, data model and API outline. Download the design doc or a starter repo, or save the design as the repo's intended architecture |
 | Plans & migrations | **Review a plan**: paste an RFC, design doc or agent plan and get a go/revise verdict with evidence (a library the repo already has for the job, code the stack already provides, a rule it would break, a function with many callers and no test, scale and completeness gaps); a plan judged go can be **handed to the AI agent**, which carries it out in a sandbox. **Migrations**: the upgrades that apply to this repo, planned as ordered steps; open a step for its combined patch and PR text, or apply it to the working tree. Changes no detector can patch (blocking calls in async code, most ADK and SQLAlchemy session changes) get **Write the changes with AI**: one rewrite per function from the card's advice, each checked to compile and shown as a diff to tick, then applied with the step. **Run all steps** does the whole plan on branch `codewright/<migration>`: each step's patch, the rest by the AI agent (applied only when its tests pass), the step's tests, then one commit per step; it stops at the first failure with that step's changes left uncommitted, and never pushes |
+| Untangle | Two tabs. **Hidden links**: places that must change together or agree without the code saying so, from git history (each pair with its shared commits) and from the code (stale copies of globals, split settings, copied constants and logic, call order, outside state). **Surplus**: what nothing needs, grouped: unused code and modules, code only tests use, pass-through wrappers, unused parameters, silenced errors, commented-out code. **Sure** shows only what Codewright is certain of, **Everything** adds what to check by hand. **Remove** previews one patch (the definitions, their attached comments, the imports only they used, and `from x import it` in every other file) and applies it to the working tree; **Hand to the AI agent** gives the rest (inline a wrapper at every call site, drop a parameter from every caller, narrow an `except`) to the agent with the evidence for each |
 | Architecture rules | The rules in `.codewright/rules.yaml` and the saved design, every violation with a fix, and one click to write the rules today's code already keeps |
 | Dependencies | **Releases**: newer versions of each dependency, what an upgrade unlocks, and an upgrade preview for this repo: the findings an upgrade would add (things to fix first, with auto-patches marked) or resolve, from re-matching the code already scanned against the new version. **Audit**: declared against imported dependencies, with what to merge, drop or replace and how many packages leave the install |
 | Knowledge base | Every card, searchable and grouped by library and topic. With a repo open, each says whether it fits the locked version, needs an upgrade or isn't a dependency. Cards with a detector become findings; reference entries are for looking things up |
@@ -99,6 +101,11 @@ codewright migrate plan pydantic-v2         # ordered steps, saved to .codewrigh
 codewright migrate step pydantic-v2 1 --apply   # apply one step's combined patch (nothing is committed)
 codewright migrate status pydantic-v2       # progress follows the code: a step is done when its changes are gone
 codewright deps .                           # dependency audit (--offline to skip release dates)
+codewright untangle .                       # unused code and modules, wrappers, unused parameters, silenced errors
+codewright untangle . --all -f markdown     # also what to check by hand, as a report
+codewright untangle . --remove --dry-run    # the patch that removes the sure unused code (drop --dry-run to apply)
+codewright untangle . --kind co-change --kind split-setting --all   # just some hidden links
+codewright untangle . --fail-on high        # exit 1 when there is a sure finding (for CI; combine with --kind)
 codewright insights .                       # what accept/reject verdicts say: checks to mute, checks the team trusts
 codewright map . --level flow               # Mermaid diagram of a request flow
 codewright map . --unused                    # also draw files the running system never loads
@@ -140,6 +147,8 @@ Or call the CLI yourself:
 - run: pip install "codewright @ git+https://github.com/rushikeshjaisur11/codewright"
 - run: codewright review . --base origin/${{ github.base_ref }} -f pr -o codewright.md --sarif-output codewright.sarif
 - run: codewright check .
+# fail on the hidden links that are bugs today (with full history: actions/checkout with fetch-depth: 0)
+- run: codewright untangle . --kind stale-global --kind split-setting --fail-on high
 ```
 
 Codewright suggests; it never merges.
@@ -158,7 +167,7 @@ claude mcp add codewright -- uvx --from git+https://github.com/rushikeshjaisur11
 
 `codewright mcp config` prints the same setup for Cursor, VS Code, Claude Desktop and other clients.
 
-Tools: `review` (with `bench`), `review_files`, `explain_finding`, `record_feedback`, `search_knowledge`, `architecture_map`, `ask_code`, `check_drift`, `check_rules`, `review_plan`, `combined_patch`, `dependency_audit`, `migration_plan`, `migration_step`, `feedback_insights`, `dependency_releases`, `review_markdown` and `list_repos`. An agent can review its own plan with `review_plan` before writing code, and call `check_rules` before it finishes.
+Tools: `review` (with `bench`), `review_files`, `explain_finding`, `record_feedback`, `search_knowledge`, `architecture_map`, `ask_code`, `check_drift`, `check_rules`, `review_plan`, `combined_patch`, `dependency_audit`, `untangle`, `migration_plan`, `migration_step`, `feedback_insights`, `dependency_releases`, `review_markdown` and `list_repos`. An agent can review its own plan with `review_plan` before writing code, and call `check_rules` before it finishes.
 
 **Shared server for a team**, over Streamable HTTP at `/mcp`:
 
@@ -323,6 +332,40 @@ Add your own cards: put YAML files in a folder and pass `--cards that/folder`. E
 `codewright cards verify` checks every card: required fields, a detector for its intent, and examples that compile. With `--python` it also checks each card's API exists in an interpreter that has the library installed, and with `--links` that its sources still resolve. CI runs it weekly against the latest google-adk (`.github/workflows/cards.yml`), so a renamed API or a dead link turns the job red.
 
 Beyond ADK, the knowledge base has reference entries for FastAPI, Pydantic, SQLAlchemy, httpx and Celery: dependencies with `yield`, `BackgroundTasks`, `APIRouter`, `TypeAdapter`, `selectinload`, async sessions, client timeouts and pool limits, transport retries, `acks_late` and task time limits. Each was checked in the library's lowest stated version and in its latest release.
+
+### Untangle
+
+`codewright untangle` (or the Untangle page, or the `untangle` MCP tool) lists what the codebase carries that nothing needs, and the links it doesn't show, so a change reads less and breaks less. Python is too dynamic for a static tool to prove code dead, so it leans the other way: a name counts as used anywhere it appears, in code, in a string (`getattr`, registries, Django settings), in a template or in a config file. Each finding is **sure** or **check by hand**, with the reason.
+
+| Finding | When |
+| --- | --- |
+| Unused code | A function, method or class nothing live names. Code that only dead code uses is dead too and says so ("only `_old_export` uses it, and nothing live uses that") |
+| Unused module | Nothing in use imports it, and nothing names it in a string or a launch file. Modules a framework loads by path (management commands, migrations, plugin folders a loader walks) are in use |
+| Only tests use it | The same, where the only users are tests |
+| Pass-through wrapper | A function whose body only forwards its arguments to another function of the repo. A wrapper around a third-party library is a deliberate seam and is not listed |
+| Unused parameter | A parameter the function never reads, when every caller calls it by name: a function passed as a callback has its signature chosen by its caller |
+| Silenced error | `except Exception: pass` (or `return None`, `continue`): a bug there looks like success. Three or more in one file are one finding, with every line listed |
+| Commented-out code | Comment blocks that parse as Python statements. A comment that explains with a code example is not listed |
+
+Never listed: decorated handlers (routes, tasks, validators, signal receivers), dunders and protocol names (`_repr_html_`, `load_ipython_extension`, `pytest_*`, `setUp`), methods a framework base calls (pydantic's `model_*` hooks, `logging.Handler.emit`, `JSONEncoder.default`, `ast.NodeVisitor.visit_*`; any method of a subclass of an unknown outside base), classes handed to a registry (`register_converter(MyConverter)`) or named in settings, methods reachable through `getattr(self, f"do_{x}")`, and names in `__all__`. A repo with packaging metadata and no web app is read as a library: its public API (public names in public modules, and what `__init__.py` re-exports) is never listed.
+
+**Hidden links** are places that must change together, or agree, without the code saying so. Each is a change that breaks quietly when someone touches one side and not the other:
+
+| Finding | When |
+| --- | --- |
+| Change together | Two files changed in the same commits at least 5 times and in 30% or more of their changes (code-maat's measure: shared commits over the average of each file's commits), yet neither imports the other, directly or through one module, and neither names the other in a string. Commits touching more than 30 files (formatting, renames, bumps) and merges are skipped, as are tests, migrations, settings and generated files. At least one side is Python; the other can be a frontend file (an API contract written twice), a template or SQL. Sure from 50%. Needs the git history: in a shallow clone it says so |
+| Stale copy of a global | `from config import client` at module level, while a function in `config` reassigns `client` (`global client`): the importer keeps the old object forever |
+| Settings read in several places | One environment variable read in several modules. Sure when the defaults differ (`"8090"` here, `"8091"` there); unset and `""` count as the same |
+| Copied constants | The same upper-case constant in 2 to 4 modules (more is a per-module convention, like a plugin's `NAME`). Sure for the same string under the same name: a key both sides must agree on |
+| Works only after another call | A module global that starts as None, is set by an `init()`-style function, and is used in another function without any check, unless the module sets it when imported |
+| State set from another module | `config.DEBUG = True`, or writing into another module's dict or list (`registry.HANDLERS[k] = v`) |
+| Copied logic | Function bodies that are the same in several places, grouped by the files they span (a copied class is one finding) |
+
+How it was checked: on eight repos with full history (healthchecks, mealie, open-webui, gpt-researcher, private-gpt, the FastAPI template...) the pairs that change together were read by hand: parallel report types copied from each other, agents that copy one another, backend routers and the Svelte components or TypeScript clients that call them. Two-hop links (`urls.py` → `views.py` → `forms.py`) and Django's `include("app.urls")` are recognised as links the code shows. Settings with different defaults included real disagreements such as an API port defaulting to 8090 in one module and 8091 in another.
+
+`--remove` (or **Remove** on the page) makes one patch: the definitions with their attached comments, the imports only they used, `from x import removed` in every other file (through re-exports in `__init__.py`), and the dead code only they used. A removal that would leave an empty block, or a module something still imports, is skipped with the reason. Every changed file must parse. Nothing is committed: run the tests afterwards.
+
+How it was checked: on 14 open-source repos (FastAPI, Django and Flask apps, AI-agent apps and libraries such as flask, httpx, rich, requests and click), every sure "unused" finding (169) was grepped across the whole repo, and none had a live use; 60 were also read by hand. Removing all the sure findings at once in five of the apps applied cleanly, compiled, and added no undefined names or broken imports (ruff F821/F401/F811).
 
 ### Google ADK
 

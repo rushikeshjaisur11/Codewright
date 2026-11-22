@@ -857,6 +857,36 @@ def create_app(roots: list[str] | None = None, allowed_hosts: list[str] | None =
         except RuntimeError as e:
             raise HTTPException(409, str(e)) from None
 
+    @app.get("/api/w/{wid}/untangle")
+    def untangle(wid: str):
+        return ws(wid).untangle()
+
+    @app.post("/api/w/{wid}/untangle/remove")
+    def untangle_remove(
+        wid: str,
+        ids: Annotated[list[str], Body(embed=True)],
+        dry_run: Annotated[bool, Body(embed=True)] = True,
+    ):
+        """Preview (dry_run) or apply one patch removing the chosen items. Nothing is committed."""
+        try:
+            return ws(wid).untangle_remove(ids, dry_run=dry_run)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.post("/api/w/{wid}/untangle/agent")
+    def untangle_agent(
+        wid: str,
+        ids: Annotated[list[str], Body(embed=True)],
+        tests: Annotated[bool, Body(embed=True)] = True,
+    ):
+        """Hand the chosen items to the AI agent; follow it on the agent page."""
+        try:
+            return ws(wid).untangle_agent(ids, tests=tests)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from None
+
     @app.get("/api/w/{wid}/deps")
     def get_deps(wid: str, online: bool = True):
         return ws(wid).deps(online=online)
