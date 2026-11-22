@@ -117,8 +117,11 @@ def dependency_audit(repo: str, online: bool = False) -> dict:
 def untangle(repo: str, everything: bool = False) -> dict:
     """What the code carries that nothing needs, each with how sure it is and why: unused functions, methods,
     classes and modules (and the dead code only they use), code only tests use, pass-through wrappers, unused
-    parameters, silenced errors (`except Exception: pass`), commented-out code. Framework hooks, decorated
-    handlers and a library's public API are never reported. `everything` adds the medium-confidence ones."""
+    parameters, silenced errors (`except Exception: pass`), commented-out code. Also hidden links: files that change
+    together in git without importing each other, `from m import X` copies of a global m reassigns, environment
+    variables read in several modules (with different defaults), copied constants and logic, functions that only work
+    after an init call, state set from another module. Framework hooks, decorated handlers and a library's public API
+    are never reported. `everything` adds the medium-confidence ones."""
     inv = _ws(repo).untangle()
     items = [i for i in inv["items"] if everything or i["confidence"] == "high"]
     return {**inv, "items": items[:500], "truncated": len(items) > 500}

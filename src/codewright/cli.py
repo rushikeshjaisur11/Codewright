@@ -495,7 +495,8 @@ def untangle(
     kind: list[str] = typer.Option(
         [],
         "--kind",
-        help="Only these kinds (unused, test-only, unused-module, wrapper, unused-param, swallowed, commented-code).",
+        help="Only these kinds: unused, test-only, unused-module, wrapper, unused-param, swallowed, commented-code, "
+        "co-change, stale-global, split-setting, copied-constant, call-order, outside-state, copied-logic.",
     ),
     fmt: str = typer.Option("table", "--format", "-f", help="table, markdown or json."),
     remove: bool = typer.Option(
@@ -506,8 +507,10 @@ def untangle(
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="With --remove: print the patch, change nothing."),
 ) -> None:
-    """What the code carries that nothing needs: unused code and modules, code only tests use, pass-through
-    wrappers, unused parameters, silenced errors, commented-out code. Each with how sure it is and why."""
+    """What the code carries that nothing needs (unused code and modules, code only tests use, pass-through
+    wrappers, unused parameters, silenced errors, commented-out code) and the links it doesn't show (files that
+    change together in git, stale copies of globals, settings read in several places, copied constants and
+    logic, call order nothing enforces, state set from another module). Each with how sure it is and why."""
     from . import graph as graph_mod
     from . import untangle as untangle_mod
     from . import untangle_fix
@@ -555,6 +558,8 @@ def untangle(
             tag = "" if i["confidence"] == "high" else " [yellow](check)[/]"
             console.print(f"  [cyan]{i['file']}:{i['line']}[/] {i['title']}{tag}", highlight=False)
             console.print(f"      [dim]{i['why']}[/]", highlight=False)
+    if inv.get("history"):
+        console.print(f"\n[yellow]Git history:[/] {inv['history']}.", highlight=False)
     mode = "a library: its public API is never reported" if inv["mode"] == "library" else "an app or service"
     console.print(
         f"\n{inv['high']} sure finding(s); {inv['removable_lines']} line(s) of unused code. Read as {mode}. "

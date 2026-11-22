@@ -134,7 +134,17 @@ KINDS = {
     "unused-param": "Unused parameters",
     "swallowed": "Silenced errors",
     "commented-code": "Commented-out code",
+    # Hidden links: places that must change together, or agree, without the code saying so (links.py).
+    "co-change": "Change together",
+    "stale-global": "Stale copies of a global",
+    "split-setting": "Settings read in several places",
+    "copied-constant": "Copied constants",
+    "call-order": "Works only after another call",
+    "outside-state": "State set from another module",
+    "copied-logic": "Copied logic",
 }
+SURPLUS = ("unused", "test-only", "unused-module", "wrapper", "unused-param", "swallowed", "commented-code")
+GROUPS = {k: ("surplus" if k in SURPLUS else "links") for k in KINDS}
 
 
 @dataclass
@@ -669,8 +679,9 @@ class Inventory:
         return out
 
 
-def inventory(graph: CodeGraph, unused_modules: list[dict] | None = None) -> dict:
-    """Everything the Untangle page lists, grouped by kind, with totals."""
+def inventory(graph: CodeGraph, unused_modules: list[dict] | None = None, *, links: bool = True) -> dict:
+    """Everything the Untangle page lists, grouped by kind, with totals. With `links`, also the hidden links
+    (git history and the code's shared state, settings and constants)."""
     inv = Inventory(graph, unused_modules)
     unused, tests_only = inv.dead()
     mods = inv.modules()
@@ -684,6 +695,12 @@ def inventory(graph: CodeGraph, unused_modules: list[dict] | None = None) -> dic
         *inv.swallowed(),
         *inv.commented_code(),
     ]
+    history = ""
+    if links:
+        from .links import hidden_links
+
+        found, history = hidden_links(graph)
+        items += found
     removable = sum(i.lines for i in items if i.kind in ("unused", "unused-module") and i.confidence == "high")
     return {
         "mode": "service" if inv.service else "library",
@@ -692,6 +709,9 @@ def inventory(graph: CodeGraph, unused_modules: list[dict] | None = None) -> dic
         "high": sum(1 for i in items if i.confidence == "high"),
         "removable_lines": removable,
         "kinds": KINDS,
+        "groups": GROUPS,
+        "history": history,
+        "links": sum(1 for i in items if GROUPS[i.kind] == "links"),
     }
 
 
@@ -704,6 +724,21 @@ AGENT_STEPS = {
     "unused-module": "Delete the module, after checking nothing loads it by name (settings, entry points).",
     "test-only": "The product doesn't use it. Delete it together with the tests that only exercise it.",
     "commented-code": "Delete the commented-out code; git keeps the history.",
+    "co-change": "Read the commits both files share. If the same edit lands in both (a copied rule, a contract "
+    "written twice), make one the source of the other: a shared module, or a client generated from the backend's "
+    "schema. If not, say so and leave it.",
+    "stale-global": "Stop copying the global at import: import the module and read the attribute where it is used, "
+    "or add a function that returns the current value.",
+    "split-setting": "Read the variable once, in the settings or config module the repo already has (create one if "
+    "there is none), with one default, and pass the value to the places that read it now. Where the defaults "
+    "differ, keep the one the running app uses today and say which you kept.",
+    "copied-constant": "Where the copies mean the same thing, define the constant once and import it; where they "
+    "mean different things, rename them so they don't look alike.",
+    "call-order": "Make the dependency explicit: create the value on first use (with a lock if threads share it), "
+    "or pass it in, so no caller depends on another function having run first.",
+    "outside-state": "Give the owning module a function that makes this change (or take the value as a parameter), "
+    "and call it here instead of reaching into the module.",
+    "copied-logic": "Keep one copy in a module the others can import, and replace the other copies with calls to it.",
 }
 
 
@@ -729,6 +764,8 @@ def agent_task(items: list[dict]) -> tuple[str, str]:
 def to_markdown(inv: dict, everything: bool = False) -> str:
     """The inventory as a Markdown report."""
     out = [f"# Untangle: {inv['high']} sure finding(s), {inv['removable_lines']} line(s) to remove", ""]
+    if inv.get("history"):
+        out += [f"_Git history: {inv['history']}._", ""]
     for kind, label in KINDS.items():
         rows = [i for i in inv["items"] if i["kind"] == kind and (everything or i["confidence"] == "high")]
         if not rows:

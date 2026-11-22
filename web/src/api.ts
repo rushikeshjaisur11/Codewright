@@ -89,7 +89,8 @@ export interface DepFinding {
   title: string; deps: string[]; detail: string; suggestion: string; saves: number; effort: number; severity: "info" | "warn";
 }
 export type UntangleKind =
-  | "unused" | "test-only" | "unused-module" | "wrapper" | "unused-param" | "swallowed" | "commented-code";
+  | "unused" | "test-only" | "unused-module" | "wrapper" | "unused-param" | "swallowed" | "commented-code"
+  | "co-change" | "stale-global" | "split-setting" | "copied-constant" | "call-order" | "outside-state" | "copied-logic";
 export interface UntangleItem {
   id: string; kind: UntangleKind; file: string; line: number; end_line: number; name: string;
   title: string; why: string; confidence: "high" | "medium"; lines: number; chain: string[];
@@ -98,6 +99,7 @@ export interface UntangleItem {
 export interface UntangleInventory {
   mode: "service" | "library"; items: UntangleItem[]; counts: Record<UntangleKind, number>;
   high: number; removable_lines: number; kinds: Record<UntangleKind, string>;
+  groups: Record<UntangleKind, "surplus" | "links">; history: string; links: number;
 }
 export interface RemovalResult {
   patch: string; removed: string[]; skipped: { id: string; why: string }[]; files: string[]; deleted: string[]; lines: number;

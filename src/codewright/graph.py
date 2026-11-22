@@ -550,7 +550,7 @@ def _parse_chunk(root: str, rels: list[str], detect: bool) -> list[tuple]:
     """In a worker: (path, module, classes, cache, detection entry or None) per file."""
     import pickle
 
-    from . import entries, untangle_scan  # noqa: F401  (register their visitors)
+    from . import entries, links_scan, untangle_scan  # noqa: F401  (register their visitors)
     from .intents import (
         architecture,  # noqa: F401
         detectors,
@@ -615,7 +615,7 @@ def build(
     """`progress(done, total)` is called as files are parsed; `visitors` (and those registered with `on_parse`)
     run on each file right after, while its syntax tree is still in memory. With `detect_cache` (see
     intents.detectors.detect) new and edited files are detected as they are parsed."""
-    from . import entries, untangle_scan  # noqa: F401  (untangle_scan registers its visitor)
+    from . import entries, links_scan, untangle_scan  # noqa: F401  (they register their visitors)
     from .intents import architecture  # noqa: F401
 
     root = Path(root).resolve()
