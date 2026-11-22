@@ -114,6 +114,17 @@ def dependency_audit(repo: str, online: bool = False) -> dict:
 
 
 @_tool
+def untangle(repo: str, everything: bool = False) -> dict:
+    """What the code carries that nothing needs, each with how sure it is and why: unused functions, methods,
+    classes and modules (and the dead code only they use), code only tests use, pass-through wrappers, unused
+    parameters, silenced errors (`except Exception: pass`), commented-out code. Framework hooks, decorated
+    handlers and a library's public API are never reported. `everything` adds the medium-confidence ones."""
+    inv = _ws(repo).untangle()
+    items = [i for i in inv["items"] if everything or i["confidence"] == "high"]
+    return {**inv, "items": items[:500], "truncated": len(items) > 500}
+
+
+@_tool
 def migration_plan(repo: str, name: str = "", batch: int = 5) -> dict:
     """Plan an upgrade as small steps, leaf modules first. Without `name`, lists the migrations that apply to the
     repo (pydantic-v2, sqlalchemy-2, fastapi-modern, async-io, utc-datetimes, google-adk). With it, returns the

@@ -244,6 +244,9 @@ TOOLING_DIRS = {
     "experiments",
 }
 LAUNCH_PREFIXES = ("run_", "start_", "serve", "worker", "consume", "listen", "poll_", "main_")
+# Modules Django imports for each installed app by name (models, admin.autodiscover, AppConfig discovery).
+DJANGO_AUTOLOADED = {"models.py", "admin.py", "apps.py"}
+PYTHON_AUTOLOADED = {"sitecustomize.py", "usercustomize.py"}  # imported by Python itself at startup
 TOOLING_FILES = {"setup.py", "noxfile.py", "fabfile.py", "tasks.py", "conftest.py"}
 # Files at the repo root that start the app by module name or path (uvicorn app.main:app, gunicorn, Procfile...).
 LAUNCH_FILES = (
@@ -270,6 +273,13 @@ def is_tooling(path: str) -> bool:
 
 # A quote followed by a dotted name: `"pkg.plugins.csv"` or `'a.b:func'` (importlib, plugin lists, entry points).
 _LAUNCH_TOKEN = re.compile(r"(?:^|(?<=[\s\"'/=\[,]))([^\s\"'/=\[,]+)")
+# A module name built at run time: `import_module(name)`, `import_module(f".{x}")`, `__import__(mod)`, or a
+# package walk (pkgutil). A plain string literal is handled by _STRING_DOTTED.
+_DYNAMIC_IMPORT = re.compile(
+    rb"pkgutil\.(iter_modules|walk_packages)|\b(iter_modules|walk_packages)\(|"
+    rb"import_module\(\s*(f[\"']|[A-Za-z_(]|[\"'][^\"']*[\"']\s*[+%])|__import__\(\s*(f[\"']|[A-Za-z_])"
+)
+_FSTRING_PACKAGE = re.compile(rb"f[\"']([A-Za-z_][\w]*(?:\.[A-Za-z_]\w*)+)\.\{")
 _STRING_DOTTED = re.compile(rb"[\"']([A-Za-z_][\w]*(?:\.[A-Za-z_]\w*)+)")
 
 
@@ -285,6 +295,19 @@ class ArchMap:
         for mod in self.modules:
             for alias in importable_names(mod):
                 self._import_names.setdefault(alias, mod)
+        # A project in a subfolder (``backend/app/main.py`` imported as ``app.main``): every tail of a module's
+        # path that names only that module is an import name too, after the exact ones.
+        tails: dict[str, set[str]] = defaultdict(set)
+        for mod in self.modules:
+            parts = mod.split(".")
+            for i in range(1, len(parts)):
+                tails[".".join(parts[i:])].add(mod)
+        self._suffix_names: dict[str, str] = {}
+        for alias, mods in tails.items():
+            if len(mods) == 1 and alias not in self.modules and alias not in self._import_names:
+                mod = next(iter(mods))
+                self._import_names[alias] = mod
+                self._suffix_names[alias] = self.modules[mod]
         self._fan_in = Counter(c for callees in graph.edges.values() for c in callees)
         self._tested = self._tested_names()
         self._findings_by_file = Counter(f.file for f in self.findings)
@@ -299,6 +322,53 @@ class ArchMap:
         self.shown = set(self.modules.values()) if include_unused or not shown else set(shown)
 
     # ----------------------------------------------------------------- what is part of the architecture
+    @staticmethod
+    def _loaded_folders(path: str, source: bytes, by_name: dict[str, str]) -> list[str]:
+        """Folders whose modules `path` imports by a name it builds at run time: a plugin loader walking its own
+        package (`pkgutil.iter_modules(__path__)`, `import_module(f".{name}", __package__)`), or one building
+        `f"pkg.plugins.{name}"`. Every module under them is in use."""
+        if (
+            b"import_module" not in source
+            and b"iter_modules" not in source
+            and b"walk_packages" not in source
+            and (b"__import__" not in source)
+        ):
+            return []
+        out = []
+        for m in _FSTRING_PACKAGE.finditer(source):
+            pkg = m.group(1).decode().rstrip(".")
+            hit = by_name.get(pkg)
+            if hit is not None:
+                out.append(hit.rsplit("/", 1)[0] + "/")
+        if _DYNAMIC_IMPORT.search(source):
+            out.append(path.rsplit("/", 1)[0] + "/" if "/" in path else "")
+        return out
+
+    def _autoloaded(self, files: list[str]) -> set[str]:
+        """Modules a framework imports by their file name: Django's per-app models/admin/apps/signals/checks,
+        management commands and template tags, Celery's tasks modules, pytest plugins."""
+        uses_django = any(
+            t.split(".")[0] == "django" for pf in self.g.files.values() for t in pf.module.imports.values()
+        )
+        uses_celery = any(
+            t.split(".")[0] == "celery" for pf in self.g.files.values() for t in pf.module.imports.values()
+        )
+        out = set()
+        for p in files:
+            if is_tooling(p):
+                continue
+            base = p.rsplit("/", 1)[-1]
+            if (
+                base in PYTHON_AUTOLOADED
+                or (
+                    uses_django
+                    and (base in DJANGO_AUTOLOADED or "/management/commands/" in f"/{p}" or "/templatetags/" in f"/{p}")
+                )
+                or (uses_celery and base == "tasks.py")
+            ):
+                out.add(p)
+        return out
+
     def _launch_text(self) -> str:
         """Config and launch files that can start a module by name: the root ones, plus deploy and
         compose files, shell scripts and agent configs (langgraph.json...) anywhere in the repo."""
@@ -396,7 +466,22 @@ class ArchMap:
                 roots.add(p)
         if not roots - weak:  # a library: consumers may import any module
             roots = {p for p in files if not is_tooling(p)}
+        roots |= self._autoloaded(files)
         imports = {p: self._module_imports(p)[0] for p in files}
+        # Dynamic imports: a module named in a string by code in use (importlib, plugin lists, Django's
+        # ROOT_URLCONF and INSTALLED_APPS). Each file that comes into use adds the dotted names its strings start
+        # with, and the modules they name come into use in turn (settings -> urls -> views -> forms).
+        by_name: dict[str, str] = {}
+        for p in files:
+            if is_tooling(p):
+                continue
+            mod = module_name(p)
+            for n in [mod, *importable_names(mod)]:
+                if "." in n:
+                    by_name.setdefault(n, p)
+        for alias, p in self._suffix_names.items():
+            if "." in alias:
+                by_name.setdefault(alias, p)
         used, stack = set(), list(roots)
         while stack:
             p = stack.pop()
@@ -409,19 +494,15 @@ class ArchMap:
                 if parent and parent not in used:
                     stack.append(parent)
             stack.extend(self.modules[m] for m in imports[p] if self.modules[m] not in used)
-        # Dynamic imports: a module named in a string by code in use (importlib, plugin lists).
-        # One pass over the used files collects every dotted name a string literal starts with, so each
-        # unused module is a set lookup (the old substring search over all sources was O(modules x bytes)).
-        literals: set[str] = set()
-        for p in used:
-            for m in _STRING_DOTTED.finditer(self.g.files[p].source):
-                parts = m.group(1).decode().split(".")
-                literals.update(".".join(parts[:i]) for i in range(2, len(parts) + 1))
-        for p in files:
-            if p not in used and not is_tooling(p):
-                mod = module_name(p)
-                if any(n in literals for n in [mod, *importable_names(mod)] if "." in n):
-                    used.add(p)
+            source = self.g.files[p].source
+            for m in _STRING_DOTTED.finditer(source):
+                names = m.group(1).decode().split(".")
+                for i in range(2, len(names) + 1):
+                    hit = by_name.get(".".join(names[:i]))
+                    if hit is not None and hit not in used:
+                        stack.append(hit)
+            for folder in self._loaded_folders(p, source, by_name):
+                stack.extend(f for f in files if f.startswith(folder) and f not in used and not is_tooling(f))
         tested_only = set()
         for path in self.g.files:
             if is_test_file(path):

@@ -323,6 +323,27 @@ def parse_file(path: Path, root: Path, source: bytes | None = None) -> ParsedFil
     return pf
 
 
+# Statements whose bodies can hold imports and definitions: `if`/`elif`/`else`, `try`/`except`/`finally`,
+# `with`, loops and `match`/`case` (a lazy import in a factory's `case "qdrant":` is still an import).
+_COMPOUND = frozenset(
+    {
+        "block",
+        "if_statement",
+        "elif_clause",
+        "else_clause",
+        "try_statement",
+        "except_clause",
+        "except_group_clause",
+        "finally_clause",
+        "with_statement",
+        "for_statement",
+        "while_statement",
+        "match_statement",
+        "case_clause",
+    }
+)
+
+
 def _index_definitions(root: Node) -> dict[str, Node]:
     """qualname -> function_definition node, found the way `_collect` finds them (for a re-parsed tree)."""
     out: dict[str, Node] = {}
@@ -335,7 +356,7 @@ def _index_definitions(root: Node) -> dict[str, Node]:
             elif kind in ("function_definition", "class_definition"):
                 defn = child
             else:
-                if kind in ("block", "if_statement", "try_statement", "with_statement", "else_clause"):
+                if kind in _COMPOUND:
                     visit(child, prefix)
                 continue
             if defn is None:
@@ -365,7 +386,7 @@ def _collect(node: Node, pf: ParsedFile, prefix: str) -> None:
             _definition(definition, pf, prefix, decorators, outer=child)
         elif kind in ("function_definition", "class_definition"):
             _definition(child, pf, prefix, [], outer=child)
-        elif kind in ("block", "if_statement", "try_statement", "with_statement", "else_clause"):
+        elif kind in _COMPOUND:
             _collect(child, pf, prefix)
 
 
@@ -425,15 +446,25 @@ def _calls(node: Node) -> list[str]:
     return out
 
 
+def _bind(module: Module, alias: str, target: str) -> None:
+    """Record `alias` -> `target`. The last binding of a name wins, as in Python; an earlier one to another module
+    (`from .milvus import Client` in one branch, `from .qdrant import Client` in the next) is kept under
+    `alias#target`, which no name lookup matches, so the module still counts as imported."""
+    old = module.imports.get(alias)
+    if old is not None and old != target:
+        module.imports[f"{alias}#{old}"] = old
+    module.imports[alias] = target
+
+
 def record_imports(node: Node, module: Module) -> None:
     if node.type == "import_statement":
         for child in node.named_children:
             if child.type == "dotted_name":
                 full = text(child)
-                module.imports[full.split(".")[0]] = full.split(".")[0]
-                module.imports[full] = full
+                _bind(module, full.split(".")[0], full.split(".")[0])
+                _bind(module, full, full)
             elif child.type == "aliased_import":
-                module.imports[text(child.child_by_field_name("alias"))] = text(child.child_by_field_name("name"))
+                _bind(module, text(child.child_by_field_name("alias")), text(child.child_by_field_name("name")))
         return
     mod_node = node.child_by_field_name("module_name")
     base = text(mod_node)
@@ -442,10 +473,13 @@ def record_imports(node: Node, module: Module) -> None:
             continue
         sep = "" if base.endswith(".") else "."  # `from . import x` -> ".x", not "..x"
         if child.type == "dotted_name":
-            module.imports[text(child)] = f"{base}{sep}{text(child)}"
+            _bind(module, text(child), f"{base}{sep}{text(child)}")
         elif child.type == "aliased_import":
             alias = text(child.child_by_field_name("alias"))
-            module.imports[alias] = f"{base}{sep}{text(child.child_by_field_name('name'))}"
+            _bind(module, alias, f"{base}{sep}{text(child.child_by_field_name('name'))}")
+        elif child.type == "wildcard_import":
+            # `from ._api import *` binds no name we can see, but it does import the module (and runs it).
+            module.imports[f"*{base}"] = base
 
 
 def resolve(module: Module, dotted: str) -> str:
@@ -516,7 +550,7 @@ def _parse_chunk(root: str, rels: list[str], detect: bool) -> list[tuple]:
     """In a worker: (path, module, classes, cache, detection entry or None) per file."""
     import pickle
 
-    from . import entries  # noqa: F401  (registers its visitor)
+    from . import entries, untangle_scan  # noqa: F401  (register their visitors)
     from .intents import (
         architecture,  # noqa: F401
         detectors,
@@ -581,7 +615,7 @@ def build(
     """`progress(done, total)` is called as files are parsed; `visitors` (and those registered with `on_parse`)
     run on each file right after, while its syntax tree is still in memory. With `detect_cache` (see
     intents.detectors.detect) new and edited files are detected as they are parsed."""
-    from . import entries
+    from . import entries, untangle_scan  # noqa: F401  (untangle_scan registers its visitor)
     from .intents import architecture  # noqa: F401
 
     root = Path(root).resolve()

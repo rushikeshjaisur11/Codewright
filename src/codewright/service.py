@@ -877,6 +877,43 @@ class Workspace:
         return {"running": s["running"], "total": s["total"], "done": len(rows), "rows": rows, "error": s["error"]}
 
     # --------------------------------------------------------------- architecture rules
+    # --------------------------------------------------------------- untangle
+    def untangle(self) -> dict:
+        """What the code carries that nothing needs: unused code and modules, code only tests use, pass-through
+        wrappers, unused parameters, silenced errors and commented-out code. Built once per revision."""
+        from . import untangle as untangle_mod
+
+        return self._cached("untangle", lambda r: untangle_mod.inventory(r.graph, self.amap().unused))
+
+    def untangle_remove(self, ids: list[str], *, dry_run: bool = True) -> dict:
+        """One patch removing the chosen items and the dead code only they use; with `dry_run` False, apply
+        it to the working tree (nothing is committed) and re-scan."""
+        from . import untangle_fix
+
+        inv = self.untangle()
+        res = untangle_fix.removal(self.root, self.view().graph, inv["items"], ids)
+        if dry_run or not res["patch"]:
+            return res
+        self._apply(res["patch"])
+        note(
+            self.name,
+            f"Removed {len(res['removed'])} unused item(s), {res['lines']} line(s), in {len(res['files'])} file(s)",
+        )
+        self.run_review(proof=False)
+        return res
+
+    def untangle_agent(self, ids: list[str], *, web: bool = False, tests: bool = True) -> dict:
+        """Hand the items no patch can make (wrappers to inline, parameters to drop, errors to stop silencing)
+        to the AI agent, as one task with the evidence for each."""
+        from . import untangle as untangle_mod
+
+        inv = self.untangle()
+        chosen = [i for i in inv["items"] if i["id"] in set(ids)]
+        if not chosen:
+            raise ValueError("pick at least one item")
+        task, context = untangle_mod.agent_task(chosen)
+        return self.agent_start(task, context=context, web=web, tests=tests, origin="untangle")
+
     def rules(self) -> dict:
         from . import rules as rules_mod
 

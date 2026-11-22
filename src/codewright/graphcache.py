@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import __version__
 
-VERSION = 1
+VERSION = 4
 
 
 def _dir() -> Path:
