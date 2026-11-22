@@ -614,12 +614,36 @@ class Inventory:
             )
         return out
 
-    def swallowed(self) -> list[Item]:
+    def swallowed(self, group_at: int = 3) -> list[Item]:
+        """Each silenced error, or one finding per file when a file has `group_at` or more (a habit to fix in
+        one go, not a list to scroll through)."""
         out = []
         for path, f in self.facts.items():
-            if is_test_file(path) or is_tooling(path):
+            if is_test_file(path) or is_tooling(path) or not f["swallowed"]:
                 continue
-            for s in f["swallowed"]:
+            spots = f["swallowed"]
+            if len(spots) >= group_at:
+                bare = sum(1 for s in spots if s["caught"] in ("everything", "BaseException"))
+                kinds = sorted({f"except {s['caught']}: {s['does']}" for s in spots})
+                out.append(
+                    Item(
+                        kind="swallowed",
+                        file=path,
+                        line=spots[0]["line"],
+                        end_line=spots[0]["line"] + 1,
+                        name=f"{path}:*",
+                        title=f"{len(spots)} silenced errors in `{path}`",
+                        why=(
+                            f"{', '.join(f'`{k}`' for k in kinds[:3])}{' and more' if len(kinds) > 3 else ''}: in "
+                            f"{len({s['owner'] for s in spots})} function(s), a bug looks like success. Catch the "
+                            "errors each block expects, or log them before moving on"
+                        ),
+                        confidence="high" if bare else "medium",
+                        data={"places": [{"file": path, "line": s["line"]} for s in spots], "count": len(spots)},
+                    )
+                )
+                continue
+            for s in spots:
                 out.append(
                     Item(
                         kind="swallowed",
@@ -712,6 +736,7 @@ def inventory(graph: CodeGraph, unused_modules: list[dict] | None = None, *, lin
         "groups": GROUPS,
         "history": history,
         "links": sum(1 for i in items if GROUPS[i.kind] == "links"),
+        "silenced": sum(i.data.get("count", 1) for i in items if i.kind == "swallowed"),
     }
 
 

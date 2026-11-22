@@ -126,7 +126,7 @@ export default function Untangle() {
         <div className="stats">
           <Stat label="Sure findings" value={inv.high} sub={`${inv.items.length - inv.high} more to check by hand`} />
           <Stat label="Unused lines" value={unusedLines} sub="functions, classes and modules nothing uses" />
-          <Stat label="Silenced errors" value={inv.counts.swallowed ?? 0} sub="broad excepts that carry on quietly" />
+          <Stat label="Silenced errors" value={inv.silenced ?? 0} sub="broad excepts that carry on quietly" />
           <Stat label="Hidden links" value={inv.links} sub={`${inv.counts["co-change"] ?? 0} pairs of files that change together`} />
         </div>
       </div>
@@ -229,7 +229,8 @@ function Row({ item: i, on, toggle, open }: {
 }) {
   const other = typeof i.data.other === "string" ? i.data.other : null;
   const subjects = Array.isArray(i.data.subjects) ? (i.data.subjects as string[]) : [];
-  const places = (Array.isArray(i.data.reads) ? i.data.reads : Array.isArray(i.data.defs) ? i.data.defs : []) as { file: string; line: number }[];
+  const list = [i.data.places, i.data.reads, i.data.defs].find(Array.isArray);
+  const places = (list ?? []) as { file: string; line: number }[];
   return (
     <tr>
       <td style={{ width: 28, verticalAlign: "top", paddingTop: 14 }}>
@@ -247,7 +248,7 @@ function Row({ item: i, on, toggle, open }: {
           </div>
         )}
         <div className="row" style={{ gap: 4, flexWrap: "wrap", marginTop: 2 }}>
-          {(places.length ? places : [{ file: i.file, line: i.line }]).slice(0, 6).map((p, n) => (
+          {(places.length ? places : [{ file: i.file, line: i.line }]).slice(0, 8).map((p, n) => (
             <button key={n} className="btn ghost sm mono" style={{ paddingLeft: 0, fontSize: 12 }} onClick={() => open(p.file, p.line, p.line)} title="Show the code">
               <Code2 size={12} />{p.file}:{p.line}
             </button>

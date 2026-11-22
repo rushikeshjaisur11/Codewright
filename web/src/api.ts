@@ -99,7 +99,7 @@ export interface UntangleItem {
 export interface UntangleInventory {
   mode: "service" | "library"; items: UntangleItem[]; counts: Record<UntangleKind, number>;
   high: number; removable_lines: number; kinds: Record<UntangleKind, string>;
-  groups: Record<UntangleKind, "surplus" | "links">; history: string; links: number;
+  groups: Record<UntangleKind, "surplus" | "links">; history: string; links: number; silenced: number;
 }
 export interface RemovalResult {
   patch: string; removed: string[]; skipped: { id: string; why: string }[]; files: string[]; deleted: string[]; lines: number;

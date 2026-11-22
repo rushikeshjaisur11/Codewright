@@ -506,6 +506,11 @@ def untangle(
         "commented-out code (with the imports only they used). Nothing is committed.",
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="With --remove: print the patch, change nothing."),
+    fail_on: str = typer.Option(
+        "none",
+        "--fail-on",
+        help="For CI: exit 1 when a finding of this confidence is listed (high, or any). Combine with --kind.",
+    ),
 ) -> None:
     """What the code carries that nothing needs (unused code and modules, code only tests use, pass-through
     wrappers, unused parameters, silenced errors, commented-out code) and the links it doesn't show (files that
@@ -540,6 +545,19 @@ def untangle(
             "Nothing is committed: run the tests, then `git diff`."
         )
         return
+    failing = [i for i in rows if fail_on == "any" or (fail_on == "high" and i["confidence"] == "high")]
+    if fail_on not in ("none", "high", "any"):
+        err_console.print("[red]--fail-on is none, high or any[/]")
+        raise typer.Exit(2)
+    _untangle_print(inv, rows, fmt, everything)
+    if failing:
+        err_console.print(f"[red]{len(failing)} finding(s) at --fail-on {fail_on}[/]")
+        raise typer.Exit(1)
+
+
+def _untangle_print(inv: dict, rows: list[dict], fmt: str, everything: bool) -> None:
+    from . import untangle as untangle_mod
+
     if fmt == "json":
         print(json.dumps({**inv, "items": rows}, indent=2))
         return

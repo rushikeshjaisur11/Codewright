@@ -191,3 +191,31 @@ def test_inventory_groups_and_agent_task(tmp_path):
     picked = [i for i in inv["items"] if inv["groups"][i["kind"]] == "links"]
     _task, context = untangle.agent_task(picked)
     assert "## Stale copies of a global" in context and "## Settings read in several places" in context
+
+
+def test_many_silenced_errors_in_a_file_are_one_finding(tmp_path):
+    body = "\n\n".join(
+        f"def f{n}():\n    try:\n        return {n}\n    except Exception:\n        pass" for n in range(4)
+    )
+    inv = untangle.inventory(graph.build(write(tmp_path, {"app.py": body + "\n", "one.py": SINGLE})), links=False)
+    swallowed = [i for i in inv["items"] if i["kind"] == "swallowed"]
+    grouped = next(i for i in swallowed if i["file"] == "app.py")
+    assert grouped["title"] == "4 silenced errors in `app.py`" and len(grouped["data"]["places"]) == 4
+    assert [i["file"] for i in swallowed].count("one.py") == 1
+    assert inv["silenced"] == 5
+
+
+SINGLE = "def g():\n    try:\n        return 1\n    except Exception:\n        return None\n"
+
+
+def test_cli_fail_on_for_ci(tmp_path):
+    from typer.testing import CliRunner
+
+    from codewright.cli import app
+
+    write(tmp_path, CODE)
+    runner = CliRunner()
+    hit = runner.invoke(app, ["untangle", str(tmp_path), "--kind", "stale-global", "--fail-on", "high"])
+    assert hit.exit_code == 1 and "stale" in hit.output.lower()
+    clean = runner.invoke(app, ["untangle", str(tmp_path), "--kind", "wrapper", "--fail-on", "high"])
+    assert clean.exit_code == 0
